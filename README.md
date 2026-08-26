@@ -25,9 +25,12 @@ RVG is a UWP inspired, panel-based foobar2000 skin built for JSPlitter. It is a 
   - [foo_stop_after_queue*](https://www.foobar2000.org/components/view/foo_stop_after_queue)
   - [foo_stop_after_track*](https://www.foobar2000.org/components/view/foo_stop_after_track)
   - [foo_musicbrainz*](https://www.foobar2000.org/components/view/foo_musicbrainz)
-  - [Biography by Wil-B*](https://github.com/Wil-B/Biography) - put the package into Biography panel
+  - [Biography by Wil-B mod by regorxxx*](https://hydrogenaudio.org/index.php/topic,112914.msg1084983.html#msg1084983) - put the package into Biography panel
   - [Library-Tree-SMP by regorxxx*](https://github.com/regorxxx/Library-Tree-SMP) - put the package into Albums and Library panels respectively
-    
+  - [ESLyric](https://github.com/ESLyric)
+  - [Open Lyrics](https://www.foobar2000.org/components/view/foo_openlyrics)
+  - [Spectrum Analyzer](https://www.foobar2000.org/components/view/foo_vis_spectrum_analyzer)
+
     \*some features or buttons won't work without recommended plugins or throw errors until installed or removed from the layout.
 - **Icons:** Segoe Fluent Icons on Windows 11, with Segoe MDL2 Assets as the Windows 10 fallback
 - **For Last.fm integrations:** your Last.fm API key and username, entered in RVG Settings.
@@ -83,7 +86,7 @@ Individual panels usually expose a simple **Accent colour/source** choice under 
 - **Player** — Large now-playing card with metadata, playback controls, rating, optional seekbar/volume, and utility actions. Main settings: accent, track source, icon style, seekbar/volume visibility, and font-family override.
 - **Top bar** — Compact full-width header with artwork, metadata, seekbar/volume, transport, and utility controls. Main settings: which sections are visible and Shared accent vs RVG blue.
 - **Playlist** — JSPlaylist-mod-based track list with grouping, columns, search, loved state, artwork backgrounds, and row-density controls. Main settings are grouped under Layout, Rows, Accent, Grouping, Columns, Fonts, Colours, and Background. 
-- **Mini Player** — Shrinks the real foobar2000 window into a compact now-playing view with art, playback controls, seekbar, optional Last.fm love button and rating. Remembers position and size.
+- **Mini Player** — Shrinks the real foobar2000 window into a compact now-playing view with art, playback controls, seekbar, optional Last.fm love button and rating. Remembers position and size. Main setting: **Design** — Design 1 (small cover, one title line, centred transport, full-width seekbar) or Design 2 (full-height cover art beside stacked title, artist and love+stars lines, transport inline with a short seekbar).
 
   ![Mini Player](https://i.ibb.co/nqhYpb0h/miniplayer.jpg)
 - **Compact Queue** — Small playback-queue editor with drag reorder, file drops, remove/clear actions, and recovery through a managed playlist.
