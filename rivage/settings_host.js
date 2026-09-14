@@ -1,23 +1,25 @@
-﻿'use strict';
+'use strict';
 
 window.DrawMode = 0;
 
 // LEFT SIDE root: dynamic content slots plus the full-area SETTINGS overlay.
 // PanelObject wrappers stay callback-local and are never retained between passes.
 
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\panel_visibility_host.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\settings_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\panel_host_kit.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\resizing_mode_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\divider_highlight.js');
 
 window.DefineScript('RVG Settings Host', {
     author: 'RivaGe',
-    version: '2.6.0',
+    version: '2.7.1',
     features: { drag_n_drop: false, grab_focus: false }
 });
 
@@ -788,6 +790,7 @@ function safeConfigureContentPanel(panel) {
     try {
         if (panel.ShowCaption !== false) panel.ShowCaption = false;
         if (panel.Locked !== true) panel.Locked = true;
+        RivageBackdrop.configureChildPanel(panel);
         return true;
     } catch (e) {
         return false;
@@ -799,6 +802,7 @@ function safeConfigureSettingsPanel(panel) {
     try {
         if (panel.ShowCaption !== false) panel.ShowCaption = false;
         if (panel.Locked !== true) panel.Locked = true;
+        RivageBackdrop.configureChildPanel(panel);
         if (panel.TopMost !== true) panel.TopMost = true;
         return true;
     } catch (e) {
@@ -1069,13 +1073,13 @@ function on_size(width, height) {
 
 function on_colours_changed() {
     refreshThemeBackground();
-    window.Repaint(true);
+    SharedThemeProtocol.requestRepaint();
 }
 
 function on_paint(gr) {
     observeChildCollection();
     scheduleVisibleWork();
-    gr.FillSolidRect(0, 0,
+    RivageBackdrop.paint(gr, 0, 0,
         Math.max(0, Number(window.Width) || panelWidth || 0),
         Math.max(0, Number(window.Height) || panelHeight || 0),
         BACKGROUND);
@@ -1143,8 +1147,8 @@ function on_mouse_lbtn_dblclk(x, y) {
 
 function on_notify_data(name, info) {
     if (SharedThemeProtocol.consume(name, info)) {
-        refreshThemeBackground();
-        window.Repaint(true);
+        // on_colours_changed refreshes BACKGROUND and repaints. Mica no longer
+        // changes native child-window transparency, so no layout is needed here.
         return;
     }
     if (consumeRailMeasure(name, info)) return;

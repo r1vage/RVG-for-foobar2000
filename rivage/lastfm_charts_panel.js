@@ -3,6 +3,8 @@ window.DrawMode = 0;
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\settings_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\track_context.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\library_resolver_v2.js');
@@ -1204,7 +1206,7 @@ function on_paint(gr) {
 
     hits = [];
     if (!gr) return;
-    gr.FillSolidRect(0, 0, ww, wh, ui_theme.background);
+    RivageBackdrop.paint(gr, 0, 0, ww, wh, ui_theme.background);
     if (ww <= 0 || wh <= 0) return;
 
     y += drawHeader(gr, margin, y, Math.max(1, ww - margin * 2));
@@ -1527,9 +1529,10 @@ function on_notify_data(name, info) {
         var nextAccent = SharedAccentProtocol.opaque(info);
         if (nextAccent === sharedAlbumAccent) return;
         sharedAlbumAccent = nextAccent;
+        if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
         if (opt_accent_mode === AccentMode.AlbumArt) {
             update_colours();
-            window.Repaint(true);
+            window.Repaint();
         }
     }
 }
@@ -1541,7 +1544,7 @@ function on_size(width, height) {
 
 function on_colours_changed() {
     update_colours();
-    window.Repaint(true);
+    SharedThemeProtocol.requestRepaint();
 }
 
 function on_font_changed() {

@@ -11,8 +11,9 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\track_context.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\library_resolver_v2.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\library_actions_v2.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\visible_paint_work.js");
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 
-const PANEL_VERSION = '2.12.1';
+const PANEL_VERSION = '3.1.2';
 
 window.DefineScript(RivageUI.copy.popupTitle('Discography'), {
     author: 'RivaGe',
@@ -42,7 +43,11 @@ const PROP = 'Discography Checker.';
 const API_ROOT = 'https://musicbrainz.org/ws/2';
 const SITE_ROOT = 'https://musicbrainz.org';
 const CACHE_DIR = fb.ProfilePath + 'jsplitter_discography_cache\\';
-const CALENDAR_CACHE_FILE = CACHE_DIR + 'upcoming_calendar.json';
+// v2 stored whole raw search responses in this file; v3 stores slim rows keyed
+// by artist bucket. The old path is only opened to reclaim its space.
+const CALENDAR_LEGACY_CACHE_FILE = CACHE_DIR + 'upcoming_calendar.json';
+const CALENDAR_CACHE_FILE = CACHE_DIR + 'upcoming_calendar_v3.json';
+const CALENDAR_CACHE_VERSION = 3;
 
 const PAGE_SIZE = 100;
 const REQUEST_INTERVAL_MS = 1250;
@@ -54,7 +59,18 @@ const RETRY_JITTER_MS = 1000;
 const CIRCUIT_BREAKER_FAILURES = 3;
 const CIRCUIT_BREAKER_COOLDOWN_MS = 30000;
 const MAX_RELEASE_GROUPS = 1000;
-const MAX_CALENDAR_SEARCH_RESULTS = 10000;
+// Per-bucket safety cap (10 pages). Artist-scoped queries return tens of rows;
+// this only bounds a name-fallback group that matched something very common.
+const MAX_CALENDAR_SEARCH_RESULTS = 1000;
+// The calendar query span is anchored to the first of the current month and
+// always covers the widest selectable horizon, so the cache key turns over
+// monthly instead of daily and a horizon change never touches the network.
+const CALENDAR_QUERY_MONTHS = 25;
+// Per-bucket budget measured on the PERCENT-ENCODED query, not the raw text:
+// a non-ASCII artist name costs up to 9 bytes per character once encoded, so a
+// raw-character budget would produce URLs several times over the server limit.
+const CALENDAR_QUERY_BUDGET_CHARS = 4000;
+const CALENDAR_CACHE_WRITE_INTERVAL_MS = 8000;
 const VARIOUS_ARTISTS_MBID = '89ad4ac3-39f7-470e-963a-56509c546377';
 const MUSICBRAINZ_USER_AGENT = 'foobar2000-JSplitter-Discography/' + PANEL_VERSION + ' (https://github.com/dima-lur/jsplitter)';
 
@@ -128,12 +144,19 @@ const SECONDARY_TYPE_DEFS = [
 ];
 
 let releaseTypeFilters = loadReleaseTypeFilters();
+const DEFAULT_CACHE_DAYS = 30;
 let storedCacheDays = Number(window.GetProperty(PROP + 'Cache days', 0));
-let legacyCacheHours = Number(window.GetProperty(PROP + 'Cache hours', 24)) || 24;
-let cacheDays = storedCacheDays > 0 ? Math.round(storedCacheDays) : Math.max(1, Math.round(legacyCacheHours / 24));
-cacheDays = Math.max(1, Math.min(30, cacheDays));
-if (!(storedCacheDays > 0)) window.SetProperty(PROP + 'Cache days', cacheDays);
+// v3 raised the default from the pre-v2 24 h migration to 30 d. Applied once so
+// profiles carrying the old 1-day value pick it up; a deliberate choice above
+// 1 d is left alone, and the setting stays editable either way.
+if (!window.GetProperty(PROP + 'Cache days v3 default applied', false)) {
+    window.SetProperty(PROP + 'Cache days v3 default applied', true);
+    if (!(storedCacheDays > 1)) storedCacheDays = DEFAULT_CACHE_DAYS;
+}
+let cacheDays = Math.max(1, Math.min(30, storedCacheDays > 0 ? Math.round(storedCacheDays) : DEFAULT_CACHE_DAYS));
+window.SetProperty(PROP + 'Cache days', cacheDays);
 let calendarHorizonDays = normalizeHorizon(Number(window.GetProperty(PROP + 'Calendar horizon days', 365)) || 365);
+let calendarIncludeUntaggedArtists = !!window.GetProperty(PROP + 'Calendar name fallback', true);
 let viewMode = normalizeViewMode(window.GetProperty(PROP + 'View mode', 'artist'));
 let accentMode = normalizeAccentMode(window.GetProperty(PROP + 'Accent mode', 'shared'));
 let compactRows = !!window.GetProperty(PROP + 'Compact rows', false);
@@ -183,9 +206,12 @@ let calendarStats = {
     present: 0,
     missing: 0,
     matchedArtists: 0,
-    searched: 0,
-    capped: false
+    searched: 0
 };
+let calendarCache = null;
+let calendarBuckets = [];
+let calendarCacheDirty = false;
+let calendarCacheWrittenAt = 0;
 
 let displayRows = [];
 let statusText = 'Choose or play a track.';
@@ -221,7 +247,7 @@ const LIBRARY_RETRY_DELAY_MS = 1500;
 
 let generation = 0;
 let activeFetch = null;
-let calendarFetch = null;
+let calendarRun = null;
 let requestContexts = new Map();
 let requestQueue = [];
 let requestTimer = 0;
@@ -245,8 +271,7 @@ let artistCacheDebug = {
 };
 let calendarCacheDebug = {
     state: 'not checked', path: CALENDAR_CACHE_FILE, checkedAt: 0, savedAt: 0,
-    startDate: '', endDate: '', primaryTypes: [], releaseGroups: 0,
-    totalCount: 0, capped: false, error: ''
+    buckets: 0, staleBuckets: 0, failedBuckets: 0, releaseGroups: 0, error: ''
 };
 let artistPipelineDebug = {
     raw: 0, invalid: 0, duplicate: 0, typeRejected: 0,
@@ -399,39 +424,6 @@ function selectedPrimaryTypeValues() {
         if (releaseTypeFilters.primary[def.key]) values.push(def.value);
     }
     return values;
-}
-
-function normalizePrimaryTypeList(values) {
-    const seen = new Set();
-    const result = [];
-    const list = Array.isArray(values) ? values : [];
-    for (let i = 0; i < list.length; i++) {
-        const value = String(list[i] || '').toLowerCase();
-        if (!value || seen.has(value)) continue;
-        seen.add(value);
-        result.push(value);
-    }
-    result.sort();
-    return result;
-}
-
-function primaryTypeListsEqual(a, b) {
-    const aa = normalizePrimaryTypeList(a);
-    const bb = normalizePrimaryTypeList(b);
-    if (aa.length !== bb.length) return false;
-    for (let i = 0; i < aa.length; i++) {
-        if (aa[i] !== bb[i]) return false;
-    }
-    return true;
-}
-
-function calendarCachePrimaryTypes(cache) {
-    if (cache && Array.isArray(cache.primaryTypes) && cache.primaryTypes.length) {
-        return cache.primaryTypes.map(function (value) { return String(value); });
-    }
-
-    // Version 2.0 calendar caches contained Album and EP results only.
-    return ['Album', 'EP'];
 }
 
 function normalizeAccentMode(value) {
@@ -610,11 +602,32 @@ function startOfToday() {
     return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
 }
 
+function startOfMonth() {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+}
+
+function addMonths(date, months) {
+    return new Date(date.getFullYear(), date.getMonth() + months, date.getDate(), 0, 0, 0, 0);
+}
+
+function fnv1a(text) {
+    let hash = 0x811c9dc5;
+    const s = String(text || '');
+    for (let i = 0; i < s.length; i++) {
+        hash ^= s.charCodeAt(i);
+        hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;
+    }
+    return hash >>> 0;
+}
+
 function cancelNetworkWork() {
     generation++;
     requestQueue = [];
     activeFetch = null;
-    calendarFetch = null;
+    calendarRun = null;
+    // Whatever the run already fetched is kept; a cancel must never cost pages.
+    saveCalendarCacheFile(true);
     clearTimer(requestTimer);
     requestTimer = 0;
 }
@@ -700,11 +713,15 @@ function drawText(gr, text, font, colour, x, y, w, h, flags) {
 }
 
 function fillRoundRect(gr, x, y, w, h, radius, colour) {
+    x = Math.round(x); y = Math.round(y); w = Math.round(w); h = Math.round(h);
     if (w <= 0 || h <= 0) return;
-    if (typeof gr.FillRoundRect === 'function') {
-        gr.FillRoundRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h), Math.round(radius), Math.round(radius), colour);
+    // Callers scale width, height and radius independently, so rounding can
+    // leave radius * 2 larger than the box; GDI+ then rejects the arc.
+    var r = Math.min(Math.round(radius), Math.floor(w / 2), Math.floor(h / 2));
+    if (typeof gr.FillRoundRect === 'function' && r >= 1) {
+        gr.FillRoundRect(x, y, w, h, r, r, colour);
     } else {
-        gr.FillSolidRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h), colour);
+        gr.FillSolidRect(x, y, w, h, colour);
     }
 }
 
@@ -885,7 +902,7 @@ function rebuildLibraryIndex() {
     };
 
     if (viewMode === 'calendar') {
-        processCalendarReleaseGroups();
+        calendarLibraryChanged();
     } else if (rawReleaseGroups.length) {
         renderReleaseRows();
     } else {
@@ -1516,7 +1533,6 @@ function processCalendarReleaseGroups() {
     } else if (items.length) {
         statusText = 'Matched against ' + plural(artistCount, 'library artist') +
             '; ' + plural(mbidCount, 'artist', 'artists') + ' have MusicBrainz IDs.';
-        if (calendarStats.capped) statusText += ' Search results were capped.';
         statusIsError = false;
     } else if (calendarRawReleaseGroups.length) {
         statusText = 'No upcoming MusicBrainz releases of the selected types matched your library artists.';
@@ -1604,91 +1620,312 @@ function cacheFresh(cache) {
     return cache && Number(cache.savedAt) > 0 && (Date.now() - Number(cache.savedAt)) < cacheDays * 24 * 60 * 60 * 1000;
 }
 
-function desiredCalendarRange() {
-    const start = startOfToday();
-    const end = addDays(start, calendarHorizonDays);
+// The queried span is anchored to the first of the current month and always
+// covers CALENDAR_QUERY_MONTHS, so it is a stable superset of every selectable
+// horizon: the cache key turns over monthly, not at every midnight, and the
+// displayed window is narrowed locally by calendarDateWindow().
+function calendarQuerySpan() {
+    const start = startOfMonth();
+    const end = addDays(addMonths(start, CALENDAR_QUERY_MONTHS), -1);
     return { start: dateToIsoLocal(start), end: dateToIsoLocal(end) };
 }
 
-function readCalendarCache() {
-    const debug = {
-        state: 'missing', path: CALENDAR_CACHE_FILE, checkedAt: Date.now(), savedAt: 0,
-        startDate: '', endDate: '', primaryTypes: [], releaseGroups: 0,
-        totalCount: 0, capped: false, error: ''
-    };
+function encodedLength(text) {
     try {
-        if (!utils.IsFile(CALENDAR_CACHE_FILE)) {
-            calendarCacheDebug = debug;
-            return null;
-        }
-        debug.state = 'invalid';
-        const data = safeJson(utils.ReadTextFile(CALENDAR_CACHE_FILE, 65001));
-        if (!data || !Array.isArray(data.releaseGroups)) {
-            debug.error = 'JSON is missing a releaseGroups array.';
-            calendarCacheDebug = debug;
-            return null;
-        }
-        debug.state = 'valid';
-        debug.savedAt = Number(data.savedAt || 0);
-        debug.startDate = String(data.startDate || '');
-        debug.endDate = String(data.endDate || '');
-        debug.primaryTypes = calendarCachePrimaryTypes(data);
-        debug.releaseGroups = data.releaseGroups.length;
-        debug.totalCount = Number(data.totalCount || data.releaseGroups.length || 0);
-        debug.capped = !!data.capped;
-        calendarCacheDebug = debug;
-        return data;
+        return encodeURIComponent(String(text || '')).length;
     } catch (e) {
-        debug.state = 'read error';
-        debug.error = debugSnippet(e, 180);
-        calendarCacheDebug = debug;
-        return null;
+        return String(text || '').length * 3;
     }
 }
 
-function writeCalendarCache(fetchState) {
+// Artists are hashed into a power-of-two number of buckets rather than sliced
+// from a sorted list: adding one artist then invalidates one bucket instead of
+// shifting every batch boundary and expiring the entire cache.
+function calendarBucketCount(totalChars) {
+    const needed = Math.max(1, Math.ceil(Number(totalChars || 0) / CALENDAR_QUERY_BUDGET_CHARS));
+    let count = 1;
+    while (count < needed) count *= 2;
+    return count;
+}
+
+function buildCalendarBuckets() {
+    const buckets = [];
+
+    const mbids = Array.from(libraryArtistMbids);
+    if (mbids.length) {
+        const count = calendarBucketCount(mbids.length * 55);
+        const groups = new Array(count);
+        for (let i = 0; i < mbids.length; i++) {
+            const index = fnv1a(mbids[i]) % count;
+            if (!groups[index]) groups[index] = [];
+            groups[index].push(mbids[i]);
+        }
+        for (let i = 0; i < count; i++) {
+            if (!groups[i] || !groups[i].length) continue;
+            groups[i].sort();
+            buckets.push({ key: 'id:' + count + ':' + i, kind: 'mbid', members: groups[i], names: [] });
+        }
+    }
+
+    if (calendarIncludeUntaggedArtists) {
+        // Artists already covered by an arid query, including each half of a
+        // "A; B" credit, must not also get a fuzzier name query.
+        const covered = new Set();
+        libraryArtistNameByMbid.forEach(function (name) {
+            const variants = artistNameVariants(name);
+            for (let i = 0; i < variants.length; i++) {
+                const key = normalizeArtist(variants[i]);
+                if (key) covered.add(key);
+            }
+        });
+
+        const pending = [];
+        let chars = 0;
+        libraryArtistNameByKey.forEach(function (display, key) {
+            if (covered.has(key)) return;
+            const name = cleanSpaces(display);
+            // A combined "A; B" credit is indexed alongside its parts; querying
+            // the joined string matches nothing on MusicBrainz.
+            if (!name || name.indexOf(';') >= 0 || isGenericArtistName(name)) return;
+            pending.push({ key: key, name: name });
+            chars += encodedLength(name) + 27;
+        });
+
+        if (pending.length) {
+            const count = calendarBucketCount(chars);
+            const groups = new Array(count);
+            for (let i = 0; i < pending.length; i++) {
+                const index = fnv1a(pending[i].key) % count;
+                if (!groups[index]) groups[index] = [];
+                groups[index].push(pending[i]);
+            }
+            for (let i = 0; i < count; i++) {
+                if (!groups[i] || !groups[i].length) continue;
+                groups[i].sort(function (a, b) { return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0); });
+                buckets.push({
+                    key: 'nm:' + count + ':' + i,
+                    kind: 'name',
+                    members: groups[i].map(function (entry) { return entry.key; }),
+                    names: groups[i].map(function (entry) { return entry.name; })
+                });
+            }
+        }
+    }
+
+    return buckets;
+}
+
+// No primary-type or status clause: types are filtered locally by
+// releaseAllowed(), and status:official silently dropped upcoming release
+// groups, which frequently have no release status set yet.
+function calendarBucketQuery(bucket, span) {
+    const clauses = [];
+    if (bucket.kind === 'mbid') {
+        for (let i = 0; i < bucket.members.length; i++) clauses.push('arid:' + bucket.members[i]);
+    } else {
+        for (let i = 0; i < bucket.names.length; i++) {
+            clauses.push('artistname:"' + escapeLucene(bucket.names[i]) + '"');
+        }
+    }
+    return 'firstreleasedate:[' + span.start + ' TO ' + span.end + '] AND (' + clauses.join(' OR ') + ')';
+}
+
+// Only the fields the calendar pipeline reads. Raw search rows carry releases,
+// tags and scores, which made a full cache tens of megabytes to write and parse.
+function slimReleaseGroup(rg) {
+    const credits = Array.isArray(rg && rg['artist-credit']) ? rg['artist-credit'] : [];
+    const slimCredits = [];
+    for (let i = 0; i < credits.length; i++) {
+        const credit = credits[i] || {};
+        const artist = credit.artist || {};
+        const entry = {};
+        if (credit.name) entry.name = String(credit.name);
+        if (credit.joinphrase) entry.joinphrase = String(credit.joinphrase);
+        if (artist.id || artist.name) {
+            entry.artist = {};
+            if (artist.id) entry.artist.id = String(artist.id);
+            if (artist.name) entry.artist.name = String(artist.name);
+        }
+        slimCredits.push(entry);
+    }
+
+    const slim = {
+        id: String((rg && rg.id) || ''),
+        title: String((rg && rg.title) || ''),
+        'first-release-date': String((rg && rg['first-release-date']) || ''),
+        'primary-type': String((rg && rg['primary-type']) || ''),
+        'artist-credit': slimCredits
+    };
+    const secondary = Array.isArray(rg && rg['secondary-types']) ? rg['secondary-types'].filter(Boolean) : [];
+    if (secondary.length) slim['secondary-types'] = secondary.map(String);
+    if (!slimCredits.length && rg && rg['artist-credit-phrase']) {
+        slim['artist-credit-phrase'] = String(rg['artist-credit-phrase']);
+    }
+    return slim;
+}
+
+function emptyCalendarCache() {
+    return { version: CALENDAR_CACHE_VERSION, savedAt: 0, buckets: {} };
+}
+
+function loadCalendarCacheFile() {
+    if (calendarCache) return calendarCache;
+
+    let state = 'missing';
+    let error = '';
+    try {
+        // Reclaim the v2 file's space instead of parsing it; it could hold
+        // 10,000 raw rows and cost seconds on every activation.
+        if (utils.IsFile(CALENDAR_LEGACY_CACHE_FILE)) {
+            try { utils.WriteTextFile(CALENDAR_LEGACY_CACHE_FILE, '', false); } catch (e) { }
+        }
+
+        if (utils.IsFile(CALENDAR_CACHE_FILE)) {
+            const data = safeJson(utils.ReadTextFile(CALENDAR_CACHE_FILE, 65001));
+            if (data && Number(data.version) === CALENDAR_CACHE_VERSION && data.buckets && typeof data.buckets === 'object') {
+                calendarCache = data;
+                state = 'valid';
+            } else {
+                state = 'invalid';
+                error = 'Unsupported or corrupt cache file; it is being rebuilt.';
+            }
+        }
+    } catch (e) {
+        state = 'read error';
+        error = debugSnippet(e, 180);
+        reportFailure('the calendar cache could not be read', e);
+    }
+
+    if (!calendarCache) calendarCache = emptyCalendarCache();
+    refreshCalendarCacheDebug(state === 'missing' ? 'empty' : state, error);
+    return calendarCache;
+}
+
+function saveCalendarCacheFile(force) {
+    if (!calendarCache || !calendarCacheDirty) return;
+    if (!force && Date.now() - calendarCacheWrittenAt < CALENDAR_CACHE_WRITE_INTERVAL_MS) return;
+
     try {
         utils.CreateFolder(CACHE_DIR);
-        const data = {
-            savedAt: Date.now(),
-            startDate: fetchState.startDate,
-            endDate: fetchState.endDate,
-            totalCount: fetchState.sourceTotal,
-            capped: fetchState.sourceTotal > MAX_CALENDAR_SEARCH_RESULTS,
-            primaryTypes: fetchState.primaryTypes,
-            releaseGroups: fetchState.releaseGroups
-        };
-        utils.WriteTextFile(CALENDAR_CACHE_FILE, JSON.stringify(data), false);
-        calendarCacheDebug = {
-            state: 'valid', path: CALENDAR_CACHE_FILE, checkedAt: Date.now(), savedAt: data.savedAt,
-            startDate: data.startDate, endDate: data.endDate,
-            primaryTypes: data.primaryTypes.slice(), releaseGroups: data.releaseGroups.length,
-            totalCount: Number(data.totalCount || 0), capped: !!data.capped, error: ''
-        };
+        // Drop entries whose bucket no longer exists (the library roughly
+        // doubled, so the bucket count did too) instead of growing forever.
+        if (libraryReady && calendarBuckets.length) {
+            const live = new Set();
+            for (let i = 0; i < calendarBuckets.length; i++) live.add(calendarBuckets[i].key);
+            const keys = Object.keys(calendarCache.buckets);
+            for (let i = 0; i < keys.length; i++) {
+                if (!live.has(keys[i])) delete calendarCache.buckets[keys[i]];
+            }
+        }
+        calendarCache.version = CALENDAR_CACHE_VERSION;
+        calendarCache.savedAt = Date.now();
+        utils.WriteTextFile(CALENDAR_CACHE_FILE, JSON.stringify(calendarCache), false);
+        calendarCacheDirty = false;
+        calendarCacheWrittenAt = Date.now();
+        refreshCalendarCacheDebug('valid', '');
     } catch (e) {
-        calendarCacheDebug = {
-            state: 'write error', path: CALENDAR_CACHE_FILE, checkedAt: Date.now(), savedAt: 0,
-            startDate: fetchState.startDate, endDate: fetchState.endDate,
-            primaryTypes: fetchState.primaryTypes.slice(), releaseGroups: fetchState.releaseGroups.length,
-            totalCount: Number(fetchState.sourceTotal || 0), capped: false, error: debugSnippet(e, 180)
-        };
-        console.log('Discography Checker: calendar cache write failed: ' + e);
+        refreshCalendarCacheDebug('write error', debugSnippet(e, 180));
+        reportFailure('the calendar cache could not be written', e);
     }
 }
 
-function calendarCacheScopeMatches(cache) {
-    if (!cache) return false;
-    // Calendar searches can hit the global 10,000-row cap. A broader cached
-    // query is therefore not guaranteed to contain the complete subset for a
-    // narrower date/type selection. Reuse only the exact query scope.
-    const desired = desiredCalendarRange();
-    if (String(cache.startDate || '') !== desired.start || String(cache.endDate || '') !== desired.end) return false;
-    return primaryTypeListsEqual(calendarCachePrimaryTypes(cache), selectedPrimaryTypeValues());
+// A bucket is only complete for the artists it was queried for, so a newly
+// added artist that hashes into it makes it stale even inside its lifetime.
+function calendarBucketFresh(bucket) {
+    if (!calendarCache) return false;
+    const entry = calendarCache.buckets[bucket.key];
+    if (!entry || !Array.isArray(entry.rows) || !(Number(entry.savedAt) > 0)) return false;
+
+    const span = calendarQuerySpan();
+    if (String(entry.startDate || '') !== span.start || String(entry.endDate || '') !== span.end) return false;
+    if (Date.now() - Number(entry.savedAt) >= cacheDays * 24 * 60 * 60 * 1000) return false;
+
+    const cached = new Set(Array.isArray(entry.members) ? entry.members : []);
+    for (let i = 0; i < bucket.members.length; i++) {
+        if (!cached.has(bucket.members[i])) return false;
+    }
+    return true;
 }
 
-function calendarCacheFresh(cache) {
-    if (!calendarCacheScopeMatches(cache) || !Number(cache.savedAt)) return false;
-    return (Date.now() - Number(cache.savedAt)) < cacheDays * 24 * 60 * 60 * 1000;
+// Stale and previously failed buckets still contribute their last good rows, so
+// the calendar never blanks out while it refreshes.
+function collectCalendarRows() {
+    const rows = [];
+    if (calendarCache) {
+        for (let i = 0; i < calendarBuckets.length; i++) {
+            const entry = calendarCache.buckets[calendarBuckets[i].key];
+            if (entry && Array.isArray(entry.rows)) Array.prototype.push.apply(rows, entry.rows);
+        }
+    }
+    calendarRawReleaseGroups = rows;
+}
+
+function storeCalendarBucket(bucket, rows, errorText) {
+    if (!calendarCache) return;
+
+    if (errorText) {
+        const previous = calendarCache.buckets[bucket.key];
+        if (previous) previous.error = errorText;
+        else {
+            calendarCache.buckets[bucket.key] = {
+                members: bucket.members.slice(), savedAt: 0,
+                startDate: '', endDate: '', rows: [], error: errorText
+            };
+        }
+    } else {
+        const span = calendarQuerySpan();
+        calendarCache.buckets[bucket.key] = {
+            members: bucket.members.slice(),
+            savedAt: Date.now(),
+            startDate: span.start,
+            endDate: span.end,
+            rows: rows || [],
+            error: ''
+        };
+    }
+
+    calendarCacheDirty = true;
+    saveCalendarCacheFile(false);
+    collectCalendarRows();
+    refreshCalendarCacheDebug('valid', '');
+    processCalendarReleaseGroups();
+}
+
+function calendarBucketArtistCount() {
+    let count = 0;
+    for (let i = 0; i < calendarBuckets.length; i++) count += calendarBuckets[i].members.length;
+    return count;
+}
+
+function refreshCalendarCacheDebug(state, error) {
+    let rows = 0;
+    let failed = 0;
+    let savedAt = 0;
+    const keys = calendarCache ? Object.keys(calendarCache.buckets) : [];
+    for (let i = 0; i < keys.length; i++) {
+        const entry = calendarCache.buckets[keys[i]];
+        if (!entry) continue;
+        rows += Array.isArray(entry.rows) ? entry.rows.length : 0;
+        if (Number(entry.savedAt) > savedAt) savedAt = Number(entry.savedAt);
+        if (entry.error) failed++;
+    }
+
+    let stale = 0;
+    for (let i = 0; i < calendarBuckets.length; i++) {
+        if (!calendarBucketFresh(calendarBuckets[i])) stale++;
+    }
+
+    calendarCacheDebug = {
+        state: String(state || calendarCacheDebug.state),
+        path: CALENDAR_CACHE_FILE,
+        checkedAt: Date.now(),
+        savedAt: savedAt,
+        buckets: keys.length,
+        staleBuckets: stale,
+        failedBuckets: failed,
+        releaseGroups: rows,
+        error: String(error || '')
+    };
 }
 
 function selectedSecondaryTypeValues() {
@@ -1720,48 +1957,29 @@ function describeArtistCacheDebug() {
         (fresh ? '; expires in ' + debugDuration(lifetime - age) : '; network refresh required') + '.';
 }
 
-function calendarCacheFreshnessParts(debug) {
-    const desired = desiredCalendarRange();
-    const requiredTypes = selectedPrimaryTypeValues();
-    const age = debug.savedAt > 0 ? Date.now() - debug.savedAt : Number.POSITIVE_INFINITY;
-    const lifetime = cacheDays * 24 * 60 * 60 * 1000;
-    const ageFresh = age < lifetime;
-    const rangeFresh = !!debug.startDate && !!debug.endDate && debug.startDate === desired.start && debug.endDate === desired.end;
-    const typesFresh = primaryTypeListsEqual(debug.primaryTypes || [], requiredTypes);
-    return {
-        desired: desired,
-        requiredTypes: requiredTypes,
-        age: age,
-        lifetime: lifetime,
-        ageFresh: ageFresh,
-        rangeFresh: rangeFresh,
-        typesFresh: typesFresh,
-        fresh: ageFresh && rangeFresh && typesFresh
-    };
-}
-
 function describeCalendarCacheDebug() {
     const debug = calendarCacheDebug;
-    if (debug.state !== 'valid') {
+    if (debug.state === 'not checked' || debug.state === 'read error' ||
+        debug.state === 'write error' || debug.state === 'invalid') {
         return 'State: ' + debug.state + (debug.error ? '; ' + debug.error : '') +
-            (debug.checkedAt ? '; checked ' + debugDateTime(debug.checkedAt) : '');
+            (debug.checkedAt ? '; checked ' + debugDateTime(debug.checkedAt) : '') + '.';
     }
 
-    const parts = calendarCacheFreshnessParts(debug);
-    const problems = [];
-    if (!parts.ageFresh) problems.push(debug.savedAt > 0 ? 'expired by age' : 'missing save timestamp');
-    if (!parts.rangeFresh) problems.push('cached range is not an exact match for ' + parts.desired.start + ' to ' + parts.desired.end);
-    if (!parts.typesFresh) problems.push('cached primary types are not an exact match for current selection');
-
-    return 'State: ' + (parts.fresh ? 'fresh' : 'refresh required') + '; ' +
-        plural(debug.releaseGroups, 'cached search row') +
-        (debug.totalCount && debug.totalCount !== debug.releaseGroups ? ' of ' + debug.totalCount + ' reported' : '') +
-        '; saved ' + debugDateTime(debug.savedAt) +
-        (debug.savedAt > 0 ? ' (' + debugDuration(parts.age) + ' ago)' : '') +
-        '; cached range ' + (debug.startDate || '?') + ' to ' + (debug.endDate || '?') +
-        '; types ' + ((debug.primaryTypes || []).join(', ') || '(none)') +
-        (debug.capped ? '; capped at ' + MAX_CALENDAR_SEARCH_RESULTS : '') +
-        (problems.length ? '; reason: ' + problems.join('; ') : '') + '.';
+    const span = calendarQuerySpan();
+    const age = debug.savedAt > 0 ? Date.now() - debug.savedAt : 0;
+    // A query group is one batched MusicBrainz request covering many artists,
+    // so always name the artist count beside it.
+    const coverage = calendarBuckets.length + ' batched query group(s) covering ' +
+        plural(calendarBucketArtistCount(), 'artist');
+    return 'State: ' + (debug.staleBuckets
+        ? debug.staleBuckets + ' of ' + coverage + ' need a refresh'
+        : (calendarBuckets.length ? 'complete: ' + coverage : 'no query groups built yet')) +
+        '; ' + plural(debug.releaseGroups, 'cached row') +
+        ' across ' + plural(debug.buckets, 'stored group') +
+        (debug.failedBuckets ? '; ' + debug.failedBuckets + ' last failed and kept older rows' : '') +
+        '; newest save ' + debugDateTime(debug.savedAt) +
+        (debug.savedAt > 0 ? ' (' + debugDuration(age) + ' ago)' : '') +
+        '; lifetime ' + cacheDays + ' d; cached span ' + span.start + ' to ' + span.end + '.';
 }
 
 function describeArtistPipelineDebug() {
@@ -1793,15 +2011,16 @@ function diagnoseCurrentState() {
             return 'The local library artist index is still being built.';
         }
         if (!libraryArtistNameKeys.size && !libraryArtistMbids.size) return 'The library index contains no usable artist names or MusicBrainz artist IDs.';
-        if (calendarFetch) return 'A MusicBrainz calendar refresh is in progress; cached rows may be displayed until it completes.';
+        if (calendarRun) return 'A MusicBrainz calendar refresh is in progress; each query group batches many artists into one request, and already-cached rows stay displayed while it runs.';
         if (calendarItems.length) return 'Calendar has displayable results. The pipeline row below shows any releases filtered out along the way.';
 
         const debug = calendarPipelineDebug;
         if (!debug.raw) {
-            if (calendarCacheDebug.state === 'valid' && calendarCacheDebug.releaseGroups === 0 && calendarCacheFreshnessParts(calendarCacheDebug).fresh) {
-                return 'The calendar cache contains a fresh empty MusicBrainz result for the current horizon/types, so no network refresh is needed yet. Change the scope, force Refresh, or wait for the cache lifetime to expire.';
+            if (!calendarBuckets.length) return 'No query groups were built, so nothing has been requested. Check that the library index found artist MBIDs or names.';
+            if (!calendarCacheDebug.staleBuckets) {
+                return 'Every query group is cached and fresh, and MusicBrainz reported no upcoming releases for any of the artists in them. Use Refresh release calendar to re-query before the cache lifetime expires.';
             }
-            return 'No MusicBrainz calendar search rows are loaded for the requested horizon/types. Check Calendar cache and Network below to see whether this is a fresh cached empty result, an expired/missing cache, or a request failure.';
+            return 'No cached rows yet for the current query groups. Calendar cache below shows how many still need a refresh; Network shows whether requests are running or failing.';
         }
         if (debug.typeRejected && debug.typeRejected + debug.invalid + debug.duplicate >= debug.raw) {
             return 'MusicBrainz returned rows, but none survive the configured primary/secondary release-type filters.';
@@ -1849,11 +2068,30 @@ function describeArtistIdentityDebug() {
 }
 
 function describeCalendarScopeDebug() {
-    const range = desiredCalendarRange();
+    const span = calendarQuerySpan();
+    const bounds = calendarDateWindow();
     const primary = selectedPrimaryTypeValues();
     const secondary = selectedSecondaryTypeValues();
-    return 'Requested range: ' + range.start + ' to ' + range.end + ' (' + calendarHorizonDays + ' d); primary: ' +
-        (primary.join(', ') || '(none)') + '; allowed secondary: ' + (secondary.join(', ') || '(none)') + '.';
+    let mbidGroups = 0;
+    let nameGroups = 0;
+    let mbidArtists = 0;
+    let nameArtists = 0;
+    for (let i = 0; i < calendarBuckets.length; i++) {
+        if (calendarBuckets[i].kind === 'name') {
+            nameGroups++;
+            nameArtists += calendarBuckets[i].members.length;
+        } else {
+            mbidGroups++;
+            mbidArtists += calendarBuckets[i].members.length;
+        }
+    }
+    return 'Queried span: ' + span.start + ' to ' + span.end + ' (' + CALENDAR_QUERY_MONTHS + ' months, shared by every horizon); displayed: ' +
+        dateToIsoLocal(bounds.today) + ' to ' + dateToIsoLocal(bounds.end) + ' (' + calendarHorizonDays + ' d); ' +
+        plural(mbidGroups, 'batched MBID query group') + ' covering ' + plural(mbidArtists, 'artist') + '; ' +
+        plural(nameGroups, 'batched name query group') + ' covering ' + plural(nameArtists, 'artist') +
+        (calendarIncludeUntaggedArtists ? '' : ' (name fallback disabled)') +
+        '; primary types filtered locally: ' + (primary.join(', ') || '(none)') +
+        '; allowed secondary: ' + (secondary.join(', ') || '(none)') + '.';
 }
 
 function describeLibraryDebug() {
@@ -1875,9 +2113,9 @@ function describeNetworkDebug() {
         live.push('discography fetch ' + activeFetch.releaseGroups.length +
             (activeFetch.total ? '/' + activeFetch.total : '') + ' rows');
     }
-    if (calendarFetch) {
-        live.push('calendar fetch ' + calendarFetch.releaseGroups.length +
-            (calendarFetch.total ? '/' + calendarFetch.total : '') + ' rows');
+    if (calendarRun) {
+        live.push('calendar refresh ' + (calendarRun.completed + calendarRun.failed) +
+            '/' + calendarRun.pending.length + ' query groups, ' + calendarRun.rows.length + ' rows in current group');
     }
     if (requestQueue.length) live.push(requestQueue.length + ' queued request(s)');
     if (requestContexts.size) live.push(requestContexts.size + ' HTTP request(s) in flight');
@@ -2031,8 +2269,19 @@ function handleRequestFailure(context, status, detail) {
         return;
     }
 
-    activeFetch = null;
-    calendarFetch = null;
+    // One failing query group must not end the whole calendar refresh.
+    const failedBucket = context.kind === 'calendar-bucket' && calendarRun &&
+        calendarRun.generation === generation &&
+        calendarRun.pending[calendarRun.index] &&
+        calendarRun.pending[calendarRun.index].key === context.bucketKey
+        ? calendarRun.pending[calendarRun.index]
+        : null;
+
+    if (!failedBucket) {
+        activeFetch = null;
+        calendarRun = null;
+    }
+
     if (retry && !retry.scheduled) {
         const cooldown = Math.max(0, mbBlockedUntil - Date.now());
         const fallbackText = hasFallback ? '; cached data remains displayed' : '';
@@ -2046,6 +2295,13 @@ function handleRequestFailure(context, status, detail) {
     statusIsError = true;
     if (detail) console.log('Discography Checker request failure: ' + detail);
     window.Repaint();
+
+    if (failedBucket) {
+        storeCalendarBucket(failedBucket, null, debugSnippet(detail || ('HTTP ' + status), 120));
+        advanceCalendarRun(false);
+        return;
+    }
+
     if (requestQueue.length) pumpRequestQueue();
 }
 
@@ -2096,56 +2352,104 @@ function requestReleasePage(offset, requestGeneration) {
     });
 }
 
-function calendarSearchQuery(startDate, endDate, primaryTypes) {
-    const clauses = primaryTypes.map(function (value) {
-        return 'primarytype:' + value;
-    });
-    return 'firstreleasedate:[' + startDate + ' TO ' + endDate + '] AND (' + clauses.join(' OR ') + ') AND status:official';
+function calendarRunProgressText() {
+    if (!calendarRun) return statusText;
+    const done = calendarRun.completed + calendarRun.failed;
+    return (calendarRawReleaseGroups.length ? 'Updating' : 'Building') +
+        ' the release calendar... ' + done + ' / ' + calendarRun.pending.length + ' query groups (' +
+        plural(calendarBucketArtistCount(), 'artist') + ' total)';
 }
 
-function beginCalendarFetch() {
-    const primaryTypes = selectedPrimaryTypeValues();
-    if (!primaryTypes.length) {
-        calendarFetch = null;
+// Only the buckets that are actually stale are queued; a normal day therefore
+// issues no requests at all.
+function startCalendarRun(forceNetwork) {
+    if (viewMode !== 'calendar' || !libraryReady) return;
+
+    const pending = [];
+    for (let i = 0; i < calendarBuckets.length; i++) {
+        if (forceNetwork || !calendarBucketFresh(calendarBuckets[i])) pending.push(calendarBuckets[i]);
+    }
+
+    if (!pending.length) {
+        calendarRun = null;
+        setNetworkDebug('skipped', 'calendar',
+            'All ' + calendarBuckets.length + ' query group(s), covering ' + plural(calendarBucketArtistCount(), 'artist') +
+            ', are cached and within the ' + cacheDays + ' d lifetime.', 0);
         processCalendarReleaseGroups();
-        setNetworkDebug('skipped', 'calendar', 'No primary release types are selected.', 0);
-        statusText = 'No primary release types are selected. Use Release-type filters in the right-click menu.';
-        statusIsError = false;
-        window.Repaint();
         return;
     }
 
-    const range = desiredCalendarRange();
-    calendarFetch = {
+    calendarRun = {
         generation: generation,
-        startDate: range.start,
-        endDate: range.end,
-        primaryTypes: primaryTypes,
-        query: calendarSearchQuery(range.start, range.end, primaryTypes),
-        offset: 0,
-        total: 0,
-        sourceTotal: 0,
-        releaseGroups: []
+        span: calendarQuerySpan(),
+        pending: pending,
+        index: 0,
+        completed: 0,
+        failed: 0,
+        rows: []
     };
-
-    setNetworkDebug('fetching', 'calendar', 'Searching ' + range.start + ' to ' + range.end + ' for ' + primaryTypes.join(', ') + '.', 0);
-    statusText = calendarRawReleaseGroups.length
-        ? 'Updating the upcoming-release calendar...'
-        : 'Loading the upcoming-release calendar...';
-    statusIsError = false;
-    window.Repaint();
-    requestCalendarPage(0, generation);
+    setNetworkDebug('fetching', 'calendar',
+        'Refreshing ' + pending.length + ' of ' + calendarBuckets.length + ' query group(s), covering ' +
+        plural(calendarBucketArtistCount(), 'artist') + ', for ' +
+        calendarRun.span.start + ' to ' + calendarRun.span.end + '.', 0);
+    requestCalendarBucketPage(0);
 }
 
-function requestCalendarPage(offset, requestGeneration) {
-    if (!calendarFetch) return;
+function requestCalendarBucketPage(offset) {
+    if (!calendarRun) return;
+    const bucket = calendarRun.pending[calendarRun.index];
+    if (!bucket) {
+        finishCalendarRun();
+        return;
+    }
+
+    statusText = calendarRunProgressText();
+    statusIsError = false;
+    window.Repaint();
+
     enqueueRequest({
-        kind: 'calendar-release-groups',
-        generation: requestGeneration,
+        kind: 'calendar-bucket',
+        generation: calendarRun.generation,
+        bucketKey: bucket.key,
         offset: offset,
-        url: API_ROOT + '/release-group?fmt=json&limit=' + PAGE_SIZE + '&offset=' + offset + '&query=' + encodeURIComponent(calendarFetch.query),
+        url: API_ROOT + '/release-group?fmt=json&limit=' + PAGE_SIZE + '&offset=' + offset +
+            '&query=' + encodeURIComponent(calendarBucketQuery(bucket, calendarRun.span)),
         retries: 0
     });
+}
+
+function advanceCalendarRun(succeeded) {
+    if (!calendarRun) return;
+    if (succeeded) calendarRun.completed++;
+    else calendarRun.failed++;
+    calendarRun.index++;
+    calendarRun.rows = [];
+    if (calendarRun.index >= calendarRun.pending.length) {
+        finishCalendarRun();
+        return;
+    }
+    requestCalendarBucketPage(0);
+}
+
+function finishCalendarRun() {
+    if (!calendarRun) return;
+    const total = calendarRun.pending.length;
+    const failed = calendarRun.failed;
+    calendarRun = null;
+
+    saveCalendarCacheFile(true);
+    collectCalendarRows();
+    refreshCalendarCacheDebug('valid', '');
+    setNetworkDebug(failed ? 'completed with errors' : 'completed', 'calendar',
+        (total - failed) + ' of ' + total + ' query group(s) refreshed' +
+        (failed ? '; ' + failed + ' failed and kept their previous rows' : '') + '.', 0);
+    processCalendarReleaseGroups();
+
+    // A skipped group is not a panel error, but it must not vanish silently.
+    if (failed) {
+        statusText += ' ' + failed + ' of ' + total + ' query groups could not be refreshed.';
+        window.Repaint();
+    }
 }
 
 function chooseArtistCandidate(queryArtist, artists) {
@@ -2261,30 +2565,26 @@ function on_http_request_done(taskId, success, responseText, status) {
         return;
     }
 
-    if (context.kind === 'calendar-release-groups') {
-        if (!calendarFetch || calendarFetch.generation !== generation) return;
+    if (context.kind === 'calendar-bucket') {
+        if (!calendarRun || calendarRun.generation !== generation) return;
+        const bucket = calendarRun.pending[calendarRun.index];
+        if (!bucket || bucket.key !== context.bucketKey) return;
 
         const groups = Array.isArray(data['release-groups']) ? data['release-groups'] : [];
-        calendarFetch.sourceTotal = Number(data.count || data['release-group-count'] || 0);
-        calendarFetch.total = Math.min(MAX_CALENDAR_SEARCH_RESULTS, calendarFetch.sourceTotal);
-        Array.prototype.push.apply(calendarFetch.releaseGroups, groups);
+        for (let i = 0; i < groups.length; i++) calendarRun.rows.push(slimReleaseGroup(groups[i]));
 
-        const loaded = calendarFetch.releaseGroups.length;
+        const reported = Number(data.count || data['release-group-count'] || 0);
+        const total = Math.min(MAX_CALENDAR_SEARCH_RESULTS, reported);
         const nextOffset = context.offset + groups.length;
-        if (nextOffset < calendarFetch.total && groups.length) {
-            statusText = 'Loading upcoming releases... ' + loaded + ' / ' + calendarFetch.total;
-            statusIsError = false;
-            window.Repaint();
-            requestCalendarPage(nextOffset, generation);
+        if (nextOffset < total && groups.length) {
+            requestCalendarBucketPage(nextOffset);
             return;
         }
 
-        calendarRawReleaseGroups = calendarFetch.releaseGroups;
-        calendarStats.capped = calendarFetch.sourceTotal > MAX_CALENDAR_SEARCH_RESULTS;
-        setNetworkDebug('completed', 'calendar', 'Loaded ' + calendarRawReleaseGroups.length + ' search row(s); MusicBrainz reported ' + calendarFetch.sourceTotal + '.', status);
-        writeCalendarCache(calendarFetch);
-        calendarFetch = null;
-        processCalendarReleaseGroups();
+        // storeCalendarBucket() persists before the next group starts, so an
+        // interrupted run never loses the groups it already fetched.
+        storeCalendarBucket(bucket, calendarRun.rows, '');
+        advanceCalendarRun(true);
     }
 }
 
@@ -2440,25 +2740,30 @@ function forceRefreshArtist() {
 function loadCalendar(forceNetwork) {
     if (viewMode !== 'calendar') return;
 
-    const cached = readCalendarCache();
-    const scopeMatch = calendarCacheScopeMatches(cached);
-    if (cached && scopeMatch) {
-        calendarRawReleaseGroups = cached.releaseGroups;
-        calendarStats.capped = !!cached.capped;
-        processCalendarReleaseGroups();
-    } else {
-        // Never display/fallback to a different query scope. In particular,
-        // a capped Album+EP+Single result is not a complete Album-only cache.
-        calendarRawReleaseGroups = [];
-        calendarItems = [];
-        resetCalendarPipelineDebug();
-        calendarStats = { total: 0, present: 0, missing: 0, matchedArtists: 0, searched: 0, capped: false };
-        resetDisplayRows([]);
-        window.Repaint();
-    }
+    loadCalendarCacheFile();
+    calendarBuckets = libraryReady ? buildCalendarBuckets() : [];
+    collectCalendarRows();
+    refreshCalendarCacheDebug(calendarCacheDebug.state, calendarCacheDebug.error);
+    processCalendarReleaseGroups();
 
-    if (!forceNetwork && calendarCacheFresh(cached)) return;
-    beginCalendarFetch();
+    if (!libraryReady) return;
+    if (!calendarBuckets.length) {
+        setNetworkDebug('skipped', 'calendar', 'The library index produced no artists to query.', 0);
+        return;
+    }
+    startCalendarRun(!!forceNetwork);
+}
+
+// A library change can add an artist to an existing bucket, which makes that
+// bucket incomplete rather than merely old; re-derive and top up the stale ones.
+function calendarLibraryChanged() {
+    if (viewMode !== 'calendar' || initialLoadPending || !libraryReady) return;
+    loadCalendarCacheFile();
+    calendarBuckets = buildCalendarBuckets();
+    collectCalendarRows();
+    refreshCalendarCacheDebug('valid', '');
+    processCalendarReleaseGroups();
+    if (!calendarRun) startCalendarRun(false);
 }
 
 function activateArtistMode() {
@@ -2509,7 +2814,8 @@ function setCalendarHorizon(days) {
     if (next === calendarHorizonDays) return;
     window.SetProperty(PROP + 'Calendar horizon days', next);
     calendarHorizonDays = next;
-    if (viewMode === 'calendar') activateCalendarMode(true);
+    // The cached span already covers every horizon, so this is a local re-filter.
+    if (viewMode === 'calendar') processCalendarReleaseGroups();
 }
 
 // -----------------------------------------------------------------------------
@@ -2698,11 +3004,6 @@ function paintItemRow(gr, row, index, y) {
 }
 
 function paintHeader(gr) {
-    // Paint an opaque backdrop after the scrollable rows. This masks the part
-    // of a row that is above the viewport boundary and prevents its text from
-    // overlapping the header card while scrolling.
-    gr.FillSolidRect(0, 0, ww, HEADER_H, colours.background);
-
     // Floating bordered card with a left accent strip - the same header
     // style as playback-timeline_panel.js and playback_history_panel.js.
     const card = headerCardRect();
@@ -2734,6 +3035,10 @@ function on_paint(gr) {
     libraryRebuildGate.runFromPaint();
     runPendingSourceRefresh();
 
+    // Rectangular backdrop before anti-aliasing: GDI+ shape smoothing filters the
+    // DrawImage destination edge into a visible seam on the left and top rows.
+    RivageBackdrop.paint(gr, 0, 0, ww, wh, colours.background);
+
     let smoothingChanged = false;
     if (typeof gr.SetSmoothingMode === 'function') {
         try {
@@ -2744,19 +3049,23 @@ function on_paint(gr) {
         }
     }
 
-    gr.FillSolidRect(0, 0, ww, wh, colours.background);
-
     if (!displayRows.length) {
         paintEmptyState(gr);
     } else {
-        const firstVisible = rowIndexAtLocalY(scrollY);
-        for (let i = Math.max(0, firstVisible); i < displayRows.length; i++) {
-            const row = displayRows[i];
-            const y = HEADER_H + row.top - scrollY;
-            if (y > wh) break;
-            if (row.kind === 'section') paintSectionRow(gr, row, y);
-            else if (row.kind === 'release') paintReleaseItemRow(gr, row, i, y);
-            else paintItemRow(gr, row, i, y);
+        // Clipped below the header, so a partially scrolled row cannot reach it.
+        gr.PushClip(0, HEADER_H, ww, Math.max(0, wh - HEADER_H));
+        try {
+            const firstVisible = rowIndexAtLocalY(scrollY);
+            for (let i = Math.max(0, firstVisible); i < displayRows.length; i++) {
+                const row = displayRows[i];
+                const y = HEADER_H + row.top - scrollY;
+                if (y > wh) break;
+                if (row.kind === 'section') paintSectionRow(gr, row, y);
+                else if (row.kind === 'release') paintReleaseItemRow(gr, row, i, y);
+                else paintItemRow(gr, row, i, y);
+            }
+        } finally {
+            gr.PopClip();
         }
     }
 
@@ -2770,7 +3079,6 @@ function on_paint(gr) {
         gr.FillSolidRect(Math.max(0, ww - scaleUi(5)), thumbY, scaleUi(3), thumbH, colours.accent);
     }
 
-    // Keep the header visually fixed above every partially scrolled row.
     paintHeader(gr);
 
     if (smoothingChanged) {
@@ -2934,7 +3242,12 @@ function getDiscographySettings() {
                 { value: 730, label: 'Next 2 years' }
             ]
         },
-        { id: 'cacheDays', label: 'MusicBrainz cache duration (days)', type: 'number', value: cacheDays, min: 1, max: 30, step: 1, hint: 'How long MusicBrainz responses are kept before they are refreshed.', section: 'Options' }
+        { id: 'cacheDays', label: 'MusicBrainz cache duration (days)', type: 'number', value: cacheDays, min: 1, max: 30, step: 1, hint: 'How long MusicBrainz responses are kept before they are refreshed. Default 30 days.', section: 'Options' },
+        {
+            id: 'calendarNameFallback', label: 'Calendar: also query artists without MusicBrainz IDs',
+            type: 'bool', value: calendarIncludeUntaggedArtists, section: 'Options',
+            hint: 'Adds a name-based query for library artists whose tags carry no MusicBrainz artist ID. More complete, but more requests the first time.'
+        }
     ];
 
     for (let i = 0; i < PRIMARY_TYPE_DEFS.length; i++) {
@@ -3053,6 +3366,13 @@ function applyDiscographySetting(settingId, value) {
             window.SetProperty(PROP + 'Cache days', next);
             cacheDays = next;
             return;
+        case 'calendarNameFallback':
+            next = !!value;
+            if (next === calendarIncludeUntaggedArtists) return;
+            window.SetProperty(PROP + 'Calendar name fallback', next);
+            calendarIncludeUntaggedArtists = next;
+            calendarLibraryChanged();
+            return;
     }
 
     def = findTypeDefBySettingId('primary_', settingId, PRIMARY_TYPE_DEFS);
@@ -3063,7 +3383,7 @@ function applyDiscographySetting(settingId, value) {
         nextFilters.primary[def.key] = next;
         saveReleaseTypeFilters(nextFilters);
         releaseTypeFilters = nextFilters;
-        refreshAfterReleaseTypeChange(true);
+        refreshAfterReleaseTypeChange();
         return;
     }
 
@@ -3075,7 +3395,7 @@ function applyDiscographySetting(settingId, value) {
         nextFilters.secondary[def.key] = next;
         saveReleaseTypeFilters(nextFilters);
         releaseTypeFilters = nextFilters;
-        refreshAfterReleaseTypeChange(false);
+        refreshAfterReleaseTypeChange();
     }
 }
 
@@ -3143,15 +3463,11 @@ function reportCallbackError(where, error) {
     }
 }
 
-function refreshAfterReleaseTypeChange(primaryChanged) {
+function refreshAfterReleaseTypeChange() {
     if (viewMode === 'calendar') {
+        // Calendar queries no longer carry a type clause, so type filters are a
+        // local re-filter and never a query-scope change.
         processCalendarReleaseGroups();
-        if (primaryChanged) {
-            // The MusicBrainz search may be capped before local filtering, so
-            // every primary-type set is its own query scope. Never treat a
-            // broader loaded result as a complete cache for a narrower set.
-            activateCalendarMode(true);
-        }
     } else if (viewMode === 'artist') {
         // RELEASES intentionally ignores these filters, so changing them
         // while that tab is active does not rebuild or alter its rows.
@@ -3187,10 +3503,11 @@ function handleMainMenuCommand(id, clickedItem) {
             activateCalendarMode(true);
             break;
         case 6:
-            if (calendarFetch) {
+            if (calendarRun) {
                 cancelNetworkWork();
+                collectCalendarRows();
                 processCalendarReleaseGroups();
-                statusText = 'Calendar refresh stopped; currently loaded data is displayed.';
+                statusText = 'Calendar refresh stopped; the groups already fetched are kept and displayed.';
                 statusIsError = false;
                 window.Repaint();
             }
@@ -3256,7 +3573,7 @@ function on_mouse_rbtn_up(x, y) {
 
         menu.AppendMenuItem(isArtistLikeMode(viewMode) && sourceArtist ? MF_STRING : MF_GRAYED, 1, 'Refresh artist discography');
         menu.AppendMenuItem(viewMode === 'calendar' ? MF_STRING : MF_GRAYED, 5, 'Refresh release calendar');
-        menu.AppendMenuItem(calendarFetch ? MF_STRING : MF_GRAYED, 6, 'Cancel calendar refresh');
+        menu.AppendMenuItem(calendarRun ? MF_STRING : MF_GRAYED, 6, 'Cancel calendar refresh');
         menu.AppendMenuItem(MF_STRING, 2, 'Rebuild library index');
         menu.AppendMenuSeparator();
 
@@ -3288,7 +3605,7 @@ function on_mouse_rbtn_up(x, y) {
 function on_notify_data(name, info) {
     if (SharedThemeProtocol.consume(name, info, function () {
         updateTheme();
-        window.Repaint(true);
+        SharedThemeProtocol.requestRepaint();
     })) return;
     if (SettingsRegistry.provide(name, info, SETTINGS_PANEL_ID, SETTINGS_PANEL_LABEL, getDiscographySettings)) return;
     if (SettingsRegistry.consume(name, info, SETTINGS_PANEL_ID, applyDiscographySetting)) return;
@@ -3299,9 +3616,10 @@ function on_notify_data(name, info) {
         const nextAccent = SharedAccentProtocol.opaque(info);
         if (nextAccent === sharedAlbumAccent) return;
         sharedAlbumAccent = nextAccent;
+        if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
         if (accentMode === 'shared') {
             updateTheme();
-            window.Repaint(true);
+            window.Repaint();
         }
     }
 }
@@ -3412,7 +3730,8 @@ function on_script_unload() {
     requestQueue = [];
     requestContexts.clear();
     activeFetch = null;
-    calendarFetch = null;
+    calendarRun = null;
+    saveCalendarCacheFile(true);
 }
 
 updateTheme();

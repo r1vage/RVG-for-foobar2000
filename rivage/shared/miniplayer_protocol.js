@@ -1,13 +1,9 @@
 'use strict';
 
-// Mini Player protocol v2.1.0.
-//
-// tab-switcher-right.js owns persistence for the shared Mini Player settings.
-// The root splitter and compact panel are read-only consumers. Settings use a
-// request/update handshake so panel load order does not matter.
-//
-// The enter/exit messages remain fire-and-forget because root_splitter.js is
-// the sole owner of the layout swap and main-window geometry.
+// Mini Player protocol v2.2.2. tab-switcher-right.js owns settings persistence;
+// the root splitter and compact panel are read-only consumers, and the handshake
+// makes panel load order irrelevant. Enter/exit stays fire-and-forget because
+// root_splitter.js solely owns the layout swap and main-window geometry.
 
 var MINI_PLAYER_ENTER = 'RIVAGE.MINI_PLAYER.ENTER';
 var MINI_PLAYER_EXIT = 'RIVAGE.MINI_PLAYER.EXIT';
@@ -47,8 +43,22 @@ if (typeof MiniPlayerProtocol === 'undefined') {
             return !!fallback;
         }
 
+        // Compact-view designs, shown in the settings screen as "Design 1" and
+        // "Design 2". The stored ids stay 'classic'/'cover' so already-saved
+        // settings keep working. Unknown values fall back to Design 1.
+        var LAYOUTS = ['classic', 'cover'];
+        var DEFAULT_LAYOUT = 'classic';
+
+        function normaliseLayout(value, fallback) {
+            var text = String(value === undefined || value === null ? '' : value).toLowerCase();
+            if (LAYOUTS.indexOf(text) >= 0) return text;
+            var base = String(fallback === undefined || fallback === null ? '' : fallback).toLowerCase();
+            return LAYOUTS.indexOf(base) >= 0 ? base : DEFAULT_LAYOUT;
+        }
+
         function defaultSettings() {
             return {
+                layout: DEFAULT_LAYOUT,
                 lockWindowSize: false,
                 alwaysOnTop: true,
                 restoreAlwaysOnTop: true,
@@ -66,6 +76,7 @@ if (typeof MiniPlayerProtocol === 'undefined') {
             var source = value && typeof value === 'object' ? value : {};
 
             return {
+                layout: normaliseLayout(source.layout, base.layout),
                 lockWindowSize: asBoolean(source.lockWindowSize, base.lockWindowSize),
                 alwaysOnTop: asBoolean(source.alwaysOnTop, base.alwaysOnTop),
                 restoreAlwaysOnTop: asBoolean(source.restoreAlwaysOnTop, base.restoreAlwaysOnTop),
@@ -137,6 +148,10 @@ if (typeof MiniPlayerProtocol === 'undefined') {
         }
 
         return {
+            Layout: { Classic: 'classic', Cover: 'cover' },
+            layouts: function () { return LAYOUTS.slice(); },
+            normaliseLayout: normaliseLayout,
+
             defaultSettings: defaultSettings,
             normaliseSettings: normaliseSettings,
 

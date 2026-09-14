@@ -6,6 +6,7 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\design_system.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\playback_stats_source.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\track_context.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\visible_paint_work.js");
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 window.EraseOnRepaint = false;
 
 window.DefineScript(RivageUI.copy.popupTitle('Track information'), {
@@ -494,7 +495,7 @@ function CompactPanel() {
     };
 
     this.paint = function (gr) {
-        gr.FillSolidRect(0, 0, this.w, this.h, this.colours.background);
+        RivageBackdrop.paint(gr, 0, 0, this.w, this.h, this.colours.background);
     };
 
     this.rbtn_up = function (x, y) {
@@ -2014,6 +2015,7 @@ function on_notify_data(name, info) {
         var nextAccent = SharedAccentProtocol.opaque(info);
         if (nextAccent === sharedAlbumAccent) return;
         sharedAlbumAccent = nextAccent;
+        if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
 
         if (!panel || panel.accent_mode == ACCENT_SHARED) visibility.request('accent');
     }

@@ -5,14 +5,16 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\track_context.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\playback_stats_source.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\marquee_widget.js');
 
 window.EraseOnRepaint = false;
 
 window.DefineScript('RVG Playback Timeline', {
     author: 'RivaGe',
-    version: '2.4.0',
+    version: '2.5.1',
     features: {
         drag_n_drop: false,
         grab_focus: false
@@ -210,6 +212,43 @@ function historyFieldName() {
     return settings.historyMode === HistoryMode.LOCAL ? '%played_times%' : '%lastfm_played_times%';
 }
 
+var RangeStart = {
+    FIRST_LISTEN: 'listen',
+    DATE_ADDED: 'added'
+};
+
+function normaliseRangeStart(value) {
+    return String(value).toLowerCase() === RangeStart.DATE_ADDED
+        ? RangeStart.DATE_ADDED
+        : RangeStart.FIRST_LISTEN;
+}
+
+// The global playback-statistics backend only picks which local added date is
+// PREFERRED - the other one is still tried before giving up, because a library
+// running one component leaves the other's field as "?" and that must not
+// decide the answer. %lastfm_added% is last on purpose: Enhanced Playback
+// Statistics reports the first scrobble there, so it lands on (or after) the
+// first listen and would make Date added mode a no-op. Nothing readable leaves
+// the range on the first listen.
+function resolveAddedTime(handle) {
+    var prefer2003 = PlaybackStatsSource.isPlaycount2003();
+    var order;
+    var ms;
+    var i;
+
+    if (!handle) return 0;
+
+    order = prefer2003
+        ? [tfo2003Added, tfoAdded, tfoLastfmAdded]
+        : [tfoAdded, tfo2003Added, tfoLastfmAdded];
+
+    for (i = 0; i < order.length; i++) {
+        ms = parseFoobarDate(safeEval(order[i], handle));
+        if (isFinite(ms) && ms > 0) return ms;
+    }
+    return 0;
+}
+
 var AccentMode = {
     SHARED_ALBUM: 'album',
     GLOBAL_THEME: 'theme'
@@ -273,6 +312,9 @@ var settings = {
         window.GetProperty('RVG Playback TimelineTrack context override', TrackContext.MODE_GLOBAL)
     ),
     historyMode: normaliseHistoryMode(window.GetProperty('RVG Playback TimelineHistory mode', HistoryMode.LASTFM)),
+    rangeStart: normaliseRangeStart(
+        window.GetProperty('RVG Playback TimelineRange start', RangeStart.FIRST_LISTEN)
+    ),
     accentMode: normaliseAccentMode(window.GetProperty('RVG Playback TimelineAccent mode', AccentMode.SHARED_ALBUM)),
     showDensity: !!window.GetProperty('RVG Playback TimelineShow density', true),
     densityStyle: normaliseDensityStyle(
@@ -297,6 +339,17 @@ function getMySettings() {
                 { value: HistoryMode.LOCAL, label: 'Local listens' },
                 { value: HistoryMode.LASTFM, label: 'Last.fm scrobbles' }
             ],
+            section: 'Data'
+        },
+        {
+            id: 'rangeStart', label: 'Range starts at', type: 'choice',
+            value: settings.rangeStart, choiceValueType: 'string',
+            choices: [
+                { value: RangeStart.FIRST_LISTEN, label: 'First listen' },
+                { value: RangeStart.DATE_ADDED, label: 'Date added' }
+            ],
+            hint: 'Date added prefers the global playback statistics source, then the ' +
+                'other local field, then %lastfm_added%, then the first listen.',
             section: 'Data'
         },
         {
@@ -369,6 +422,14 @@ function applyMySetting(settingId, value) {
         scheduleDataRefresh(true);
         return;
     }
+    if (settingId === 'rangeStart') {
+        next = normaliseRangeStart(value);
+        if (next === settings.rangeStart) return;
+        saveSetting('Range start', next);
+        settings.rangeStart = next;
+        scheduleDataRefresh(true);
+        return;
+    }
     if (settingId === 'showDensity') {
         next = !!value;
         if (next === settings.showDensity) return;
@@ -428,6 +489,9 @@ function applyMySetting(settingId, value) {
 
 var tfoPlayedTimes = fb.TitleFormat('%played_times%');
 var tfoLastfmPlayedTimes = fb.TitleFormat('%lastfm_played_times%');
+var tfoAdded = fb.TitleFormat('%added%');
+var tfo2003Added = fb.TitleFormat('%2003_added%');
+var tfoLastfmAdded = fb.TitleFormat('%lastfm_added%');
 var tfoTitle = fb.TitleFormat('$if2(%title%,Unknown title)');
 var tfoArtist = fb.TitleFormat('$if2(%artist%,$if2(%album artist%,Unknown artist))');
 
@@ -437,6 +501,7 @@ var model = {
     artist: '',
     sourceLabel: 'Last.fm scrobbles',
     emptyReason: '',
+    added: 0,
     first: 0,
     last: 0,
     medianGap: 0,
@@ -462,6 +527,7 @@ function buildModelFromCurrentContext() {
     var sourceLabel = historySourceLabel();
     var sourceField = historyFieldName();
     var gaps = [];
+    var added = 0;
     var i;
 
     if (handle) {
@@ -469,6 +535,8 @@ function buildModelFromCurrentContext() {
         artist = safeEval(tfoArtist, handle);
         sourceRaw = safeEval(settings.historyMode === HistoryMode.LOCAL ? tfoPlayedTimes : tfoLastfmPlayedTimes, handle);
         events = parsePlayedTimes(sourceRaw);
+        // Only the Date added range mode reads it, so the extra evaluations stay off the default path.
+        if (settings.rangeStart === RangeStart.DATE_ADDED) added = resolveAddedTime(handle);
     }
 
     for (i = 1; i < events.length; i++) gaps.push(events[i].time - events[i - 1].time);
@@ -479,6 +547,7 @@ function buildModelFromCurrentContext() {
         artist: artist || '',
         sourceLabel: sourceLabel,
         emptyReason: '',
+        added: added,
         first: events.length ? events[0].time : 0,
         last: events.length ? events[events.length - 1].time : 0,
         medianGap: medianInPlace(gaps),
@@ -743,25 +812,36 @@ function dataPadding(span) {
 // listen span (a single play, or a one-day binge) would default to a
 // day-scale view instead of the years-to-now context the axis is meant to show.
 //
-// The start bound is also snapped back to January 1st of the first listen's
-// year. generateTicks()'s year scale walks forward from Jan 1 of the view's
-// start year and skips that tick entirely if it falls before view.start -
-// without this snap, a first listen on any day but Jan 1 would push the
-// first-listen year's own label off the left edge of the axis.
+// The start bound is also snapped back to January 1st of the anchor's year.
+// generateTicks()'s year scale walks forward from Jan 1 of the view's start
+// year and skips that tick entirely if it falls before view.start - without
+// this snap, an anchor on any day but Jan 1 would push its own year's label
+// off the left edge of the axis.
+//
+// The anchor is the first listen unless Date added mode resolved a date, and
+// even then never later than the first listen: scrobbles imported from
+// Last.fm routinely predate the local library stamp, and every event must
+// stay inside the range.
+function rangeAnchorTime(events) {
+    var first = events[0].time;
+    if (settings.rangeStart !== RangeStart.DATE_ADDED || !model.added) return first;
+    return Math.min(model.added, first);
+}
+
 function dataViewBounds(events) {
-    var first;
+    var anchor;
     var last;
     var span;
     var padding;
-    var firstYearStart;
+    var anchorYearStart;
 
     if (!events.length) return { start: 0, end: 1 };
-    first = events[0].time;
+    anchor = rangeAnchorTime(events);
     last = Math.max(events[events.length - 1].time, Date.now());
-    span = Math.max(ONE_HOUR, last - first);
-    padding = events.length === 1 ? 12 * ONE_HOUR : dataPadding(span);
-    firstYearStart = new Date(new Date(first).getFullYear(), 0, 1, 0, 0, 0, 0).getTime();
-    return { start: Math.min(first - padding, firstYearStart), end: last + padding };
+    span = Math.max(ONE_HOUR, last - anchor);
+    padding = events.length === 1 && anchor === events[0].time ? 12 * ONE_HOUR : dataPadding(span);
+    anchorYearStart = new Date(new Date(anchor).getFullYear(), 0, 1, 0, 0, 0, 0).getTime();
+    return { start: Math.min(anchor - padding, anchorYearStart), end: last + padding };
 }
 
 function resetViewToData(deferCacheRebuild) {
@@ -1501,6 +1581,14 @@ function paintStats(gr) {
         { label: 'SPAN', value: model.events.length > 1 ? formatDuration(model.span) : '\u2014' },
         { label: 'MEDIAN GAP', value: model.events.length > 1 ? formatDuration(model.medianGap) : '\u2014' }
     ];
+    // A fifth cell needs the extra width or every date ellipsises; below it the
+    // range still starts at the added date, it just loses its own readout.
+    if (settings.rangeStart === RangeStart.DATE_ADDED && ww >= scaleUi(430)) {
+        metrics.unshift({
+            label: 'ADDED',
+            value: model.added ? formatDateOnly(model.added) : '\u2014'
+        });
+    }
     var count = metrics.length;
     var cellW = layout.stats.w / count;
     var i;
@@ -1601,7 +1689,7 @@ function on_paint(gr) {
     if (ww <= 0 || wh <= 0) return;
 
     dataGate.runFromPaint();
-    gr.FillSolidRect(0, 0, ww, wh, theme.background);
+    RivageBackdrop.paint(gr, 0, 0, ww, wh, theme.background);
     paintHeader(gr);
 
     if (!model.events.length) paintEmptyState(gr);
@@ -1753,6 +1841,12 @@ function on_mouse_rbtn_up(x, y) {
 }
 
 
+// tab-switcher-right.js owns the global schema; this panel only adopts it.
+function applyGlobalSetting(settingId, value) {
+    PlaybackStatsSource.applySetting(settingId, value);
+    TrackContext.applySetting(settingId, value);
+}
+
 function on_notify_data(name, info) {
     if (SharedThemeProtocol.consume(name, info, function () {
         refreshVisualResources(false);
@@ -1764,13 +1858,15 @@ function on_notify_data(name, info) {
 
     // This panel consumes TrackContext's global setting but does not provide
     // the global schema; tab-switcher-right.js remains the authority.
-    if (SettingsRegistry.consume(name, info, 'global', TrackContext.applySetting)) return;
+    if (SettingsRegistry.consume(name, info, 'global', applyGlobalSetting)) return;
+    if (PlaybackStatsSource.onNotifyData(name, info, false)) return;
     if (TrackContext.onNotifyData(name, info, false)) return;
 
     if (name === SHARED_ALBUM_ACCENT_UPDATE && SharedAccentProtocol.isColour(info)) {
         var nextAccent = SharedAccentProtocol.opaque(info);
         if (nextAccent === sharedAlbumAccent) return;
         sharedAlbumAccent = nextAccent;
+        if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
         if (settings.accentMode === AccentMode.SHARED_ALBUM) {
             refreshVisualResources(false);
             window.Repaint();
@@ -1850,6 +1946,11 @@ function on_script_unload() {
 
 refreshVisualResources(true);
 SharedAccentProtocol.request();
+PlaybackStatsSource.onChange(function () {
+    // Only the added date reads this backend, so the zoom can survive the swap.
+    scheduleDataRefresh(false);
+});
+PlaybackStatsSource.requestSync();
 TrackContext.onChange(function () {
     scheduleDataRefresh(true);
 });

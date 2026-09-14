@@ -1,4 +1,4 @@
-﻿window.DefineScript('RVG Playlist', {author: 'Br3tt; adapted by RivaGe', version: '1.1.0', features: {drag_n_drop: true}});
+﻿window.DefineScript('RVG Playlist', {author: 'Br3tt; adapted by RivaGe', version: '1.3.0', features: {drag_n_drop: true}});
 
 // Narrow failure reporting. This is for the two empty catches that mean
 // something is actually broken and would otherwise leave no trace: a
@@ -18,6 +18,8 @@ function reportFailure(what, err) {
 // WSHplaylistmanager.js reads RivageUI at include time, so the design system must load first.
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\design_system.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\dynamic_theme_protocol.js");
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\album_accent_protocol.js");
 // main.js can synchronously receive playback-statistics state while it is being included.
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\settings_protocol.js");
@@ -156,6 +158,10 @@ if (typeof on_notify_data === 'function') {
 	on_notify_data = function (name, info) {
 		if (SharedThemeProtocol.consume(name, info, function () {
 			try { if (typeof on_colours_changed === 'function') on_colours_changed(); } catch (e) { reportFailure('colours could not be refreshed after a shared theme update', e); }
+			// The bundled on_colours_changed ends in full_repaint(), which defers by a
+			// 40 ms timer. Invalidate from the commit edge instead so the playlist
+			// changes colour with the rest of the layout, not a frame behind it.
+			SharedThemeProtocol.requestRepaint();
 		})) return;
 		return rivage_playlist_on_notify_data(name, info);
 	};
@@ -170,6 +176,7 @@ if (typeof on_paint === 'function') {
 
 		var width = (typeof ww !== 'undefined') ? ww : window.Width;
 		var topColour = (typeof g_color_normal_bg !== 'undefined') ? g_color_normal_bg : RGB(0, 0, 0);
-		gr.FillSolidRect(0, 0, width, 1, topColour);
+		// Repaints that row of the mapped slice in Mica; a plain fill outside it.
+		RivageBackdrop.paint(gr, 0, 0, width, 1, topColour);
 	};
 }

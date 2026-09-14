@@ -8,17 +8,19 @@ window.DrawMode = 1;
 // implemented locally because their shared implementations are GDI-bound.
 // Multiple instances are supported through a persisted per-panel registry id.
 
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\settings_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 
 window.EraseOnRepaint = false;
 
 window.DefineScript(RivageUI.copy.popupTitle('Spectrum'), {
     author: 'RivaGe',
-    version: '1.8.0',
+    version: '1.9.0',
     features: {
         drag_n_drop: false,
         grab_focus: false
@@ -625,17 +627,7 @@ var metaFont = null;
 var tooltipFont = null;
 
 function refreshPanelDpi() {
-    var nextDpi = 72;
-    try {
-        if (typeof DPI !== 'undefined' && Number(DPI) > 0) {
-            nextDpi = Number(DPI);
-        } else if (Number(window.DPI) > 0) {
-            nextDpi = Number(window.DPI);
-        }
-    } catch (e) {
-        nextDpi = 72;
-    }
-    panelDpi = nextDpi;
+    panelDpi = RivageScale.dpi() || 72;
 }
 
 function scale(value) {
@@ -3027,12 +3019,16 @@ function on_paint(gr) {
     invalidateBrushesIfStale();
 
     var background = backgroundColour();
-    if (settings.cornerRadius > 0 && settings.background !== 'panel') {
-        gr.FillSolidRect(0, 0, panelW, panelH, theme.background);
-        painter.fillRoundRect(gr, RivageUI.rect(0, 0, panelW, panelH),
-            settings.cornerRadius, background);
-    } else {
-        gr.FillSolidRect(0, 0, panelW, panelH, background);
+    var micaActive = RivageBackdrop.isActive();
+    RivageBackdrop.paint(gr, 0, 0, panelW, panelH, theme.background);
+    if (settings.background !== 'panel') {
+        var surfaceBackground = micaActive ? RivageUI.withAlpha(background, 196) : background;
+        if (settings.cornerRadius > 0) {
+            painter.fillRoundRect(gr, RivageUI.rect(0, 0, panelW, panelH),
+                settings.cornerRadius, surfaceBackground);
+        } else {
+            gr.FillSolidRect(0, 0, panelW, panelH, surfaceBackground);
+        }
     }
 
     var r = computeLayout();
@@ -3199,6 +3195,7 @@ function on_notify_data(name, info) {
         var nextAccent = SharedAccentProtocol.opaque(info);
         if (nextAccent === sharedAlbumAccent) return;
         sharedAlbumAccent = nextAccent;
+        if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
         if (settings.colourMode === 'album') {
             refreshVisualResources(false);
             window.Repaint();

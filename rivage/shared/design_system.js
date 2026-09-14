@@ -43,7 +43,7 @@ var RivageUI = (function (existing) {
             return null;
         }
         copy.mode = String(copy.mode || 'existing').toLowerCase();
-        if (['existing', 'host', 'dark', 'light', 'album-auto', 'album-dark', 'album-light'].indexOf(copy.mode) < 0) {
+        if (['existing', 'host', 'dark', 'light', 'album-auto', 'album-dark', 'album-light', 'mica'].indexOf(copy.mode) < 0) {
             copy.mode = 'existing';
         }
         return copy;
@@ -99,13 +99,17 @@ var RivageUI = (function (existing) {
         return (Number(colour) >>> shift) & 0xff;
     }
 
-    // amount = 0 returns first; amount = 1 returns second.
+    // amount = 0 returns first; amount = 1 returns second. Preserve alpha as
+    // well as RGB so semantic translucent surfaces stay translucent when a
+    // painter derives hover/pressed/selected colours from them. Opaque inputs
+    // still produce the exact same 0xff-alpha result as before.
     function mix(first, second, amount) {
         amount = clamp(amount, 0, 1);
-        return rgb(
+        return rgba(
             channel(first, 16) + (channel(second, 16) - channel(first, 16)) * amount,
             channel(first, 8) + (channel(second, 8) - channel(first, 8)) * amount,
-            channel(first, 0) + (channel(second, 0) - channel(first, 0)) * amount
+            channel(first, 0) + (channel(second, 0) - channel(first, 0)) * amount,
+            channel(first, 24) + (channel(second, 24) - channel(first, 24)) * amount
         );
     }
 
@@ -545,6 +549,53 @@ var RivageUI = (function (existing) {
         return theme;
     }
 
+    function applyMicaSurfaceTreatment(theme) {
+        if (!theme) return null;
+
+        theme.mode = 'mica';
+        theme.mica = true;
+
+        // Mica uses one canonical root-cover composition. Each RVG script window
+        // samples only the root-relative source slice that belongs behind it. Keep
+        // the base background opaque as a reliable no-art/discovery fallback while
+        // semantic surfaces become local acrylic layers over that composition.
+        theme.backgroundAlt = withAlpha(theme.backgroundAlt, 218);
+        theme.header = withAlpha(theme.header, 188);
+        theme.card = withAlpha(theme.card, 184);
+        theme.cardHover = withAlpha(theme.cardHover, 214);
+        theme.rowHover = withAlpha(theme.rowHover, 198);
+        theme.surfaceSubtle = withAlpha(theme.surfaceSubtle, 166);
+        theme.surface = withAlpha(theme.surface, 184);
+        theme.surfaceHover = withAlpha(theme.surfaceHover, 212);
+        theme.surfacePressed = withAlpha(theme.surfacePressed, 226);
+        theme.surfaceSelected = withAlpha(theme.surfaceSelected, 204);
+        theme.surfaceSelectedHover = withAlpha(theme.surfaceSelectedHover, 224);
+        theme.chip = withAlpha(theme.chip, 168);
+        theme.chipHover = withAlpha(theme.chipHover, 208);
+        theme.stroke = withAlpha(theme.stroke, 152);
+        theme.strokeHot = withAlpha(theme.strokeHot, 190);
+        theme.separator = withAlpha(theme.separator, 132);
+        theme.accentSoft = withAlpha(theme.accentSoft, 196);
+        theme.successSoft = withAlpha(theme.successSoft, 196);
+        theme.dangerSoft = withAlpha(theme.dangerSoft, 196);
+        theme.scrollTrack = withAlpha(theme.scrollTrack, 112);
+        // Tab bars and the preset strip sit over the artwork for the full height of
+        // the skin, so they read far heavier than a card does at the same alpha.
+        theme.navigationSurface = withAlpha(theme.navigationSurface, 0);
+        theme.navigationSeparator = withAlpha(theme.navigationSeparator, 200);
+
+        // Keep direct Material-role consumers translucent too. Most RVG panels
+        // use the aliases above, but Playlist and a few specialised painters
+        // intentionally read container/outline roles directly.
+        theme.primaryContainer = withAlpha(theme.primaryContainer, 204);
+        theme.secondaryContainer = withAlpha(theme.secondaryContainer, 188);
+        theme.tertiaryContainer = withAlpha(theme.tertiaryContainer, 188);
+        theme.errorContainer = withAlpha(theme.errorContainer, 196);
+        theme.outline = withAlpha(theme.outline, 190);
+        theme.outlineVariant = withAlpha(theme.outlineVariant, 140);
+        return theme;
+    }
+
     function createTheme(options) {
         options = options || {};
 
@@ -557,12 +608,15 @@ var RivageUI = (function (existing) {
         if (sharedMode === 'host' || sharedMode === 'dark' || sharedMode === 'light') {
             mode = sharedMode;
             forcedAccent = sharedMode === 'host' ? host.accent : rgb(0, 120, 212);
-        } else if (sharedMode === 'album-auto' || sharedMode === 'album-dark' || sharedMode === 'album-light') {
-            var selectedMode = sharedMode === 'album-auto'
+        } else if (sharedMode === 'album-auto' || sharedMode === 'album-dark' ||
+            sharedMode === 'album-light' || sharedMode === 'mica') {
+            var selectedMode = sharedMode === 'album-auto' || sharedMode === 'mica'
                 ? (host.dark ? 'dark' : 'light')
                 : (sharedMode === 'album-dark' ? 'dark' : 'light');
             var materialTheme = createMaterialTheme(shared && shared[selectedMode], selectedMode);
-            if (materialTheme) return materialTheme;
+            if (materialTheme) {
+                return sharedMode === 'mica' ? applyMicaSurfaceTreatment(materialTheme) : materialTheme;
+            }
         }
         var background = host.background;
         var hostText = host.text;
@@ -835,13 +889,19 @@ var RivageUI = (function (existing) {
         function drawRoundRect(gr, rect, radius, lineWidth, colour) {
             rect = makeRect(rect.x, rect.y, rect.w, rect.h);
             if (!gr || rect.w <= 0 || rect.h <= 0 || typeof gr.DrawRoundRect !== 'function') return;
-            radius = Math.max(0, Math.min(px(radius), rect.w / 2, rect.h / 2));
+            // Clamp against the rectangle actually drawn, not the one passed in:
+            // the 1 px pen inset below means a radius of exactly rect.h / 2 asks
+            // GDI+ for an arc wider than the box and throws "Arc argument has
+            // invalid value" - which is what a full-capsule pill asks for.
+            var strokeW = Math.max(1, rect.w - 1);
+            var strokeH = Math.max(1, rect.h - 1);
+            radius = Math.max(0, Math.min(px(radius), strokeW / 2, strokeH / 2));
             lineWidth = Math.max(1, Number(lineWidth) || 1);
             gr.DrawRoundRect(
                 rect.x + 0.5,
                 rect.y + 0.5,
-                Math.max(1, rect.w - 1),
-                Math.max(1, rect.h - 1),
+                strokeW,
+                strokeH,
                 radius,
                 radius,
                 lineWidth,
@@ -1353,6 +1413,7 @@ var RivageUI = (function (existing) {
         artworkPaletteAutomatic: 'Artwork palette \u2014 automatic',
         artworkPaletteDark: 'Artwork palette \u2014 dark',
         artworkPaletteLight: 'Artwork palette \u2014 light',
+        artworkMica: 'Artwork Mica \u2014 blurred',
         followGlobalSetting: 'Follow global setting',
         nowPlayingOtherwiseSelectedTrack: 'Now playing, otherwise selected track',
         nowPlayingOnly: 'Now playing only',
@@ -1376,6 +1437,7 @@ var RivageUI = (function (existing) {
         pushCopyChoice(out, values, 'artworkAuto', copyLabels.artworkPaletteAutomatic);
         pushCopyChoice(out, values, 'artworkDark', copyLabels.artworkPaletteDark);
         pushCopyChoice(out, values, 'artworkLight', copyLabels.artworkPaletteLight);
+        pushCopyChoice(out, values, 'mica', copyLabels.artworkMica);
         return out;
     }
 
@@ -1400,7 +1462,7 @@ var RivageUI = (function (existing) {
         popupTitle: popupTitle
     };
 
-    api.version = '1.7.2';
+    api.version = '1.8.2';
     api.release = RVG_RELEASE;
     api.DEFAULT_ACCENT = rgb(0, 120, 212);
     api.placeholderArt = placeholderArt;

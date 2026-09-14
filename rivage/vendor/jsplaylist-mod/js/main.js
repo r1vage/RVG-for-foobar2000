@@ -1,9 +1,9 @@
-// *****************************************************************************************************************************************
+﻿// *****************************************************************************************************************************************
 // Originally coded by Br3tt aka Falstaff (JSPlaylist / SMP-Mod) - 2015
 // Modified by RivaGe
 // *****************************************************************************************************************************************
 
-var g_script_version = "2.6.0";
+var g_script_version = "2.13.0";
 var g_LDT = DT_LEFT | DT_VCENTER | DT_CALCRECT | DT_NOPREFIX | DT_END_ELLIPSIS;
 var g_middle_clicked = false;
 var g_middle_click_timer = false;
@@ -161,8 +161,12 @@ properties = {
 	groupHeaderPadding: window.GetProperty("CUSTOM.Group Header Padding", 8),
 	groupHeaderCoverPercent: window.GetProperty("CUSTOM.Group Header Cover Percent", 100),
 	groupHeaderLineGap: window.GetProperty("CUSTOM.Group Header Line Gap", 0),
+	// GROUP HEADER STYLE: 0 Classic, 1 Inset card (default). Clamped at use.
+	groupHeaderStyle: window.GetProperty("CUSTOM.Group Header Style", 1),
+	groupHeaderAccent: window.GetProperty("CUSTOM.Group Header Accent", false),
+	groupHeaderArtRadius: window.GetProperty("CUSTOM.Group Header Art Radius", 6),
 	// alpha (0-255) of the hairline drawn above the group-header footer row
-	groupHeaderLineAlpha: window.GetProperty("CUSTOM.Group Header Line Alpha", 140),
+	groupHeaderLineAlpha: window.GetProperty("CUSTOM.Group Header Line Alpha", 120),
 	// 2.10 loved column - read-only sources, love/unlove via context commands (never tag writing)
 	lovedSyncLastfm: window.GetProperty("CUSTOM.Loved Sync Last.fm", true),
 	// 2.11 draw the loved hearts in a fixed pink instead of following the album accent
@@ -832,21 +836,75 @@ function pm_accent(alpha) {
 //=================================================// UWP-style row highlight (2.2)
 // Flat accent wash plus a leading accent bar, instead of the classic boxed selection.
 // Playing rows get a stronger wash; the focused row gets a thin accent outline.
+// Row washes follow the group-header style: the card style pulls them in to the same
+// inset as the header card and rounds them, so a selected row reads as the same family
+// of object. Classic keeps the full-width square wash it always had. With no cover
+// column the inset lands exactly on the card's own left edge.
+function row_highlight_inset() {
+	return (clamp_int(properties.groupHeaderStyle, 0, 1) == 1) ? zoom(8, g_dpi) : 0;
+}
+
+function row_highlight_radius(w, h) {
+	var inset = row_highlight_inset();
+	if (inset <= 0) return 0;
+	return Math.max(1, Math.min(zoom(6, g_dpi),
+		Math.floor(Math.max(1, w - inset * 2) / 2),
+		Math.floor(Math.max(1, h - 2) / 2)));
+}
+
+function fill_row_highlight(gr, x, y, w, h, colour) {
+	var inset = row_highlight_inset();
+	if (inset <= 0) {
+		gr.FillSolidRect(x, y, w, h, colour);
+		return;
+	};
+	var r = row_highlight_radius(w, h);
+	gr.SetSmoothingMode(2);
+	gr.FillRoundRect(x + inset, y + 1, Math.max(1, w - inset * 2), Math.max(1, h - 2), r, r, colour);
+	gr.SetSmoothingMode(0);
+}
+
 function draw_uwp_row_highlight(gr, x, y, w, h, selected, focused, playing) {
-	var bar_w;
+	var inset = row_highlight_inset();
+	var bar_w = 0;
 
 	if (playing) {
-		gr.FillSolidRect(x, y, w, h, accent_colour(selected ? 70 : 45));
+		fill_row_highlight(gr, x, y, w, h, accent_colour(selected ? 70 : 45));
 		bar_w = Math.max(2, zoom(4, g_dpi));
-		gr.FillSolidRect(x, y, bar_w, h, accent_colour(255));
 	} else if (selected) {
-		gr.FillSolidRect(x, y, w, h, accent_colour(52));
+		fill_row_highlight(gr, x, y, w, h, accent_colour(52));
 		bar_w = Math.max(2, zoom(3, g_dpi));
-		gr.FillSolidRect(x, y, bar_w, h, accent_colour(220));
+	};
+
+	if (bar_w > 0) {
+		var bar_colour = accent_colour(playing ? 255 : 220);
+		if (inset > 0) {
+			// A centred capsule that stops where the wash's corner arcs start. Running it the
+			// full height put straight edges alongside both arcs and made the left side read
+			// square again, which is the whole thing the rounding was for.
+			var wash_h = Math.max(1, h - 2);
+			var wash_r = row_highlight_radius(w, h);
+			var bar_h = Math.max(2, wash_h - wash_r * 2);
+			var bar_r = Math.max(1, Math.floor(bar_w / 2));
+			gr.SetSmoothingMode(2);
+			gr.FillRoundRect(x + inset, y + 1 + Math.floor((wash_h - bar_h) / 2), bar_w, bar_h, bar_r, bar_r, bar_colour);
+			gr.SetSmoothingMode(0);
+		} else {
+			gr.FillSolidRect(x, y, bar_w, h, bar_colour);
+		};
 	};
 
 	if (focused) {
-		gr.DrawRect(x + 1, y + 1, w - 3, h - 3, 1.0, accent_colour(190));
+		if (inset > 0) {
+			var fw = Math.max(1, w - inset * 2 - 2);
+			var fh = Math.max(1, h - 4);
+			var fr = Math.max(1, Math.min(zoom(6, g_dpi), Math.floor(fw / 2), Math.floor(fh / 2)));
+			gr.SetSmoothingMode(2);
+			gr.DrawRoundRect(x + inset + 1, y + 2, fw, fh, fr, fr, 1.0, accent_colour(190));
+			gr.SetSmoothingMode(0);
+		} else {
+			gr.DrawRect(x + 1, y + 1, w - 3, h - 3, 1.0, accent_colour(190));
+		};
 	};
 };
 
@@ -1061,8 +1119,82 @@ function on_get_album_art_done(metadb, art_id, image, image_path) {
 	};
 };
 
+// Rounded cover corners for the card group-header style. JSplitter clips rectangles
+// only - no rounded clip, no path API - so the corners are cut with ApplyMask, which
+// needs a mask the same size as the bitmap and reads BLACK as keep, WHITE as cut.
+// This runs once per album from on_get_album_art_done, never from on_paint: the mask
+// itself is built once per size and the alpha is baked into the cached bitmap, so the
+// draw path is unchanged. A style or radius change goes through rebuild(), which
+// replaces g_image_cache and re-bakes everything.
+function cover_corner_radius() {
+	if (clamp_int(properties.groupHeaderStyle, 0, 1) != 1) return 0;
+	return zoom(clamp_int(properties.groupHeaderArtRadius, 0, 16), g_dpi);
+}
+
+function cover_corner_mask(w, h, radius) {
+	var cache = cover_corner_mask.cache || (cover_corner_mask.cache = {});
+	var key = w + "x" + h + "x" + radius;
+	if (cache[key]) return cache[key];
+	var mask = gdi.CreateImage(w, h);
+	if (!mask) return null;
+	var mg = mask.GetGraphics();
+	if (!mg) return null;
+	var r = Math.max(1, Math.min(radius, Math.floor(w / 2), Math.floor(h / 2)));
+	mg.FillSolidRect(0, 0, w, h, RGB(255, 255, 255));
+	mg.SetSmoothingMode(2);
+	mg.FillRoundRect(0, 0, w, h, r, r, RGB(0, 0, 0));
+	mg.SetSmoothingMode(0);
+	mask.ReleaseGraphics(mg);
+	// only a couple of sizes are ever live; drop the lot rather than grow forever
+	var keys = 0;
+	for (var k in cache) keys++;
+	if (keys > 8) cache = cover_corner_mask.cache = {};
+	cache[key] = mask;
+	return mask;
+}
+
+// The corners are baked at cache-bitmap scale but the art is drawn at cv_w, so the
+// shadow ring and the edge stroke have to follow the SCALED radius, not the baked one.
+function cover_corner_radius_drawn(img, drawn_w) {
+	var radius = cover_corner_radius();
+	if (radius <= 0 || !img || !img.Width || drawn_w <= 0) return 0;
+	return Math.max(1, Math.round(radius * drawn_w / img.Width));
+}
+
+// Returns true when img was actually masked. Mutates img in place.
+function round_cover_corners(img) {
+	if (cover_corner_mask.failed || !img || !img.Width || !img.Height) return false;
+	var radius = cover_corner_radius();
+	if (radius <= 0) return false;
+	var mask = cover_corner_mask(img.Width, img.Height, radius);
+	if (!mask) return false;
+	try {
+		return !!img.ApplyMask(mask);
+	} catch (e) {
+		// One failure means the call is unusable here; stop trying rather than throw
+		// out of the album-art callback on every track and lose covers entirely.
+		cover_corner_mask.failed = true;
+		console.log("[RVG Playlist] cover corners could not be rounded, drawing them square: " + e);
+		return false;
+	};
+}
+
 image_cache = function () {
 	this._cachelist = {};
+	this._placeholder = null;
+	// "no cover" has to be rounded too, or albums without art show a square tile in a
+	// rounded layout. It is a shared global, so mask a copy, never the original.
+	this.placeholder = function () {
+		if (!this._placeholder) {
+			var art = images.nocover;
+			if (art && cover_corner_radius() > 0) {
+				var copy = art.Clone(0, 0, art.Width, art.Height);
+				if (copy && round_cover_corners(copy)) art = copy;
+			};
+			this._placeholder = art;
+		};
+		return this._placeholder;
+	};
 	this.hit = function (metadb) {
 		var d = (properties.showgroupheaders ? metadb.Path : fb.TitleFormat("$replace(%path%,%filename_ext%,)").EvalWithMetadb(metadb));
 		var img = this._cachelist[d];
@@ -1102,6 +1234,7 @@ image_cache = function () {
 				cover.type = 0;
 			} else {
 				cover.type = 1;
+				round_cover_corners(img);
 			}
 		}
 		var d = (properties.showgroupheaders ? metadb.Path : fb.TitleFormat("$replace(%path%,%filename_ext%,)").EvalWithMetadb(metadb));
@@ -1421,14 +1554,20 @@ function on_paint(gr) {
 	if (!ww)
 		return true;
 
-
-	// Wallpaper remains focus-driven when playback is stopped.
-	if (p.wallpaperImg && properties.showwallpaper) {
-		gr.GdiDrawBitmap(p.wallpaperImg, 0, p.list.y, ww, wh - p.list.y, 0, p.list.y, p.wallpaperImg.Width, p.wallpaperImg.Height - p.list.y);
-		gr.FillSolidRect(0, p.list.y, ww, wh - p.list.y, g_color_normal_bg & RGBA(255, 255, 255, properties.wallpaperalpha));
-	} else {
-		gr.FillSolidRect(0, p.list.y, ww, wh - p.list.y, g_color_normal_bg);
-	};
+	// Paint this panel's root-coordinate-mapped slice so the list and header
+	// align with the full-skin Mica composition. The opaque theme background remains
+	// the no-art fallback; the bundled focus-driven wallpaper is used only by
+	// the non-Mica themes so there is never a second wallpaper authority.
+	var sharedMicaMode = RivageBackdrop.isMicaMode();
+	if (sharedMicaMode) RivageBackdrop.paint(gr, 0, 0, ww, wh, g_color_normal_bg);
+	if (!sharedMicaMode) {
+		if (p.wallpaperImg && properties.showwallpaper) {
+			gr.GdiDrawBitmap(p.wallpaperImg, 0, p.list.y, ww, wh - p.list.y, 0, p.list.y, p.wallpaperImg.Width, p.wallpaperImg.Height - p.list.y);
+			gr.FillSolidRect(0, p.list.y, ww, wh - p.list.y, g_color_normal_bg & RGBA(255, 255, 255, properties.wallpaperalpha));
+		} else {
+			gr.FillSolidRect(0, p.list.y, ww, wh - p.list.y, g_color_normal_bg);
+		};
+	}
 
 	// List
 	if (p.list) {
@@ -1492,7 +1631,7 @@ function on_paint(gr) {
 	};
 
 	// Wallpaper remains focus-driven when playback is stopped, so this is not gated on fb.IsPlaying.
-	if (cTopBar.visible || p.headerBar.visible) {
+	if (!sharedMicaMode && (cTopBar.visible || p.headerBar.visible)) {
 		if (p.wallpaperImg && properties.showwallpaper) {
 			gr.GdiDrawBitmap(p.wallpaperImg, 0, 0, ww, p.list.y, 0, 0, p.wallpaperImg.Width, p.list.y);
 			gr.FillSolidRect(0, 0, ww, p.list.y, g_color_normal_bg & RGBA(255, 255, 255, properties.wallpaperalpha));
@@ -2169,12 +2308,56 @@ for (var i = 0; i < fin; i++) {
 return null;
 };
 
-// Middle click toggles the clicked track in the playback queue: queued -> removed,
-// not queued -> appended. (The playlist manager is on TAB and CTRL+M.)
+// Returns the group header item currently under the mouse, or null.
+function get_hovered_group_header() {
+if (!p.list || !p.list.items || !p.list.groups)
+	return null;
+var fin = p.list.items.length;
+for (var i = 0; i < fin; i++) {
+	var it = p.list.items[i];
+	if (it && it.ishover && it.type == 1 && p.list.groups[it.group_index])
+		return it;
+};
+return null;
+};
+
+// Group toggle: all tracks already queued -> remove them, otherwise append the missing ones in playlist order.
+function toggle_queue_group(header) {
+var gp = p.list.groups[header.group_index];
+var playlist = header.playlist;
+var queued = {};
+var contents = plman.GetPlaybackQueueContents();
+for (var q = 0; q < contents.length; q++) {
+	if (contents[q].PlaylistIndex == playlist)
+		queued[contents[q].PlaylistItemIndex] = q;
+};
+var missing = [];
+var present = [];
+for (var i = gp.start; i < gp.start + gp.count; i++) {
+	if (queued.hasOwnProperty(i))
+		present.push(queued[i]);
+	else
+		missing.push(i);
+};
+if (missing.length == 0) {
+	if (present.length > 0)
+		plman.RemoveItemsFromPlaybackQueue(present);
+} else {
+	for (var m = 0; m < missing.length; m++)
+		plman.AddPlaylistItemToPlaybackQueue(playlist, missing[m]);
+};
+full_repaint();
+return true;
+};
+
+// Middle click toggles the clicked track (or a group header's tracks) in the playback
+// queue: queued -> removed, not queued -> appended. (The playlist manager is on TAB and CTRL+M.)
 function toggle_queue_hovered_track() {
 var it = get_hovered_track();
-if (!it)
-	return false;
+if (!it) {
+	var header = get_hovered_group_header();
+	return header ? toggle_queue_group(header) : false;
+};
 
 var qidx = plman.FindPlaybackQueueItemIndex(it.metadb, it.playlist, it.track_index);
 if (qidx >= 0) {
@@ -2188,7 +2371,7 @@ return true;
 
 function on_mouse_mbtn_down(x, y, mask) {
 g_middle_clicked = true;
-// enqueue / dequeue the clicked song; fall back to nothing when the click missed a row
+// enqueue / dequeue the clicked song or group; fall back to nothing when the click missed a row
 toggle_queue_hovered_track();
 };
 
@@ -2942,11 +3125,14 @@ function on_notify_data(name, info) {
 	case SHARED_ALBUM_ACCENT_UPDATE:
 		if (SharedAccentProtocol.isColour(info) && properties.albumAccentEnabled) {
 			AlbumAccent.receive(info);
-			// Forced, not full_repaint(): full_repaint() uses a queued 40ms batching
-			// timer before issuing a non-forced window.Repaint().
-			// This event is rare (once per track/focus change), so paying for an immediate,
-			// forced repaint here removes that extra latency entirely.
-			window.Repaint(true);
+			// playlist_panel.js consumes the semantic theme before this legacy accent
+			// handler runs. When the same artwork accent is already part of that commit,
+			// keep the local AlbumAccent state but let the deferred theme callback own
+			// the single visual refresh.
+			if (typeof SharedThemeProtocol !== 'undefined' && SharedThemeProtocol &&
+				typeof SharedThemeProtocol.isAccentCommitted === 'function' &&
+				SharedThemeProtocol.isAccentCommitted(info)) break;
+			window.Repaint();
 		};
 		break;
 	};

@@ -1,8 +1,8 @@
-﻿window.DrawMode = 0; // Force GDI+ before creating fonts or other drawing objects.
+window.DrawMode = 0; // Force GDI+ before creating fonts or other drawing objects.
 
 window.DefineScript('RVG Bottom Tabs', {
     author: 'RivaGe',
-    version: '4.5.0'
+    version: '6.3.1'
 });
 
 // Narrow failure reporting. Most empty catches in this file guard timer
@@ -21,18 +21,21 @@ function reportFailure(what, err) {
 }
 
 // Persistent authority for shared artwork theme/accent, global settings and `> History`.
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\material_colour.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_engine.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\settings_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\resizing_mode_protocol.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\presets_side_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\miniplayer_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\lastfm_credentials_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\tab_bar_style.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\panel_host_kit.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\playback_stats_source.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\track_context.js');
 
@@ -63,8 +66,12 @@ var PROPERTY_GLOBAL_ACCENT_MODE = PROPERTY_PREFIX + 'Global accent mode'; // 'al
 var PROPERTY_GLOBAL_ACCENT_CUSTOM_COLOUR = PROPERTY_PREFIX + 'Global accent custom colour';
 var PROPERTY_EXTRACTION_ALGORITHM = PROPERTY_PREFIX + 'Extraction algorithm'; // 'material' | 'legacy'
 var PROPERTY_GLOBAL_THEME = PROPERTY_PREFIX + 'Global theme mode';
+var PROPERTY_MICA_BLUR_RADIUS = PROPERTY_PREFIX + 'Mica blur radius';
+var PROPERTY_MICA_TINT_STRENGTH = PROPERTY_PREFIX + 'Mica tint strength';
 var PROPERTY_HISTORY_PLAYLIST_ENABLED = PROPERTY_PREFIX + 'History playlist enabled';
 var PROPERTY_RESIZING_MODE = 'RIVAGE.Layout.EnableResizingMode';
+var PROPERTY_PRESETS_SIDE = 'RIVAGE.Layout.PresetsSide'; // 'left' | 'right'
+var PROPERTY_MINI_LAYOUT = 'RIVAGE.MiniPlayer.Layout'; // 'classic' | 'cover'
 var PROPERTY_MINI_LOCK_WINDOW_SIZE = 'RIVAGE.MiniPlayer.LockWindowSize';
 var PROPERTY_MINI_ALWAYS_ON_TOP = 'RIVAGE.MiniPlayer.AlwaysOnTop';
 var PROPERTY_MINI_RESTORE_ALWAYS_ON_TOP = 'RIVAGE.MiniPlayer.RestoreAlwaysOnTop';
@@ -121,7 +128,9 @@ var MAX_PENDING_HISTORY_ITEMS = 32;
 
 var extractionAlgorithm = String(window.GetProperty(PROPERTY_EXTRACTION_ALGORITHM, 'material'));
 if (extractionAlgorithm !== 'legacy') extractionAlgorithm = 'material';
-var globalThemeMode = SharedThemeProtocol.normaliseMode(window.GetProperty(PROPERTY_GLOBAL_THEME, 'existing'));
+var globalThemeMode = SharedThemeProtocol.normaliseMode(window.GetProperty(PROPERTY_GLOBAL_THEME, 'mica'));
+var micaBlurRadius = normaliseMicaBlurRadius(window.GetProperty(PROPERTY_MICA_BLUR_RADIUS, 60));
+var micaTintStrength = normaliseMicaTintStrength(window.GetProperty(PROPERTY_MICA_TINT_STRENGTH, 68));
 
 // This panel's tab bar is a dark surface (COLOUR_TAB_BAR below), so tell the engine to
 // tone-correct extracted colours as if drawn on a dark background.
@@ -134,6 +143,23 @@ function clamp(value, minimum, maximum) {
     return Math.max(minimum, Math.min(maximum, value));
 }
 
+function normaliseMicaBlurRadius(value) {
+    value = Number(value);
+    if (!isFinite(value)) value = 60;
+    return Math.round(clamp(value, 8, 96));
+}
+
+function normaliseMicaTintStrength(value) {
+    value = Number(value);
+    if (!isFinite(value)) value = 68;
+    return Math.round(clamp(value, 35, 95));
+}
+
+function micaTintAlpha() {
+    return Math.round(255 * micaTintStrength / 100);
+}
+
+
 function RGB(red, green, blue) {
     return RivageUI.rgb(red, green, blue);
 }
@@ -142,7 +168,7 @@ function blendColours(foreground, background, amount) {
     return RivageUI.mix(background, foreground, amount);
 }
 
-var dpi = (typeof window.DPI === 'number' && window.DPI > 0) ? window.DPI : 96;
+var dpi = RivageScale.dpi() || 96;
 
 function scale(value) {
     return Math.max(1, Math.round(value * dpi / 96));
@@ -198,6 +224,11 @@ var savedActiveKey = String(window.GetProperty(PROPERTY_ACTIVE_KEY, '') || '');
 // touching PanelObjects from inside one is unsafe, so every discovery pass is
 // guarded by these flags and re-tried on a short timer instead.
 var detectedPanelCount = -1;
+// The EXTRA wrapper is bridged into the pseudo-transparent chain once, but its
+// copied backing is not refreshed just because this host painted a new palette.
+// Arm one same-geometry nudge for it on the committed edge, exactly as the nested
+// Top Tabs host already does for its own active third-party child.
+var bridgePseudoChildRefreshPending = false;
 var detectedPanelFingerprint = '';
 var scanBusy = false;
 var layoutBusy = false;
@@ -225,7 +256,11 @@ var historyPlaylistEnabled = !!window.GetProperty(PROPERTY_HISTORY_PLAYLIST_ENAB
 var resizingModeEnabled = ResizingModeProtocol.normalise(
     window.GetProperty(PROPERTY_RESIZING_MODE, true)
 );
+var presetsSide = PresetsSideProtocol.normalise(
+    window.GetProperty(PROPERTY_PRESETS_SIDE, PresetsSideProtocol.Side.Left)
+);
 var miniPlayerSettings = MiniPlayerProtocol.normaliseSettings({
+    layout: window.GetProperty(PROPERTY_MINI_LAYOUT, MiniPlayerProtocol.Layout.Classic),
     lockWindowSize: window.GetProperty(PROPERTY_MINI_LOCK_WINDOW_SIZE, false),
     alwaysOnTop: window.GetProperty(PROPERTY_MINI_ALWAYS_ON_TOP, true),
     restoreAlwaysOnTop: window.GetProperty(PROPERTY_MINI_RESTORE_ALWAYS_ON_TOP, true),
@@ -244,6 +279,7 @@ var tabIdOwnersDirty = false;
 var fallbackThemePayload = AlbumAccentEngine.buildThemePayload([], 'fallback', false);
 var lastThemePayload = fallbackThemePayload;
 var publishedThemePayload = fallbackThemePayload;
+var lastBackdropDescriptor = RivageBackdrop.disabledDescriptor('fallback', micaTintAlpha());
 var lastExtractedAccent = DEFAULT_UWP_ACCENT;
 var sharedAlbumAccent = DEFAULT_UWP_ACCENT;
 
@@ -334,9 +370,9 @@ function hitTestTab(x, y) {
     return index >= 0 && index < tabs.length ? index : -1;
 }
 
-// force=true bypasses JSplitter's "group up non-forced repaints" scheduling (see the
-// window.Repaint/RepaintRect docs) - used for the accent update below, which is rare enough
-// (once per track/focus change, never per-frame) that skipping the batching is free.
+// Keep tab-strip invalidation on JSplitter's normal repaint queue. Shared artwork/theme
+// commits deliberately avoid forced paints so sibling native windows can present the new
+// state in one batched frame instead of flashing in notification-delivery order.
 function repaintTabBar(force) {
     if (panelWidth > 0 && panelHeight > 0) {
         window.RepaintRect(0, tabBarY(), panelWidth, tabBarHeight(), !!force);
@@ -369,16 +405,37 @@ function accentSeedHandle() {
 
 function extractAndBroadcastAccent(handle) {
     var seed = handle || accentSeedHandle();
-    lastThemePayload = AlbumAccentEngine.extractThemeFromMetadb(seed) || fallbackThemePayload;
+    var artwork = null;
+
+    if (globalThemeMode === 'mica') {
+        artwork = AlbumAccentEngine.load_artwork(seed);
+        try {
+            lastThemePayload = artwork
+                ? AlbumAccentEngine.extractThemeFromImage(artwork, seed)
+                : AlbumAccentEngine.extractThemeFromMetadb(seed);
+            lastThemePayload = lastThemePayload || fallbackThemePayload;
+            lastBackdropDescriptor = RivageBackdrop.buildDescriptor(artwork, lastThemePayload.key, {
+                blurRadius: micaBlurRadius,
+                tintAlpha: micaTintAlpha()
+            });
+        } finally {
+            if (artwork && typeof artwork.Dispose === 'function') {
+                try { artwork.Dispose(); } catch (e) { }
+            }
+            artwork = null;
+        }
+    } else {
+        lastThemePayload = AlbumAccentEngine.extractThemeFromMetadb(seed) || fallbackThemePayload;
+        lastBackdropDescriptor = RivageBackdrop.disabledDescriptor(lastThemePayload.key, micaTintAlpha());
+    }
+
     lastExtractedAccent = SharedAccentProtocol.opaque(lastThemePayload.accent);
     return republishAccent();
 }
 
-// Rapid skip chains can deliver several real playback transitions within a few
-// milliseconds. AlbumAccentEngine memoises repeated albums, but every distinct
-// transient track can still synchronously decode artwork and then fan a theme
-// update out to the whole layout. Wait briefly for playback to settle and only
-// extract for the track that is still current when the timer fires.
+// A skip chain delivers real transitions milliseconds apart, and each distinct
+// track still decodes artwork and fans a theme update out to the whole layout.
+// Wait for playback to settle and extract only for the track still current.
 var accentSettleTimer = null;
 var ACCENT_SETTLE_DELAY = 250;
 
@@ -408,7 +465,7 @@ function cloneThemePayload(payload) {
     catch (e) { return JSON.parse(JSON.stringify(fallbackThemePayload)); }
 }
 
-function republishAccent() {
+function buildPublishedThemePayload() {
     var sourcePayload = lastThemePayload;
     var compatibilityAccent = lastExtractedAccent;
 
@@ -425,7 +482,7 @@ function republishAccent() {
         compatibilityAccent = RivageUI.hostInfo().accent;
     } else if (globalThemeMode === 'dark' || globalThemeMode === 'light') {
         compatibilityAccent = DEFAULT_UWP_ACCENT;
-    } else if (globalThemeMode === 'album-auto' || globalThemeMode === 'album-dark' || globalThemeMode === 'album-light') {
+    } else if (globalThemeMode === 'album-auto' || globalThemeMode === 'album-dark' || globalThemeMode === 'album-light' || globalThemeMode === 'mica') {
         // Artwork-palette themes are coherent only when direct Shared accent
         // consumers receive the same artwork-derived accent as the palette.
         // Keep globalAccentMode untouched so returning to Panel defaults restores
@@ -434,20 +491,54 @@ function republishAccent() {
     }
 
     payload.accent = SharedAccentProtocol.opaque(compatibilityAccent);
+    payload.backdrop = globalThemeMode === 'mica'
+        ? RivageBackdrop.cloneDescriptor(lastBackdropDescriptor)
+        : null;
 
-    sharedAlbumAccent = SharedAccentProtocol.opaque(payload.accent);
-    publishedThemePayload = payload;
-    SharedAccentProtocol.broadcast(sharedAlbumAccent);
-    SharedThemeProtocol.broadcast(publishedThemePayload);
-    refreshRootTheme();
+    return {
+        payload: payload,
+        accent: SharedAccentProtocol.opaque(payload.accent)
+    };
+}
 
-    if (TabBarStyle.settings.accentMode === TabBarStyle.ACCENT_SHARED) {
-        repaintTabBar(true);
-    } else {
-        window.Repaint(true);
+function commitPublishedTheme(payload, accent) {
+    sharedAlbumAccent = SharedAccentProtocol.opaque(accent);
+    publishedThemePayload = cloneThemePayload(payload);
+
+    // Two-phase theme transaction: PREPARE stages the palette in every context, the
+    // compatibility accent updates legacy state without repainting, and COMMIT promotes
+    // and repaints from one event turn - no per-panel timer skew, so no ripple.
+    if (!SharedThemeProtocol.prepare(publishedThemePayload)) {
+        // Recovery only: preserve a usable theme if PREPARE itself cannot broadcast.
+        SharedThemeProtocol.broadcast(publishedThemePayload);
+        SharedAccentProtocol.broadcast(sharedAlbumAccent);
+        refreshRootTheme();
+        SharedThemeProtocol.requestRepaint();
+        return sharedAlbumAccent;
     }
 
+    SharedAccentProtocol.broadcast(sharedAlbumAccent);
+    SharedThemeProtocol.commitPrepared(function () {
+        refreshRootTheme();
+
+        // The tab host itself is the backing surface for pseudo-transparent child
+        // components. Artwork-derived global themes repaint the whole host; ordinary
+        // shared-accent use only needs the tab strip. Never force these paints.
+        if (RivageBackdrop.isSharedArtworkSurfaceMode()) {
+            armBridgePseudoChildRefresh();
+            SharedThemeProtocol.requestRepaint();
+        } else if (TabBarStyle.settings.accentMode === TabBarStyle.ACCENT_SHARED) {
+            repaintTabBar(false);
+        } else {
+            SharedThemeProtocol.requestRepaint();
+        }
+    });
     return sharedAlbumAccent;
+}
+
+function republishAccent() {
+    var target = buildPublishedThemePayload();
+    return commitPublishedTheme(target.payload, target.accent);
 }
 
 function trySetProperty(name, value) {
@@ -466,7 +557,7 @@ function globalThemeUsesConfiguredAccent() {
 function effectiveSharedAccentLabel() {
     if (globalThemeMode === 'host') return RivageUI.copy.labels.foobar2000Accent;
     if (globalThemeMode === 'dark' || globalThemeMode === 'light') return RivageUI.copy.labels.rvgBlue;
-    if (globalThemeMode === 'album-auto' || globalThemeMode === 'album-dark' || globalThemeMode === 'album-light') {
+    if (globalThemeMode === 'album-auto' || globalThemeMode === 'album-dark' || globalThemeMode === 'album-light' || globalThemeMode === 'mica') {
         return RivageUI.copy.labels.artwork;
     }
     if (globalAccentMode === GlobalAccentMode.Default) return RivageUI.copy.labels.rvgBlue;
@@ -508,9 +599,39 @@ function promptGlobalAccentCustomColour() {
 
 function setGlobalThemeMode(mode) {
     var next = SharedThemeProtocol.normaliseMode(mode);
+    if (next === globalThemeMode) return true;
     if (!trySetProperty(PROPERTY_GLOBAL_THEME, next)) return false;
     globalThemeMode = next;
-    republishAccent();
+    if (next === 'mica') extractAndBroadcastAccent();
+    else {
+        lastBackdropDescriptor = RivageBackdrop.disabledDescriptor(lastThemePayload.key, micaTintAlpha());
+        republishAccent();
+        // Mica keeps only one runtime derivative for the current playing/focused
+        // artwork. Once consumers have received the non-Mica theme update, retire
+        // that file instead of leaving an album-history cache behind.
+        RivageBackdrop.releaseProducerCache();
+    }
+    // Theme transitions are paint-only. Child frame snapshots stay valid and
+    // Mica geometry discovery is handled independently through NotifyOthers.
+    return true;
+}
+
+function setMicaBlurRadius(value) {
+    var next = normaliseMicaBlurRadius(value);
+    if (next === micaBlurRadius) return true;
+    if (!trySetProperty(PROPERTY_MICA_BLUR_RADIUS, next)) return false;
+    micaBlurRadius = next;
+    if (globalThemeMode === 'mica') extractAndBroadcastAccent();
+    return true;
+}
+
+function setMicaTintStrength(value) {
+    var next = normaliseMicaTintStrength(value);
+    if (next === micaTintStrength) return true;
+    if (!trySetProperty(PROPERTY_MICA_TINT_STRENGTH, next)) return false;
+    micaTintStrength = next;
+    if (lastBackdropDescriptor) lastBackdropDescriptor.tintAlpha = micaTintAlpha();
+    if (globalThemeMode === 'mica') republishAccent();
     return true;
 }
 
@@ -547,10 +668,38 @@ function adoptResizingMode(enabled) {
     return true;
 }
 
+function setPresetsSide(side) {
+    var next = PresetsSideProtocol.normalise(side);
+    if (!trySetProperty(PROPERTY_PRESETS_SIDE, next)) return false;
+    presetsSide = next;
+    PresetsSideProtocol.broadcast(presetsSide);
+    return true;
+}
+
+function adoptPresetsSide(side) {
+    var next = PresetsSideProtocol.normalise(side);
+    if (next === presetsSide) return true;
+    if (!trySetProperty(PROPERTY_PRESETS_SIDE, next)) return false;
+    presetsSide = next;
+    return true;
+}
+
 function setMiniPlayerSetting(settingId, value) {
     var key = '';
     var property = '';
     var next = !!value;
+
+    // The design choice is the one string-valued Mini Player setting; the
+    // rest of this function coerces to boolean, so it is handled up front.
+    if (settingId === 'miniPlayerLayout') {
+        var nextLayout = MiniPlayerProtocol.normaliseLayout(value, miniPlayerSettings.layout);
+        if (miniPlayerSettings.layout !== nextLayout) {
+            if (!trySetProperty(PROPERTY_MINI_LAYOUT, nextLayout)) return false;
+            miniPlayerSettings.layout = nextLayout;
+        }
+        MiniPlayerProtocol.broadcastSettings(miniPlayerSettings);
+        return true;
+    }
 
     switch (settingId) {
     case 'miniPlayerLockWindowSize':
@@ -945,11 +1094,87 @@ function acquirePanelSnapshot() {
     return PanelHostKit.acquireSnapshot(count, captions);
 }
 
+function isExtraBridgeCaption(caption) {
+    return String(caption || '').toLowerCase().replace(/[^a-z0-9]+/g, '') === 'extra';
+}
+
+function armBridgePseudoChildRefresh() {
+    if (!RivageBackdrop.isSharedArtworkSurfaceMode()) {
+        bridgePseudoChildRefreshPending = false;
+        return false;
+    }
+    bridgePseudoChildRefreshPending = true;
+    return true;
+}
+
+// Runs after this host has painted the committed backing surface, so the wrapper
+// recopies current pixels. Its own child refresh then recopies from the wrapper,
+// which is why the chain has to be nudged from the top down.
+function refreshBridgedPseudoTransparentChildBackground() {
+    if (!bridgePseudoChildRefreshPending) return false;
+    if (!RivageBackdrop.isSharedArtworkSurfaceMode()) {
+        bridgePseudoChildRefreshPending = false;
+        return false;
+    }
+    if (!initialized || scanBusy || layoutBusy || !tabs.length || !hostIsVisible()) return false;
+
+    var panels = acquirePanelSnapshot();
+    if (!panels) return false;
+
+    var handled = false;
+    try {
+        for (var i = 0; i < panels.length; i++) {
+            var panel = panels[i];
+            if (!panel || !isExtraBridgeCaption(safePanelCaption(panel, ''))) continue;
+            handled = true;
+            if (panel.Hidden || panel.SupportPseudoTransparency !== true) continue;
+
+            var x = Math.floor(Number(panel.X));
+            var y = Math.floor(Number(panel.Y));
+            var w = Math.floor(Number(panel.Width));
+            var h = Math.floor(Number(panel.Height));
+            if (!isFinite(x) || !isFinite(y) || !isFinite(w) || !isFinite(h) || w <= 0 || h <= 0) continue;
+
+            // Deliberate equal-geometry Move: it gives JSplitter a native refresh
+            // edge without resizing, hiding or re-flagging the child.
+            // repaintParent=false avoids starting another host paint wave.
+            panel.Move(x, y, w, h, false);
+            try { RivageBackdrop.noteChildPanel(panel); } catch (e2) { }
+        }
+    } catch (e) {
+        reportFailure('the bridged pseudo-transparent child background could not be refreshed', e);
+        return false;
+    } finally {
+        panels = null;
+    }
+
+    if (handled) bridgePseudoChildRefreshPending = false;
+    return handled;
+}
+
+function configureNestedPseudoTransparencyBridge(panel) {
+    if (!panel) return;
+    if (!isExtraBridgeCaption(safePanelCaption(panel, ''))) return;
+
+    // EXTRA is a nested JSplitter host, so its own wrapper must join the transparent
+    // chain before third-party grandchildren can see the Bottom Tabs surface. Flag it
+    // once at setup - runtime toggles flicker; refreshing the copied backing is
+    // refreshBridgedPseudoTransparentChildBackground()'s job, and it never re-flags.
+    try {
+        if (panel.SupportPseudoTransparency !== true) panel.SupportPseudoTransparency = true;
+    } catch (e) { }
+    try {
+        if (panel.EraseBackground !== false) panel.EraseBackground = false;
+    } catch (e2) { }
+}
+
 function safeConfigurePanel(panel) {
     if (!panel) return false;
     try {
         if (panel.ShowCaption !== false) panel.ShowCaption = false;
         if (panel.Locked !== true) panel.Locked = true;
+        configureNestedPseudoTransparencyBridge(panel);
+        RivageBackdrop.configureChildPanel(panel);
         return true;
     } catch (e) {
         return false;
@@ -991,9 +1216,13 @@ function layoutChildren(width, height, targetIndex, configureAll, hideOthers) {
         var complete = true;
         var i;
         if (configureAll) {
+            // Full enumeration: scope it so tabs removed from the layout stop
+            // answering Mica frame requests from their last known rectangle.
+            RivageBackdrop.beginChildScan();
             for (i = 0; i < panels.length; i++) {
                 if (!safeConfigurePanel(panels[i])) complete = false;
             }
+            RivageBackdrop.endChildScan(complete);
         } else if (!safeConfigurePanel(panels[targetIndex])) {
             complete = false;
         }
@@ -1040,6 +1269,9 @@ function commitActiveTab(index) {
     ensureTabVisible(activeIndex);
     updateHoverFromPointer(false);
     broadcastActiveTab();
+    // Switching to EXTRA shows a wrapper whose copied backing may predate the
+    // current palette; refresh it once the newly committed surface is painted.
+    if (armBridgePseudoChildRefresh()) SharedThemeProtocol.requestRepaint();
     return true;
 }
 
@@ -1210,10 +1442,13 @@ function on_paint(gr) {
     updateHoverFromPointer(false);
     if (childRefreshNeeded) scheduleChildRefresh();
     else if (layoutNeeded && !layoutRequestPending) scheduleLayout(panelWidth, panelHeight);
-    gr.FillSolidRect(0, 0, panelWidth, panelHeight, COLOUR_CONTENT);
+    RivageBackdrop.paint(gr, 0, 0, panelWidth, panelHeight, COLOUR_CONTENT);
     drawNoPanelsMessage(gr);
     drawTabBar(gr);
     reassertCursor();
+
+    // Only after the committed backing pixels exist in this host.
+    refreshBridgedPseudoTransparentChildBackground();
 }
 
 function on_mouse_move(x, y, mask) {
@@ -1786,9 +2021,18 @@ function getGlobalSettings() {
               light: 'light',
               artworkAuto: 'album-auto',
               artworkDark: 'album-dark',
-              artworkLight: 'album-light'
+              artworkLight: 'album-light',
+              mica: 'mica'
           })
         },
+        { id: 'micaBlurRadius', label: 'Mica blur radius', type: 'number', section: 'General',
+          value: micaBlurRadius, min: 8, max: 96, step: 2,
+          hidden: globalThemeMode !== 'mica',
+          hint: 'Blur applied once per artwork image before it is shared across the skin.' },
+        { id: 'micaTintStrength', label: 'Mica tint strength (%)', type: 'number', section: 'General',
+          value: micaTintStrength, min: 35, max: 95, step: 1,
+          hidden: globalThemeMode !== 'mica',
+          hint: 'Higher values improve contrast; lower values reveal more of the blurred artwork.' },
         { id: 'globalAccentMode', label: 'Shared accent source', type: 'choice', section: 'General',
           value: globalAccentMode,
           hidden: !globalThemeUsesConfiguredAccent(),
@@ -1812,6 +2056,15 @@ function getGlobalSettings() {
           hint: 'Adds a track after at least 10 seconds of confirmed playback and keeps the newest 200 entries.' },
         { id: 'enableResizingMode', label: 'Allow panel resizing', type: 'bool',
           value: resizingModeEnabled, section: 'General' },
+        { id: 'presetsSide', label: 'Preset buttons side', type: 'choice', section: 'General',
+          value: presetsSide,
+          hint: 'Which end of the bottom bar the four preset buttons sit at. Their width is unchanged.',
+          choiceValueType: 'string',
+          choices: [
+              { value: PresetsSideProtocol.Side.Left, label: 'Left of the bottom bar' },
+              { value: PresetsSideProtocol.Side.Right, label: 'Right of the bottom bar' }
+          ]
+        },
         { id: 'extractionAlgorithm', label: 'Artwork colour extraction', type: 'choice',
           value: extractionAlgorithm, section: 'General',
           choiceValueType: 'string',
@@ -1830,6 +2083,7 @@ function getGlobalSettings() {
     ];
 
     return general
+        .concat(settingsWithSection(RivageScale.getSchemaEntries(), 'General'))
         .concat(settingsWithSection(PlaybackStatsSource.getSchemaEntries(), 'General'))
         .concat(settingsWithSection(TrackContext.getSchemaEntries(), 'General'))
         .concat(lastfm);
@@ -1839,6 +2093,15 @@ function getMiniPlayerPanelSettings() {
     return [
         { id: 'miniPlayerInfo', label: 'Mini Player', type: 'info',
           value: 'Compact-window behaviour and controls. The window size and position are always restored when Mini Player closes; the two policy switches below decide whether always-on-top and the size lock go back too.' },
+        { id: 'miniPlayerLayout', label: 'Design', type: 'choice',
+          value: miniPlayerSettings.layout,
+          choiceValueType: 'string',
+          hint: 'Design 1 stacks a small cover, one title line and a full-width seekbar. Design 2 fills the height with the cover art and puts title and artist on their own lines',
+          choices: [
+              { value: 'classic', label: 'Design 1' },
+              { value: 'cover', label: 'Design 2' }
+          ]
+        },
         { id: 'miniPlayerLockWindowSize', label: 'Lock Mini Player window size', type: 'bool',
           value: miniPlayerSettings.lockWindowSize,
           hint: 'Prevents mouse resizing while compact' },
@@ -1872,6 +2135,14 @@ function applyGlobalSetting(settingId, value) {
         setGlobalThemeMode(value);
         return;
     }
+    if (settingId === 'micaBlurRadius') {
+        setMicaBlurRadius(value);
+        return;
+    }
+    if (settingId === 'micaTintStrength') {
+        setMicaTintStrength(value);
+        return;
+    }
     if (settingId === 'globalAccentMode') {
         setGlobalAccentMode(value);
         return;
@@ -1888,6 +2159,10 @@ function applyGlobalSetting(settingId, value) {
         setResizingModeEnabled(!!value);
         return;
     }
+    if (settingId === 'presetsSide') {
+        setPresetsSide(value);
+        return;
+    }
     if (settingId === 'lastfmApiKey') {
         setLastfmCredentials(value, lastfmUsername);
         return;
@@ -1900,6 +2175,7 @@ function applyGlobalSetting(settingId, value) {
         setExtractionAlgorithm(value);
         return;
     }
+    if (RivageScale.applySetting(settingId, value)) return;
     if (settingId === 'trackContextMode') {
         TrackContext.applySetting(settingId, value);
         TrackContext.broadcast();
@@ -1909,6 +2185,10 @@ function applyGlobalSetting(settingId, value) {
 }
 
 function on_notify_data(name, info) {
+    // This panel produces the shared theme rather than consuming it through
+    // SharedThemeProtocol.consume(), so route Mica geometry traffic explicitly.
+    if (RivageBackdrop.consumeGeometry(name, info)) return;
+
     SettingsRegistry.provide(name, info, TabBarStyle.PANEL_ID, TabBarStyle.PANEL_LABEL, TabBarStyle.getSchema);
     SettingsRegistry.provide(name, info, GLOBAL_SETTINGS_PANEL_ID, GLOBAL_SETTINGS_PANEL_LABEL, getGlobalSettings);
     SettingsRegistry.provide(name, info, MINI_PLAYER_SETTINGS_PANEL_ID, MINI_PLAYER_SETTINGS_PANEL_LABEL, getMiniPlayerPanelSettings);
@@ -1926,6 +2206,13 @@ function on_notify_data(name, info) {
     }
     if (ResizingModeProtocol.consume(name, info, adoptResizingMode)) return;
 
+    if (PresetsSideProtocol.consumeSet(name, info, setPresetsSide)) return;
+    if (PresetsSideProtocol.isRequest(name)) {
+        PresetsSideProtocol.broadcast(presetsSide);
+        return;
+    }
+    if (PresetsSideProtocol.consume(name, info, adoptPresetsSide)) return;
+
     if (MiniPlayerProtocol.isSettingsRequest(name)) {
         MiniPlayerProtocol.broadcastSettings(miniPlayerSettings);
         return;
@@ -1941,7 +2228,15 @@ function on_notify_data(name, info) {
         return;
     }
     if (name === SHARED_RIVAGE_THEME_REQUEST) {
-        SharedThemeProtocol.broadcast(publishedThemePayload);
+        // Late/reloaded consumers receive the same coherent PREPARE -> accent ->
+        // COMMIT sequence as a normal track update. Existing consumers recognise
+        // the duplicate snapshot and do not start another repaint wave.
+        if (SharedThemeProtocol.prepare(publishedThemePayload)) {
+            SharedAccentProtocol.broadcast(sharedAlbumAccent);
+            SharedThemeProtocol.commitPrepared();
+        } else {
+            SharedThemeProtocol.broadcast(publishedThemePayload);
+        }
         return;
     }
     if (name === UWP_TABS_SELECT) {
@@ -1962,7 +2257,8 @@ function on_colours_changed() {
         return;
     }
     refreshRootTheme();
-    window.Repaint(true);
+    armBridgePseudoChildRefresh();
+    SharedThemeProtocol.requestRepaint();
 }
 
 function on_font_changed() {
@@ -2006,6 +2302,7 @@ TabBarStyle.requestSync();
 PlaybackStatsSource.broadcast();
 TrackContext.broadcast();
 ResizingModeProtocol.broadcast(resizingModeEnabled);
+PresetsSideProtocol.broadcast(presetsSide);
 MiniPlayerProtocol.broadcastSettings(miniPlayerSettings);
 LastfmCredentialsProtocol.broadcast({ apiKey: lastfmApiKey, username: lastfmUsername });
 initialiseHistoryPlaylistTracking();
@@ -2029,6 +2326,7 @@ function on_script_unload() {
     childWatchTimer = null;
     childRefreshPending = false;
     layoutRequestPending = false;
+    RivageBackdrop.disposeProducerCache();
     if (activePersistenceDirty) persistActiveTab();
     if (tabIdOwnersDirty) persistTabIdOwners();
 }

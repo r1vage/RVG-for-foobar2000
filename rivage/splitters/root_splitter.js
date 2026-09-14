@@ -2,13 +2,18 @@
 
 window.DefineScript('RVG Root Splitter', {
     author: 'RivaGe',
-    version: '1.4.0',
+    version: '1.8.2',
     features: { drag_n_drop: false, grab_focus: false }
 });
 
 // Native child wrappers are reacquired for every layout pass because JSplitter
 // can rebuild its child collection without changing this panel's dimensions.
 
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\resizing_mode_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\divider_highlight.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\miniplayer_protocol.js');
@@ -25,10 +30,8 @@ const MINI_RECT_PROPERTY = 'RIVAGE.MiniPlayer.Rect';
 const MINI_WAS_ACTIVE_PROPERTY = 'RIVAGE.MiniPlayer.WasActive';
 const MINI_PREV_ALWAYS_ON_TOP_PROPERTY = 'RIVAGE.MiniPlayer.PrevAlwaysOnTop';
 const MINI_PREV_LOCK_WINDOW_SIZE_PROPERTY = 'RIVAGE.MiniPlayer.PrevLockWindowSize';
-// Deliberately separate from WasActive. WasActive arms a geometry restore, and
-// arming that for a policy the host simply refuses would resize a healthy
-// normal window on every script load forever. This marker only ever re-applies
-// always-on-top and the size lock, so it is safe to leave armed.
+// Separate from WasActive on purpose: that one arms a geometry restore, and arming
+// it for a policy the host refuses would resize a healthy window on every load.
 const MINI_POLICY_RESTORE_PENDING_PROPERTY = 'RIVAGE.MiniPlayer.PolicyRestorePending';
 const MINI_LOCK_WINDOW_COMMANDS = ['View/Lock Window Size', 'View/Lock window size'];
 // Long enough for the main window's own resize to finish before the policy is
@@ -78,6 +81,9 @@ let draggingDivider = false;
 let backgroundColour = getBackgroundColour();
 let scriptActive = true;
 let miniModeActive = false;
+// A Mini Player transition changes the outer rectangle and which child owns the root
+// surface, so force one fresh Mica epoch once the replacement layout is committed.
+let miniBackdropRefreshPending = false;
 let miniPlayerSettings = MiniPlayerProtocol.defaultSettings();
 
 let layoutPending = true;
@@ -96,12 +102,9 @@ const dividerHighlight = DividerHighlight.create({
 
 window.EraseOnRepaint = false;
 
-// Narrow diagnostics. The remaining empty catches in this file guard calls that
-// are *expected* to fail - clearing an already-fired timer, probing the two
-// possible spellings of the Lock Window Size command - and stay silent on
-// purpose. Everything that means something is actually broken comes through
-// here. `once` suppresses repeats of an identical message for paths that can be
-// re-entered, so a recurring failure cannot flood the console.
+// Narrow diagnostics. The remaining empty catches guard calls that are *expected*
+// to fail - an already-fired timer, the two spellings of Lock Window Size - and stay
+// silent on purpose. `once` suppresses repeats so a re-entered path cannot flood.
 const reportedDiagnostics = {};
 function logDiagnostic(message, once) {
     const text = '[RVG Root Splitter] ' + message;
@@ -164,6 +167,7 @@ function preparePanel(panel) {
     try {
         if (panel.ShowCaption !== false) panel.ShowCaption = false;
         if (panel.Locked !== true) panel.Locked = true;
+        RivageBackdrop.configureChildPanel(panel);
         return true;
     } catch (e) {
         return false;
@@ -180,6 +184,7 @@ function movePanel(panel, x, y, width, height) {
         ) {
             panel.Move(x, y, width, height);
         }
+        RivageBackdrop.noteChildPanel(panel);
         return true;
     } catch (e) {
         return false;
@@ -191,6 +196,7 @@ function showPanel(panel, visible) {
 
     try {
         if (!!panel.Hidden === !!visible) panel.Show(visible);
+        RivageBackdrop.noteChildPanel(panel);
         return true;
     } catch (e) {
         return false;
@@ -210,8 +216,12 @@ function hostIsVisible() {
 
 function getBackgroundColour() {
     try {
-        return window.GetColourCUI(3);
+        return RivageUI.createTheme({ mode: 'host' }).background;
     } catch (e) { }
+
+    try {
+        return window.GetColourCUI(3);
+    } catch (e2) { }
 
     try {
         return window.GetColourDUI(1);
@@ -299,12 +309,9 @@ function isAlwaysOnTop() {
     }
 }
 
-// The assignment alone was trusted through v1.2.0, and that is what let
-// always-on-top get stuck on. A write issued while the main window is being
-// resized can be swallowed, the old code reported success anyway, and the next
-// enter then captured the leaked "on" as the state to restore - so the leak
-// became permanent and self-reinforcing. Read back like setWindowSizeLocked
-// already does for the lock command: the observed state is authoritative.
+// Read back; the observed state is authoritative. A write issued mid-resize can be
+// swallowed, and through v1.2.0 the assignment alone was trusted - the next enter
+// then captured the leaked "on" as the state to restore, making the leak permanent.
 function setAlwaysOnTop(enabled) {
     const desired = !!enabled;
 
@@ -356,19 +363,11 @@ function isPolicyRestorePending() {
     return readBooleanProperty(MINI_POLICY_RESTORE_PENDING_PROPERTY, false);
 }
 
-// The one place that puts the normal window's own policies back, shared by
-// exit, startup recovery and the pending-policy pass. Each policy is honoured
-// only if its "restore on exit" setting is on; when it is off, Mini Player's
-// own value is deliberately left in force and nothing is marked pending.
-//
-// `force` skips those settings. Both startup paths pass it: they run before
-// the owning panel has broadcast the real settings, and after an unclean exit
-// or a swallowed write the normal window's own policies are the safe state to
-// come back to regardless of preference.
-//
-// The pending marker is armed whenever a policy that WAS supposed to be
-// restored did not verify, so a swallowed write is retried on the next script
-// load instead of silently becoming the new "previous" state.
+// The one place that restores the normal window's policies, shared by exit, startup
+// recovery and the pending pass. A policy is restored only if its "restore on exit"
+// setting is on; `force` skips that check, and both startup paths pass it because
+// the real settings have not been broadcast yet. A policy that did not verify arms
+// the pending marker, so a swallowed write is retried on the next load.
 function restoreNormalWindowPolicies(prevAlwaysOnTop, prevLockWindowSize, context, force) {
     const restoreTop = force || miniPlayerSettings.restoreAlwaysOnTop;
     const restoreLock = force || miniPlayerSettings.restoreLockWindowSize;
@@ -491,10 +490,8 @@ function layoutMiniMode(width, height) {
     return complete;
 }
 
-// Asks to enter Mini Player. No-ops (with a console note) if the layout has
-// no panel captioned MINI PLAYER yet - see MINI_PLAYER_SETUP.md. Without this
-// guard, shrinking the window with nothing to show in its place would leave
-// the user staring at a tiny, empty window with no visible way back.
+// No-ops if the layout has no panel captioned MINI PLAYER (see MINI_PLAYER_SETUP.md);
+// shrinking with nothing to show would leave a tiny empty window with no way back.
 function enterMiniMode() {
     if (miniModeActive) return;
 
@@ -511,12 +508,8 @@ function enterMiniMode() {
         return;
     }
 
-    // Never record a "previous" state that Mini Player itself may have set.
-    // If the last session's policy restore never completed - an unclean exit,
-    // or a write the host swallowed mid-resize - the saved values are still
-    // the real normal-window ones and must survive this enter untouched.
-    // Overwriting them here is what made a leaked always-on-top permanent: the
-    // leaked "on" was captured as the state to go back to, on every enter.
+    // Never record a "previous" state Mini Player itself may have set: after an
+    // incomplete restore the saved values are still the real normal-window ones.
     const policyRestorePending = isPolicyRestorePending();
     const prevAlwaysOnTop = policyRestorePending
         ? readBooleanProperty(MINI_PREV_ALWAYS_ON_TOP_PROPERTY, false)
@@ -555,16 +548,16 @@ function enterMiniMode() {
     }
 
     miniModeActive = true;
+    miniBackdropRefreshPending = true;
     requestDeferredLayout(true);
     if (!applyWindowRect(miniRect)) {
         miniModeActive = false;
+        miniBackdropRefreshPending = true;
         requestDeferredLayout(true);
         const rollbackRestored = applyWindowRect(normalRect);
         const rollbackLockRestored = setWindowSizeLocked(prevLockWindowSize);
-        // A partially applied compact rectangle is still recoverable on the
-        // next script load if the immediate geometry rollback also failed. A
-        // policy-command failure must not trap startup in a permanent retry
-        // loop on hosts that do not expose that optional main-menu command.
+        // A partial compact rectangle is recoverable on the next load, but a failed
+        // policy command must not trap startup on a host lacking that menu command.
         writeProperty(MINI_WAS_ACTIVE_PROPERTY, !rollbackRestored);
         logDiagnostic('Mini Player: the compact window rectangle could not be applied; enter was rolled back.');
         if (!rollbackLockRestored) {
@@ -595,16 +588,14 @@ function exitMiniMode() {
     const prevLockWindowSize = readBooleanProperty(MINI_PREV_LOCK_WINDOW_SIZE_PROPERTY, false);
 
     miniModeActive = false;
+    miniBackdropRefreshPending = true;
     requestDeferredLayout(true);
 
     const lockReleased = setWindowSizeLocked(false);
     const normalRectRestored = lockReleased && isUsableRect(normalRect) && applyWindowRect(normalRect);
     restoreNormalWindowPolicies(prevAlwaysOnTop, prevLockWindowSize, 'exit', false);
-    // Keep the recovery marker only when the native geometry restore failed.
-    // Always-on-top and lock are best-effort policies; leaving THIS marker armed
-    // for an unavailable command would resize a healthy normal window on every
-    // script load forever. A policy that did not take arms its own separate
-    // marker instead - see restoreNormalWindowPolicies().
+    // Only a failed geometry restore keeps this marker; a policy that did not take
+    // arms its own - see restoreNormalWindowPolicies().
     writeProperty(MINI_WAS_ACTIVE_PROPERTY, !normalRectRestored);
     if (!normalRectRestored) {
         logDiagnostic('Mini Player: the normal window rectangle could not be restored; startup recovery remains armed.');
@@ -613,14 +604,12 @@ function exitMiniMode() {
     MiniPlayerProtocol.broadcastState(false);
 }
 
-// Recovers from an unclean exit (crash, forced close, or just "Reload all
-// scripts" while Mini Player happened to be on) - without this, foobar2000
-// would reopen at the last-saved (tiny) window size with no way back, since
-// the control that restores it lives inside the now-hidden normal layout.
-// Every script load is treated the same way: always come back up normal-
-// sized, never resume Mini Player automatically.
+// Recovers from an unclean exit: foobar2000 would otherwise reopen at the tiny saved
+// size with no way back, since the control that restores it is in the hidden layout.
+// Every load comes up normal-sized; Mini Player never resumes automatically.
 function recoverFromUncleanMiniExit() {
     if (!readBooleanProperty(MINI_WAS_ACTIVE_PROPERTY, false)) return;
+    miniBackdropRefreshPending = true;
 
     const normalRect = readJsonProperty(MINI_NORMAL_RECT_PROPERTY);
     const prevAlwaysOnTop = readBooleanProperty(MINI_PREV_ALWAYS_ON_TOP_PROPERTY, false);
@@ -844,6 +833,15 @@ function runPendingLayout() {
     try {
         complete = layoutPanels();
         layoutPending = !complete;
+        if (complete && miniBackdropRefreshPending) {
+            // on_size can fire before the child swap settles, so this post-commit epoch
+            // is separate: discovery restarts from a tree that matches what is visible.
+            RivageBackdrop.refreshRootFrame(
+                Math.max(0, window.Width),
+                Math.max(0, window.Height)
+            );
+            miniBackdropRefreshPending = false;
+        }
         return complete;
     } finally {
         layoutBusy = false;
@@ -1012,27 +1010,37 @@ function on_mouse_lbtn_dblclk(x, y) {
 }
 
 function on_size() {
+    // Publish the canonical root canvas before descendants ask for fresh frames.
+    RivageBackdrop.setRootFrame(Math.max(0, window.Width), Math.max(0, window.Height));
     // JSplitter can dispatch on_size while its native child collection is mutating.
     requestDeferredLayout(true);
 }
 
 function on_paint(gr) {
     if (layoutPending && hostIsVisible()) scheduleLayoutWork();
-    // The MINI PLAYER child fully covers this panel's area while active, so
-    // there is nothing behind it that needs painting.
+
+    const width = Math.max(0, window.Width);
+    const height = Math.max(0, window.Height);
+    // Publishing the canonical root canvas is what every descendant maps against;
+    // it is independent of how much of that canvas this panel itself has to paint.
+    RivageBackdrop.setRootFrame(width, height);
+
+    // The MINI PLAYER child fully covers this panel's area.
     if (miniModeActive) return;
 
     const dividerHeight = getDividerHeight();
+    // Every direct child here is an RVG script that opens its paint with an opaque
+    // fill, so a full backing surface is pixels nothing sees - ~40 ms per artwork
+    // change. Only a foreign component would need one.
+    if (RivageBackdrop.hasForeignPseudoChild()) {
+        RivageBackdrop.paint(gr, 0, 0, width, height, backgroundColour);
+    } else if (dividerHeight > 0) {
+        RivageBackdrop.paint(gr, 0, getTopBarHeight(), width, dividerHeight, backgroundColour);
+    }
+
     if (dividerHeight <= 0) return;
 
-    gr.FillSolidRect(
-        0,
-        getTopBarHeight(),
-        Math.max(0, window.Width),
-        dividerHeight,
-        backgroundColour
-    );
-
+    // The Mica tint is already in the pixels above; painting it again would stack.
     dividerHighlight.draw(
         gr,
         0,
@@ -1043,14 +1051,15 @@ function on_paint(gr) {
 }
 
 function on_colours_changed() {
-    const nextColour = getBackgroundColour();
-    if (nextColour === backgroundColour) return;
-
-    backgroundColour = nextColour;
-    repaintDivider();
+    backgroundColour = getBackgroundColour();
+    if (RivageBackdrop.isSharedArtworkSurfaceMode()) SharedThemeProtocol.requestRepaint();
+    else repaintDivider();
 }
 
 function on_notify_data(name, info) {
+    // SharedThemeProtocol defers on_colours_changed by one turn, so an immediate paint
+    // here would expose a half-committed frame.
+    if (SharedThemeProtocol.consume(name, info)) return;
     if (consumeButtonsMeasure(name, info)) return;
     if (dividerHighlight.onNotifyData(name, info)) return;
     if (MiniPlayerProtocol.isEnter(name)) { enterMiniMode(); return; }
@@ -1080,6 +1089,7 @@ recoverFromUncleanMiniExit();
 // recovery above already clears its own marker when it succeeds.
 retryPendingPolicyRestore();
 requestDeferredLayout(true);
+SharedThemeProtocol.request();
 ResizingModeProtocol.requestUntilAnswered();
 MiniPlayerProtocol.requestSettings();
 dividerHighlight.requestAccent();

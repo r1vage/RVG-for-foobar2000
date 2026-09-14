@@ -1,7 +1,8 @@
 'use strict';
 
 // Shared scrolling-text engine for panel title/subtitle marquees.
-// prepare() owns its cached bitmap and rebuilds it whenever a render input changes;
+// prepare() owns its cached bitmap - one loop wide - and rebuilds it whenever a render
+// input changes; draw() wraps by blitting that loop twice, each clamped to the viewport.
 // startTimer() uses wall-clock position so delayed host timers do not accumulate jitter.
 // Repeated include() calls must preserve the singleton and existing widget instances.
 
@@ -177,7 +178,8 @@ var MarqueeWidget = (typeof MarqueeWidget !== 'undefined') ? MarqueeWidget : (fu
             reset();
 
             var loopWidth = textWidth + gap;
-            var imageWidth = Math.ceil(loopWidth * 2);
+            // +pad so a gap smaller than the layout padding cannot clip the text box.
+            var imageWidth = Math.ceil(loopWidth + pad);
             var image = null;
             var graphics = null;
             var noWrap = typeof StringFormatFlags !== 'undefined' ? StringFormatFlags.NoWrap : 0x1000;
@@ -196,7 +198,6 @@ var MarqueeWidget = (typeof MarqueeWidget !== 'undefined') ? MarqueeWidget : (fu
                 } catch (e) { }
 
                 graphics.DrawString(text, font, buildOptions.textColour, 0, textY, textWidth + pad, imageHeight, noWrap);
-                graphics.DrawString(text, font, buildOptions.textColour, loopWidth, textY, textWidth + pad, imageHeight, noWrap);
             } catch (e) {
                 return false;
             } finally {
@@ -224,16 +225,22 @@ var MarqueeWidget = (typeof MarqueeWidget !== 'undefined') ? MarqueeWidget : (fu
         function draw(gr, rect) {
             if (!state.image || !rect) return false;
 
-            var offset = state.phase === 'scroll'
+            // Whole-pixel offset keeps both blits 1:1; a fractional source resamples the text.
+            var offset = Math.floor(state.phase === 'scroll'
                 ? Math.min(state.loopW, currentScrollOffset(Date.now()))
-                : 0;
+                : 0);
 
-            gr.DrawImage(
-                state.image,
-                rect.x, rect.y, rect.w, rect.h,
-                Math.floor(offset), 0, rect.w, rect.h,
-                0, 255
-            );
+            var head = Math.max(0, Math.min(rect.w, state.loopW - offset));
+            if (head > 0) {
+                gr.DrawImage(state.image, rect.x, rect.y, head, rect.h,
+                    offset, 0, head, rect.h, 0, 255);
+            }
+
+            var tail = Math.min(rect.w - head, state.loopW);
+            if (tail > 0) {
+                gr.DrawImage(state.image, rect.x + head, rect.y, tail, rect.h,
+                    0, 0, tail, rect.h, 0, 255);
+            }
             return true;
         }
 

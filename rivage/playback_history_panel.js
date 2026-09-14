@@ -1,7 +1,10 @@
 ﻿window.DrawMode = 0;
 
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 
 window.EraseOnRepaint = false;
@@ -12,7 +15,7 @@ window.EraseOnRepaint = false;
 
 window.DefineScript(RivageUI.copy.popupTitle('Playback history'), {
     author: 'RivaGe',
-    version: '6.4.0',
+    version: '6.5.0',
     features: {
         drag_n_drop: false,
         grab_focus: false
@@ -88,19 +91,7 @@ var settings = {
 var panelDpi = 72;
 
 function refreshPanelDpi() {
-    var nextDpi = 72;
-
-    try {
-        if (typeof DPI !== 'undefined' && Number(DPI) > 0) {
-            nextDpi = Number(DPI);
-        } else if (typeof window !== 'undefined' && Number(window.DPI) > 0) {
-            nextDpi = Number(window.DPI);
-        }
-    } catch (e) {
-        nextDpi = 72;
-    }
-
-    panelDpi = nextDpi;
+    panelDpi = RivageScale.dpi() || 72;
 }
 
 function scale(value) {
@@ -1949,6 +1940,10 @@ function headerInfoItems() {
 function on_paint(gr) {
     var smoothingChanged = false;
 
+    // Rectangular backdrop before anti-aliasing: GDI+ shape smoothing filters the
+    // DrawImage destination edge into a visible seam on the left and top rows.
+    RivageBackdrop.paint(gr, 0, 0, ww, wh, theme.background);
+
     if (typeof gr.SetSmoothingMode === 'function') {
         try {
             gr.SetSmoothingMode(SMOOTHING_MODE_ANTIALIAS);
@@ -1957,8 +1952,6 @@ function on_paint(gr) {
             smoothingChanged = false;
         }
     }
-
-    gr.FillSolidRect(0, 0, ww, wh, theme.background);
 
     paintPanelBackground(gr);
     paintHeader(gr);
@@ -2209,7 +2202,7 @@ function on_font_changed() {
 
 function on_colours_changed() {
     refreshTheme();
-    requestRepaint(true);
+    SharedThemeProtocol.requestRepaint();
 }
 
 function requestPlaybackStatisticsHeaderStyle() {
@@ -2258,8 +2251,9 @@ function on_notify_data(name, info) {
         if (nextAccent === sharedAccent) return;
 
         sharedAccent = nextAccent;
+        if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
         refreshTheme();
-        requestRepaint(true);
+        requestRepaint(false);
     }
 }
 

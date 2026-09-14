@@ -4,14 +4,18 @@ window.DrawMode = 0;
 
 // Four-slot BOTTOM BAR preset selector; preset management lives in SETTINGS.
 
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\bottom_bar_protocol.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\presets_side_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 
 window.DefineScript('RVG Bottom Bar Presets', {
     author: 'RivaGe',
-    version: '1.5.0',
+    version: '1.8.0',
     features: { drag_n_drop: false, grab_focus: false }
 });
 
@@ -56,11 +60,14 @@ function blendColours(foreground, background, amount) {
     return RivageUI.mix(background, foreground, amount);
 }
 
-var dpi = (typeof window.DPI === 'number' && window.DPI > 0) ? window.DPI : 96;
+var dpi = RivageScale.dpi() || 96;
 function scale(value) {
     return Math.max(1, Math.round(value * dpi / 96));
 }
 
+// The backdrop base must be the shared background, as in the tab hosts; the
+// navigation surface is a layer painted over it, not the Mica fallback/tint.
+var COLOUR_CONTENT = RGB(32, 32, 32);
 var COLOUR_SURFACE = RGB(28, 28, 28);
 var COLOUR_SEPARATOR = RGB(51, 51, 51);
 var COLOUR_TEXT_PRIMARY = RGB(245, 245, 245);
@@ -69,6 +76,7 @@ var COLOUR_TEXT_MUTED = RGB(126, 126, 126);
 
 function refreshTheme() {
     var resolved = RivageUI.createTheme({ mode: 'dark', accent: sharedAlbumAccent });
+    COLOUR_CONTENT = resolved.background;
     COLOUR_SURFACE = resolved.navigationSurface;
     COLOUR_SEPARATOR = resolved.navigationSeparator;
     COLOUR_TEXT_PRIMARY = resolved.navigationTextPrimary;
@@ -77,10 +85,18 @@ function refreshTheme() {
 }
 
 var PRESET_FONT_PREFIX = 'Rivage Presets.';
+// Side is owned by Global settings; the local copy only keeps the selection bar
+// on the correct edge until the first broadcast arrives.
+var PRESETS_SIDE_PROPERTY = 'Rivage Presets.Side';
+var MIRROR_INDICATOR_PROPERTY = 'Rivage Presets.Mirror selection bar';
 var customButtonFontFamily = String(window.GetProperty(PRESET_FONT_PREFIX + 'Font override', '') || '').trim();
 var customButtonFontSize = Math.max(1, Math.round(Number(window.GetProperty(PRESET_FONT_PREFIX + 'Font size', 11)) || 11));
 var customButtonFontStyle = Math.round(Number(window.GetProperty(PRESET_FONT_PREFIX + 'Font style', 0)) || 0);
 var buttonFont = null;
+var presetsSide = PresetsSideProtocol.normalise(
+    window.GetProperty(PRESETS_SIDE_PROPERTY, PresetsSideProtocol.Side.Left)
+);
+var mirrorIndicator = !!window.GetProperty(MIRROR_INDICATOR_PROPERTY, true);
 
 function resolvedButtonFontInfo() {
     if (customButtonFontFamily) {
@@ -131,6 +147,26 @@ function chooseCustomButtonFont() {
     window.SetProperty(PRESET_FONT_PREFIX + 'Font style', customButtonFontStyle);
     rebuildButtonFont();
     window.Repaint(true);
+}
+
+function indicatorX(rect) {
+    if (!mirrorIndicator || presetsSide !== PresetsSideProtocol.Side.Right) return rect.x;
+    return rect.x + Math.max(0, rect.w - scale(3));
+}
+
+function adoptPresetsSide(side) {
+    var next = PresetsSideProtocol.normalise(side);
+    if (next === presetsSide) return;
+
+    presetsSide = next;
+    try { window.SetProperty(PRESETS_SIDE_PROPERTY, presetsSide); } catch (e) { }
+    if (mirrorIndicator) window.Repaint();
+}
+
+function setMirrorIndicator(enabled) {
+    mirrorIndicator = !!enabled;
+    window.SetProperty(MIRROR_INDICATOR_PROPERTY, mirrorIndicator);
+    if (presetsSide === PresetsSideProtocol.Side.Right) window.Repaint();
 }
 
 function useCommonLabelsFont() {
@@ -219,6 +255,7 @@ function on_paint(gr) {
     var indicatorH;
     var indicatorY;
 
+    RivageBackdrop.paint(gr, 0, 0, ww, wh, COLOUR_CONTENT);
     gr.FillSolidRect(0, 0, ww, wh, COLOUR_SURFACE);
 
     for (i = 0; i < BUTTON_COUNT; i++) {
@@ -244,7 +281,7 @@ function on_paint(gr) {
         if (selected) {
             indicatorH = Math.min(scale(30), Math.max(scale(12), rect.h - scale(16)));
             indicatorY = rect.y + Math.floor((rect.h - indicatorH) / 2);
-            gr.FillSolidRect(rect.x, indicatorY, scale(3), indicatorH, accent);
+            gr.FillSolidRect(indicatorX(rect), indicatorY, scale(3), indicatorH, accent);
         }
 
         textColour = preset
@@ -320,6 +357,16 @@ function on_mouse_lbtn_up(x, y, mask) {
 
 function on_mouse_rbtn_up(x, y, mask) {
     var menu = window.CreatePopupMenu();
+    var sideMenu = window.CreatePopupMenu();
+
+    sideMenu.AppendMenuItem(MF_STRING, 4, 'Left of the bottom bar');
+    sideMenu.AppendMenuItem(MF_STRING, 5, 'Right of the bottom bar');
+    sideMenu.CheckMenuRadioItem(4, 5, presetsSide === PresetsSideProtocol.Side.Right ? 5 : 4);
+    sideMenu.AppendTo(menu, MF_STRING, 'Preset buttons side');
+    menu.AppendMenuItem(MF_STRING, 6, 'Mirror selection bar when on the right');
+    menu.CheckMenuItem(6, mirrorIndicator);
+    menu.AppendMenuSeparator();
+
     menu.AppendMenuItem(MF_STRING, 1, 'Choose preset-button font… (' + describeButtonFont() + ')');
     if (customButtonFontFamily) {
         menu.AppendMenuItem(MF_STRING, 2, 'Use Columns UI "Common (labels)" font');
@@ -331,22 +378,26 @@ function on_mouse_rbtn_up(x, y, mask) {
     if (command === 1) chooseCustomButtonFont();
     else if (command === 2) useCommonLabelsFont();
     else if (command === 3) { try { window.ShowProperties(); } catch (e) { reportFailure('panel properties could not be opened', e); } }
+    else if (command === 4) PresetsSideProtocol.setUntilAnswered(PresetsSideProtocol.Side.Left);
+    else if (command === 5) PresetsSideProtocol.setUntilAnswered(PresetsSideProtocol.Side.Right);
+    else if (command === 6) setMirrorIndicator(!mirrorIndicator);
     return true;
 }
 
 function on_colours_changed() {
     refreshTheme();
-    window.Repaint(true);
+    SharedThemeProtocol.requestRepaint();
 }
 
 function on_font_changed() {
-    dpi = (typeof window.DPI === 'number' && window.DPI > 0) ? window.DPI : 96;
+    dpi = RivageScale.dpi() || 96;
     rebuildButtonFont();
     window.Repaint(true);
 }
 
 function on_notify_data(name, info) {
     if (SharedThemeProtocol.consume(name, info)) return;
+    if (PresetsSideProtocol.consume(name, info, adoptPresetsSide)) return;
     var copy;
 
     if (name === BottomBarProtocol.STATE) {
@@ -373,10 +424,12 @@ function on_notify_data(name, info) {
         var nextAccent = SharedAccentProtocol.opaque(info);
         if (nextAccent === sharedAlbumAccent) return;
         sharedAlbumAccent = nextAccent;
-        window.Repaint(true);
+        if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
+        window.Repaint();
     }
 }
 
 refreshTheme();
 SharedAccentProtocol.request();
+PresetsSideProtocol.requestUntilAnswered();
 window.SetTimeout(requestStateWithRetry, 0);

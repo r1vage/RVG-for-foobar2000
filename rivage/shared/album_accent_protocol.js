@@ -38,10 +38,13 @@ if (typeof SharedAccentProtocol === 'undefined') {
 
             requestAccent: requestAccent,
 
-            // Startup compatibility: legacy accent plus the semantic theme snapshot.
+            // Startup compatibility: request the complete semantic snapshot first,
+            // then the legacy accent. The producer answers with PREPARE -> accent ->
+            // COMMIT, so semantic-aware consumers stage both pieces before one
+            // synchronized visual commit.
             request: function () {
-                requestAccent();
                 SharedThemeProtocol.request();
+                requestAccent();
             },
 
             opaque: opaque,

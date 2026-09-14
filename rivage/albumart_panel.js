@@ -1,6 +1,6 @@
 'use strict';
 
-window.DefineScript('RVG Album Art', { author: 'marc2003; adapted by RivaGe', version: '1.12.0' });
+window.DefineScript('RVG Album Art', { author: 'marc2003; adapted by RivaGe', version: '1.13.0' });
 
 // Narrow failure reporting. Most empty catches in this file guard
 // best-effort tooltip text and an optional system-colour read that already
@@ -17,11 +17,13 @@ function reportFailure(what, err) {
 	try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
 }
 
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\settings_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 
 const MENU_STRING = 0x00000000;
 const MENU_GRAYED = 0x00000001;
@@ -55,7 +57,7 @@ function clampInt(value, minimum, maximum, fallback) {
 }
 
 function scale(value) {
-	const dpi = Number(window.DPI);
+	const dpi = RivageScale.dpi();
 	return Math.round(Number(value) * (Number.isFinite(dpi) && dpi > 0 ? dpi : 72) / 72);
 }
 
@@ -224,6 +226,9 @@ function refreshTheme() {
 }
 
 function drawBackground(gr) {
+	// Preserve the panel's original transparency contract. If the component is
+	// genuinely transparent, its host remains responsible for the pixels below it;
+	// otherwise paint this panel's root-coordinate-mapped Mica slice normally.
 	if (window.IsTransparent) return;
 	let colour = theme.background;
 	if (backgroundMode === 1) {
@@ -231,7 +236,7 @@ function drawBackground(gr) {
 	} else if (backgroundMode === 2) {
 		colour = customBackground;
 	}
-	gr.FillSolidRect(0, 0, albumart.w, albumart.h, colour);
+	RivageBackdrop.paint(gr, 0, 0, albumart.w, albumart.h, colour);
 }
 
 function drawAlbumImage(gr, img, x, y, w, h, aspect, border) {
@@ -469,6 +474,7 @@ function on_notify_data(name, info) {
 		const nextAccent = SharedAccentProtocol.opaque(info);
 		if (nextAccent === sharedAlbumAccent) return;
 		sharedAlbumAccent = nextAccent;
+		if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
 		refreshTheme();
 		if (accentBorderEnabled) repaintAlbumArtArea();
 	}

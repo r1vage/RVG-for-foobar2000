@@ -1,18 +1,13 @@
 window.DrawMode = 0;
 
-// Compact "Mini Player" view.
-//
-// This panel sits alongside "Top bar"/"BODY"/"TOP BUTTONS" under the root
-// splitter and is normally hidden. splitters/root_splitter.js shows it full-
-// size (and hides everything else) while Mini Player mode is active, and
-// also owns shrinking/restoring the actual main foobar2000 window - see
-// MINI_PLAYER_SETUP.md for the one-time layout step this panel needs, and
-// shared/miniplayer_protocol.js for how the two sides talk to each other.
-//
-// This panel only draws the compact transport and asks the root splitter to
-// enter/exit the mode; it holds no window-geometry logic of its own.
+// Compact "Mini Player" view. Normally hidden; splitters/root_splitter.js shows it
+// full-size and owns the main-window resize/restore - see MINI_PLAYER_SETUP.md.
+// Design 1 and Design 2 differ only in layout() and on_paint()'s text branch.
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\ui_scale.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\design_system.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\dynamic_theme_protocol.js");
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\album_accent_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\settings_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\foobar_actions.js");
@@ -23,7 +18,7 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\miniplayer_protocol.js");
 
 window.DefineScript(RivageUI.copy.popupTitle("Mini Player"), {
     author: "RivaGe",
-    version: "1.2.0",
+    version: "2.4.1",
     features: { drag_n_drop: false, grab_focus: false }
 });
 
@@ -73,9 +68,19 @@ function panelIsVisible() {
 }
 
 var scriptActive = true;
-// Global settings are persisted by tab-switcher-right.js and delivered to
-// this read-only consumer over shared/miniplayer_protocol.js.
+// Persisted by tab-switcher-right.js; this panel is a read-only consumer.
 var miniPlayerSettings = MiniPlayerProtocol.defaultSettings();
+
+function coverLayoutSelected() {
+    return miniPlayerSettings.layout === MiniPlayerProtocol.Layout.Cover;
+}
+
+// What layout() last produced. Design 2 falls back to Design 1 at sizes it
+// cannot honour, so paint from this, never from the setting.
+var activeLayoutIsCover = false;
+function isCoverLayout() {
+    return activeLayoutIsCover;
+}
 
 var g_dpi = 100;
 function _scale(value) {
@@ -86,8 +91,7 @@ function make_font(name, size, style) {
     return RivageUI.font(name || "Segoe UI", _scale(size), style);
 }
 
-// Theme - always follows the shared album-art accent; this panel is too
-// small to carry its own settings screen for a fixed/shared accent choice.
+// Theme - always follows the shared album-art accent.
 
 var theme = {
     background: RGB(30, 30, 30), // fallback only - overwritten by refreshHostColours() below
@@ -117,6 +121,10 @@ var iconFontName = RivageUI.iconFontFamily();
 
 var fonts = {};
 
+// Design 2's artist line, and the size its seek strip's labels borrow.
+// Unscaled - make_font() and SeekbarWidget both apply the same DPI.
+var COVER_ARTIST_FONT_SIZE = 12;
+
 var REFERENCE_HEIGHT = 120;
 var MIN_SIZE_SCALE = 0.6;
 var MAX_SIZE_SCALE = 2.5;
@@ -129,6 +137,10 @@ function rebuildFontObjects() {
     fonts.info = make_font(infoFontName, 12, 0);
     fonts.icon = make_font(iconFontName, 13, 0);
     fonts.rating = make_font(iconFontName, 12, 0);
+    // Design 2 only.
+    fonts.title = make_font(infoFontName, 14, 1);
+    fonts.artist = make_font(infoFontName, COVER_ARTIST_FONT_SIZE, 0);
+    fonts.iconSmall = make_font(iconFontName, 11, 0);
     resetMarquee();
 }
 
@@ -136,7 +148,7 @@ function updateDpiFromHeight() {
     var h = window.Height;
     if (h <= 0) return false;
 
-    var dpiFactor = (Number(window.DPI) || 96) / 96;
+    var dpiFactor = (RivageScale.dpi() || 96) / 96;
     var sizeFactor = clampNumber(h / REFERENCE_HEIGHT, MIN_SIZE_SCALE, MAX_SIZE_SCALE);
     var nextDpi = clampNumber(Math.round(dpiFactor * sizeFactor * 100), MIN_DPI_PERCENT, MAX_DPI_PERCENT);
 
@@ -166,7 +178,8 @@ var tfo = {
     ratingPlaycount2003: fb.TitleFormat("%2003_rating%")
 };
 
-var cache = { text: "", loved: false, rating: 0 };
+// text is Design 1's combined line; title/artist are Design 2's two.
+var cache = { text: "", title: "", artist: "", loved: false, rating: 0 };
 var metadataRefreshTimers = Object.create(null);
 
 function getHandleKey(h) {
@@ -213,6 +226,8 @@ function refreshCache() {
     var title, artist, ratingFormatter;
     if (!handle) {
         cache.text = "Not playing";
+        cache.title = "Not playing";
+        cache.artist = "";
         cache.loved = false;
         cache.rating = 0;
         return;
@@ -221,6 +236,8 @@ function refreshCache() {
     title = evaluateWithHandle(tfo.title);
     artist = evaluateWithHandle(tfo.artist);
     cache.text = artist ? (title + "  \u2014  " + artist) : (title || "Unknown title");
+    cache.title = title || "Unknown title";
+    cache.artist = artist || "";
     cache.loved = RivageCommands.evaluateLoved(handle);
     ratingFormatter = PlaybackStatsSource.isPlaycount2003()
         ? tfo.ratingPlaycount2003 : tfo.ratingPlaybackStatistics;
@@ -287,8 +304,7 @@ function setRating(value) {
         ok = fb.RunContextCommandWithMetadb(command, new FbMetadbHandleList(target), 8);
         if (!ok) throw new Error(ratingStorageName() + " did not expose the rating command.");
 
-        // Optimistic feedback; the component's title-format field remains
-        // authoritative and is re-read after it has had time to persist.
+        // Optimistic; the title-format field stays authoritative and is re-read.
         if (targetKey === trackKey) {
             cache.rating = nextValue;
             window.Repaint(true);
@@ -357,13 +373,11 @@ function startPendingArtRefresh() {
 function scheduleArtRefresh() {
     var changedTrack = !!handle && trackKey !== artKey;
 
-    // Hidden Mini Player instances receive playback callbacks too. Remember the
-    // newest request, but do not decode/scale artwork until the panel is shown.
+    // Hidden instances still get playback callbacks: remember the newest
+    // request, but decode nothing until the panel is shown.
     cancelScheduledArtRefresh(true);
-    // Do not flash the previous track's decoded cover on the first visible
-    // paint while the new lookup is still inside its short settle window.
-    // Same-key stream metadata refreshes deliberately retain the current image
-    // until its replacement arrives.
+    // Don't flash the previous cover during the settle window. Same-key
+    // stream refreshes deliberately keep the current image.
     if (changedTrack) {
         artImage = null;
         artKey = "";
@@ -419,8 +433,8 @@ async function fetchArt(forHandle, generation) {
     }
     clearArtRender();
 
-    // The image result is useful to keep, but building a scaled GDI surface for
-    // a panel hidden 99% of the time is not. drawArt() rebuilds it on demand.
+    // Keep the image, but not a scaled surface for a hidden panel;
+    // drawArt() rebuilds it on demand.
     if (!panelIsVisible()) return;
 
     rebuildArtRender();
@@ -490,9 +504,33 @@ function drawArt(gr, rect) {
     }
 }
 
-// Track info marquee - single "Title  \u2014  Artist" line, same as Top Bar.
+// Track info marquee. Design 1 scrolls one combined line; Design 2 gives the
+// title and artist one each. A marquee only allocates a bitmap when its text
+// overflows, so the second one is free in the common case.
 
 var marqueePrepared = false;
+
+function repaintTextRect(rect) {
+    if (!rect || !rect.visible || rect.w <= 0 || rect.h <= 0) return;
+    window.RepaintRect(rect.x, rect.y, rect.w, rect.h);
+}
+
+function makeTextMarquee(rectName) {
+    return MarqueeWidget.create({
+        interval: 33,
+        speed: 34,
+        pause: 1400,
+        gap: 40,
+        isVisible: panelIsVisible,
+        skipWorkWhenHidden: true,
+        stopTimerWhenHidden: true,
+        onTick: function () {
+            repaintTextRect(layoutRects[rectName]);
+        }
+    });
+}
+
+// Draws into layoutRects.info in Design 1 and layoutRects.title in Design 2.
 var titleMarquee = MarqueeWidget.create({
     interval: 33,
     speed: 34,
@@ -502,41 +540,52 @@ var titleMarquee = MarqueeWidget.create({
     skipWorkWhenHidden: true,
     stopTimerWhenHidden: true,
     onTick: function () {
-        if (layoutRects.info) {
-            window.RepaintRect(layoutRects.info.x, layoutRects.info.y, layoutRects.info.w, layoutRects.info.h);
-        }
+        repaintTextRect(isCoverLayout() ? layoutRects.title : layoutRects.info);
     }
 });
+var artistMarquee = makeTextMarquee("artist");
 
 function resetMarquee() {
     titleMarquee.reset();
+    artistMarquee.reset();
     marqueePrepared = false;
 }
 
 function startMarqueeTimer() {
     titleMarquee.startTimer();
+    if (isCoverLayout()) artistMarquee.startTimer();
 }
 
 function measureTextWidth(text, font) {
     return RivageUI.measureText(text, font, true);
 }
 
-function prepareMarquee() {
-    var rect = layoutRects.info;
-
-    if (!rect || !rect.visible || !cache.text || !fonts.info || rect.w <= 0) {
-        titleMarquee.reset();
-        marqueePrepared = true;
+function prepareOneMarquee(marquee, text, font, rect, colour, lineHeight) {
+    if (!rect || !rect.visible || !text || !font || rect.w <= 0) {
+        marquee.reset();
         return;
     }
 
-    titleMarquee.prepare(cache.text, fonts.info, rect, {
+    marquee.prepare(text, font, rect, {
         measureText: measureTextWidth,
         scale: _scale,
-        textColour: theme.text,
-        textY: function (imageHeight) { return Math.max(0, Math.round((imageHeight - _scale(15)) / 2)); },
+        textColour: colour,
+        textY: function (imageHeight) {
+            return Math.max(0, Math.round((imageHeight - _scale(lineHeight)) / 2));
+        },
         textRenderingHint: TEXT_RENDERING_HINT_ANTIALIAS
     });
+}
+
+function prepareMarquee() {
+    if (isCoverLayout()) {
+        prepareOneMarquee(titleMarquee, cache.title, fonts.title, layoutRects.title, theme.text, 17);
+        prepareOneMarquee(artistMarquee, cache.artist, fonts.artist, layoutRects.artist,
+            theme.textTertiary, 15);
+    } else {
+        prepareOneMarquee(titleMarquee, cache.text, fonts.info, layoutRects.info, theme.text, 15);
+        artistMarquee.reset();
+    }
     marqueePrepared = true;
 }
 
@@ -547,12 +596,36 @@ function drawTrackInfo(gr, rect) {
     }
 }
 
-// Seekbar - shared appearance/state, same widget Top Bar and Controls use.
-// Mini Player owns only whether its 50% marker is visible; marker style,
-// colours, font, timing mode and thickness still follow shared Seekbar settings.
+function drawCoverText(gr) {
+    var titleRect = layoutRects.title;
+    var artistRect = layoutRects.artist;
+
+    if (titleRect && titleRect.visible) {
+        if (!titleMarquee.draw(gr, titleRect)) {
+            gr.GdiDrawText(cache.title, fonts.title, theme.text,
+                titleRect.x, titleRect.y, titleRect.w, titleRect.h,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
+    }
+    if (artistRect && artistRect.visible && cache.artist) {
+        if (!artistMarquee.draw(gr, artistRect)) {
+            gr.GdiDrawText(cache.artist, fonts.artist, theme.textTertiary,
+                artistRect.x, artistRect.y, artistRect.w, artistRect.h,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
+    }
+}
+
+// Seekbar - the shared widget Top Bar and Controls use. This panel overrides
+// only 50% marker visibility and Design 2's label metrics.
 
 var seekbar = SeekbarWidget.create({
-    showMidpointMark: function () { return miniPlayerSettings.showMidpointMark; }
+    showMidpointMark: function () { return miniPlayerSettings.showMidpointMark; },
+    // Design 2's strip runs alongside the transport, so it trades a tighter
+    // label reserve (34 still holds "-12:34") for track width, and matches the
+    // artist line's size. Hugging is the widget's own default.
+    labelWidth: function () { return isCoverLayout() ? 34 : 0; },
+    fontSize: function () { return isCoverLayout() ? COVER_ARTIST_FONT_SIZE : 0; }
 });
 
 function applySeekbarSetting(settingId, value) {
@@ -562,7 +635,9 @@ function applySeekbarSetting(settingId, value) {
 
 function adoptMiniPlayerSettings(settings) {
     var next = MiniPlayerProtocol.normaliseSettings(settings, miniPlayerSettings);
-    var changed = next.lockWindowSize !== miniPlayerSettings.lockWindowSize ||
+    var layoutChanged = next.layout !== miniPlayerSettings.layout;
+    var changed = layoutChanged ||
+        next.lockWindowSize !== miniPlayerSettings.lockWindowSize ||
         next.alwaysOnTop !== miniPlayerSettings.alwaysOnTop ||
         next.showLoveButton !== miniPlayerSettings.showLoveButton ||
         next.showRating !== miniPlayerSettings.showRating ||
@@ -570,6 +645,12 @@ function adoptMiniPlayerSettings(settings) {
 
     miniPlayerSettings = next;
     if (!changed) return;
+
+    // Different fonts, viewports and art proportions per design.
+    if (layoutChanged) {
+        resetMarquee();
+        clearArtRender();
+    }
 
     if (!miniPlayerSettings.showRating) {
         ratingHover = 0;
@@ -598,6 +679,8 @@ function makeButton(options) {
         onClick: options.onClick || null,
         enabled: options.enabled,
         active: options.active,
+        // Which `fonts` entry draws the glyph; layout() sets it per design.
+        fontKey: "icon",
         x: 0, y: 0, w: 0, h: 0, hover: false, pressed: false,
         contains: function (x, y) {
             return x >= this.x && y >= this.y && x < this.x + this.w && y < this.y + this.h;
@@ -625,8 +708,7 @@ function playPauseGlyph() {
     return fb.IsPlaying && !fb.IsPaused ? RivageUI.icons.pause : RivageUI.icons.play;
 }
 
-// Segoe Fluent Icons/MDL2 "BackToWindow" - reads as a window shrinking back
-// down, which is exactly what this control does.
+// Segoe Fluent Icons/MDL2 "BackToWindow".
 var EXIT_GLYPH = "\uE73F";
 
 var prevBtn = makeButton({ id: "previous", glyph: RivageUI.icons.previous, onClick: function () { fb.Prev(); } });
@@ -693,19 +775,20 @@ function drawIconButton(gr, btn) {
     var enabled = btn.isEnabled();
     var active = btn.isActive();
     var hot = enabled && (btn.hover || btn.pressed);
+    var font = fonts[btn.fontKey] || fonts.icon;
     var colour;
 
     if (hot) {
         gr.FillRoundRect(btn.x, btn.y, btn.w, btn.h, _scale(3), _scale(3),
             blendColours(theme.background, theme.hover, btn.pressed ? 0.18 : 0.10));
     }
-    if (!glyph || !fonts.icon) return;
+    if (!glyph || !font) return;
 
     if (!enabled) colour = blendColours(theme.background, theme.textTertiary, 0.45);
     else if (active || hot) colour = currentAccent();
     else colour = theme.textTertiary;
 
-    gr.GdiDrawText(glyph, fonts.icon, colour,
+    gr.GdiDrawText(glyph, font, colour,
         btn.x, btn.y, btn.w, btn.h,
         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 }
@@ -727,12 +810,9 @@ function drawRating(gr) {
     }
 }
 
-// Layout - a fixed vertical stack (art+text row, transport/actions row,
-// seek strip). Love sits to the left of the centred transport group and the
-// five rating stars sit to its right. Optional actions disappear as whole
-// controls before they can crowd transport or become partly clickable.
-// The exit control is pinned to the top-right corner and stays available at
-// any size - it is the direct way back to the normal view.
+// One rect table, metrics and hit-testing for both designs; only the arrangement
+// differs. An optional action disappears as a whole control rather than crowd the
+// transport or stay partly clickable, and exit is always pinned top-right.
 
 var layoutRects = {};
 var layoutWidth = -1;
@@ -740,14 +820,32 @@ var layoutHeight = -1;
 var PAD = 0, EXIT_SIZE = 0, SEEK_HEIGHT = 0, CONTROLS_HEIGHT = 0;
 var BTN_SIZE = 0, BTN_GAP = 0, ROW_GAP = 0;
 var ENGAGEMENT_GAP = 0, RATING_STAR_SIZE = 0, RATING_STAR_GAP = 0;
+var COVER_PAD = 0, COVER_GAP = 0, COVER_BTN_SIZE = 0, COVER_BTN_GAP = 0;
+var COVER_TITLE_HEIGHT = 0, COVER_ARTIST_HEIGHT = 0, COVER_LINE_GAP = 0;
+var COVER_ACTION_HEIGHT = 0, COVER_HEART_SIZE = 0;
+// Below this the seekbar's labels start overlapping its track.
+var MIN_SEEK_WIDTH = 0;
+
+function hiddenRect() {
+    return { x: -100, y: -100, w: 0, h: 0, visible: false };
+}
+
+function clearRatingRect() {
+    layoutRects.rating = {
+        x: -100, y: -100, w: 0, h: 0,
+        visible: false, starX: -100, starSize: 0, starGap: 0
+    };
+    ratingHover = 0;
+    ratingPressed = 0;
+}
 
 function updateMetrics() {
     PAD = _scale(8);
     EXIT_SIZE = _scale(22);
-    // Core: Console is inherited at its real host size, so a fixed 22-pixel
-    // row can clip the lower half of the elapsed/end labels. Ask the shared
-    // widget for the current font/thumb-aware minimum instead.
-    SEEK_HEIGHT = Math.max(_scale(22), Math.ceil(SeekbarWidget.minimumOuterHeight()));
+    // Core: Console keeps its real host size, so a fixed row can clip the
+    // labels. Ask the widget - passing the instance, so Design 2's smaller
+    // label size is what gets reserved.
+    SEEK_HEIGHT = Math.max(_scale(22), Math.ceil(SeekbarWidget.minimumOuterHeight(seekbar)));
     CONTROLS_HEIGHT = _scale(28);
     BTN_SIZE = _scale(22);
     BTN_GAP = _scale(10);
@@ -755,11 +853,207 @@ function updateMetrics() {
     ENGAGEMENT_GAP = _scale(5);
     RATING_STAR_SIZE = _scale(13);
     RATING_STAR_GAP = Math.max(0, _scale(1));
+    MIN_SEEK_WIDTH = _scale(104);
+
+    COVER_PAD = _scale(10);
+    COVER_GAP = _scale(6);
+    COVER_BTN_SIZE = _scale(18);
+    COVER_BTN_GAP = _scale(4);
+    COVER_TITLE_HEIGHT = _scale(20);
+    COVER_ARTIST_HEIGHT = _scale(17);
+    COVER_LINE_GAP = _scale(1);
+    COVER_ACTION_HEIGHT = _scale(18);
+    COVER_HEART_SIZE = _scale(15);
 }
 
 function layout() {
-    var w = Math.max(0, window.Width);
-    var h = Math.max(0, window.Height);
+    layoutWidth = Math.max(0, window.Width);
+    layoutHeight = Math.max(0, window.Height);
+
+    // The seekbar's option callbacks read isCoverLayout() and updateMetrics()
+    // reserves the row from them, so the flag must point at the design about
+    // to be built. layoutCover() re-runs both if it falls back.
+    activeLayoutIsCover = coverLayoutSelected();
+    updateMetrics();
+
+    if (activeLayoutIsCover) layoutCover();
+    else layoutClassic();
+
+    if (panelIsVisible()) {
+        rebuildArtRender();
+        prepareMarquee();
+    } else {
+        // Stay dormant while hidden; on_paint rebuilds both.
+        clearArtRender();
+        resetMarquee();
+    }
+}
+
+function actionRowWidth(withLove, withRating, heartSize, ratingWidth) {
+    return (withLove ? heartSize : 0) + (withRating ? ratingWidth : 0) +
+        (withLove && withRating ? COVER_GAP : 0);
+}
+
+// Design 2.
+function layoutCover() {
+    var w = layoutWidth;
+    var h = layoutHeight;
+    var artSize, colX, colRight, colW, exitSize, exitX, titleRight;
+    var rowHeight, rowY, seekHeight, transportSize, transportGap, transportW;
+    var seekX, seekW, transportX, btnY;
+    var textTop, textBottom, textRoom, lines, blockHeight, blockY;
+    var titleY, artistY, actionsY, actionX, titleWidth, artistWidth;
+    var heartSize, ratingStarSize, ratingGap, ratingWidth, actionsWidth;
+    var showLove, showRating;
+
+    // Bleeds to the top, left and bottom edges. Square while the panel is wide
+    // enough; otherwise a centre-cropped slice rather than eating the column.
+    artSize = Math.max(0, Math.min(h, Math.round(w * 0.5)));
+    layoutRects.art = { x: 0, y: 0, w: artSize, h: h, visible: artSize > 0 && h > 0 };
+    layoutRects.info = hiddenRect();
+
+    colX = artSize + COVER_PAD;
+    colRight = Math.max(colX, w - COVER_PAD);
+    colW = Math.max(0, colRight - colX);
+
+    exitSize = Math.min(EXIT_SIZE, colW, Math.max(0, h - COVER_GAP * 2));
+    exitX = colRight - exitSize;
+    layoutRects.exit = {
+        x: exitX, y: COVER_GAP, w: exitSize, h: exitSize,
+        visible: exitSize > 0
+    };
+    if (layoutRects.exit.visible) {
+        exitBtn.setBounds(exitX, COVER_GAP, exitSize, exitSize);
+        exitBtn.fontKey = "icon";
+    } else {
+        hideButton(exitBtn);
+    }
+    titleRight = layoutRects.exit.visible ? Math.max(colX, exitX - COVER_GAP) : colRight;
+
+    // Transport first, the rest to the seek strip. The buttons shrink with the
+    // column before the design gives up.
+    seekHeight = SEEK_HEIGHT;
+    transportGap = COVER_BTN_GAP;
+    transportSize = Math.min(COVER_BTN_SIZE,
+        Math.max(0, Math.floor((colW - transportGap * 2) / 3)));
+    transportW = transportSize * 3 + transportGap * 2;
+    rowHeight = Math.max(seekHeight, transportSize);
+    rowY = h - COVER_GAP - rowHeight;
+
+    if (rowY < 0 || transportSize < _scale(10)) {
+        // Nothing sane fits. Re-measure first - the seek row was reserved for
+        // Design 2's smaller labels.
+        activeLayoutIsCover = false;
+        updateMetrics();
+        layoutClassic();
+        return;
+    }
+
+    layoutRects.controls = {
+        x: colX, y: rowY, w: colW, h: rowHeight,
+        visible: true
+    };
+
+    seekX = colX + transportW + COVER_GAP;
+    seekW = Math.max(0, colRight - seekX);
+    if (seekW >= MIN_SEEK_WIDTH && seekHeight > 0) {
+        layoutRects.seek = {
+            x: seekX, y: rowY + Math.round((rowHeight - seekHeight) / 2),
+            w: seekW, h: seekHeight, visible: true
+        };
+        transportX = colX;
+    } else {
+        // No seek strip here, so centre the transport in the column.
+        layoutRects.seek = hiddenRect();
+        transportX = colX + Math.max(0, Math.round((colW - transportW) / 2));
+    }
+
+    btnY = rowY + Math.round((rowHeight - transportSize) / 2);
+    prevBtn.setBounds(transportX, btnY, transportSize, transportSize);
+    playBtn.setBounds(transportX + transportSize + transportGap, btnY, transportSize, transportSize);
+    nextBtn.setBounds(transportX + (transportSize + transportGap) * 2, btnY, transportSize, transportSize);
+    prevBtn.fontKey = "iconSmall";
+    playBtn.fontKey = "iconSmall";
+    nextBtn.fontKey = "iconSmall";
+
+    // Love and the stars share one action row under the artist. Each is still
+    // dropped as a whole control, and the row only exists if at least one of
+    // them does.
+    showLove = !!handle && miniPlayerSettings.showLoveButton;
+    showRating = !!handle && miniPlayerSettings.showRating;
+    heartSize = Math.min(COVER_HEART_SIZE, COVER_ACTION_HEIGHT);
+    ratingStarSize = Math.min(RATING_STAR_SIZE, COVER_ACTION_HEIGHT);
+    ratingGap = RATING_STAR_GAP;
+    ratingWidth = ratingStarSize * 5 + ratingGap * 4;
+    if (showLove && heartSize <= 0) showLove = false;
+    if (showRating && ratingStarSize <= 0) showRating = false;
+    // Stars are much the wider of the two, so they go first if both won't fit.
+    actionsWidth = actionRowWidth(showLove, showRating, heartSize, ratingWidth);
+    if (actionsWidth > colW && showRating) {
+        showRating = false;
+        actionsWidth = actionRowWidth(showLove, showRating, heartSize, ratingWidth);
+    }
+    if (actionsWidth > colW) {
+        showLove = false;
+        actionsWidth = 0;
+    }
+
+    // Centred in what is left above the row, dropping a line at a time as the
+    // height shrinks - a clipped line is worse than none.
+    textTop = COVER_GAP;
+    textBottom = Math.max(textTop, rowY - COVER_GAP);
+    textRoom = textBottom - textTop;
+    blockHeight = COVER_TITLE_HEIGHT + COVER_LINE_GAP + COVER_ARTIST_HEIGHT;
+    lines = textRoom >= blockHeight ? 2 : 1;
+    if (lines === 2 && actionsWidth > 0 &&
+        textRoom >= blockHeight + COVER_LINE_GAP + COVER_ACTION_HEIGHT) {
+        lines = 3;
+        blockHeight += COVER_LINE_GAP + COVER_ACTION_HEIGHT;
+    } else if (lines === 1) {
+        blockHeight = COVER_TITLE_HEIGHT;
+    }
+    blockY = textTop + Math.max(0, Math.round((textRoom - blockHeight) / 2));
+    titleY = blockY;
+    artistY = blockY + COVER_TITLE_HEIGHT + COVER_LINE_GAP;
+    actionsY = artistY + COVER_ARTIST_HEIGHT + COVER_LINE_GAP;
+
+    titleWidth = Math.max(0, titleRight - colX);
+    layoutRects.title = {
+        x: colX, y: titleY, w: titleWidth, h: COVER_TITLE_HEIGHT,
+        visible: titleWidth > 0 && textRoom >= COVER_TITLE_HEIGHT
+    };
+
+    artistWidth = colW;
+    layoutRects.artist = {
+        x: colX, y: artistY, w: artistWidth, h: COVER_ARTIST_HEIGHT,
+        visible: lines >= 2 && artistWidth > 0
+    };
+
+    actionX = colX;
+    if (lines === 3 && showLove) {
+        loveBtn.setBounds(actionX, actionsY + Math.round((COVER_ACTION_HEIGHT - heartSize) / 2),
+            heartSize, heartSize);
+        loveBtn.fontKey = "iconSmall";
+        actionX += heartSize + COVER_GAP;
+    } else {
+        hideButton(loveBtn);
+    }
+
+    if (lines === 3 && showRating) {
+        layoutRects.rating = {
+            x: actionX, y: actionsY, w: ratingWidth, h: COVER_ACTION_HEIGHT,
+            visible: true,
+            starX: actionX, starSize: ratingStarSize, starGap: ratingGap
+        };
+    } else {
+        clearRatingRect();
+    }
+}
+
+// Design 1.
+function layoutClassic() {
+    var w = layoutWidth;
+    var h = layoutHeight;
     var contentW, seekHeight, seekGap, seekY, controlsY, controlsHeight, controlsWidth;
     var mainH, artSize, exitX, exitSize, topContentRight, topContentWidth;
     var textX, textRight, infoW, controlsOverlapExit;
@@ -767,17 +1061,16 @@ function layout() {
     var transportRight, loveSize, loveY, leftRoom, rightRoom;
     var ratingWidth, ratingStarSize, ratingGap, showLove, showRating;
 
-    layoutWidth = w;
-    layoutHeight = h;
-    updateMetrics();
+    activeLayoutIsCover = false;
+    layoutRects.title = hiddenRect();
+    layoutRects.artist = hiddenRect();
 
     contentW = Math.max(0, w - PAD * 2);
     exitSize = Math.min(EXIT_SIZE, Math.max(0, w - PAD * 2), Math.max(0, h - PAD * 2));
     controlsHeight = Math.min(CONTROLS_HEIGHT, Math.max(0, h - PAD));
-    // The shared seekbar reserves elapsed/end labels on both sides. Below this
-    // width those labels overlap the track. Also omit it when the current
-    // height/DPI cannot hold both fixed rows without overlap.
-    seekHeight = contentW >= _scale(104) &&
+    // Omit the strip when its labels would overlap the track, or when the
+    // height/DPI cannot hold both fixed rows.
+    seekHeight = contentW >= MIN_SEEK_WIDTH &&
         h >= PAD + controlsHeight + ROW_GAP + SEEK_HEIGHT ? SEEK_HEIGHT : 0;
     seekGap = seekHeight > 0 ? ROW_GAP : 0;
     seekY = Math.max(0, h - PAD - seekHeight);
@@ -792,9 +1085,8 @@ function layout() {
     textRight = Math.max(textX, topContentRight);
     infoW = Math.max(0, textRight - textX);
 
-    // On very short/high-DPI custom sizes the transport row can rise into the
-    // exit button's vertical band. Reserve the exit button's horizontal band
-    // instead of allowing Next and Restore to overlap.
+    // On short/high-DPI sizes the transport row can rise into the exit
+    // button's band; reserve its width rather than let the two overlap.
     controlsWidth = contentW;
     controlsOverlapExit = exitSize > 0 && controlsHeight > 0 &&
         controlsY < PAD + exitSize && controlsY + controlsHeight > PAD;
@@ -817,14 +1109,18 @@ function layout() {
 
     if (layoutRects.exit.visible) {
         exitBtn.setBounds(layoutRects.exit.x, layoutRects.exit.y, layoutRects.exit.w, layoutRects.exit.h);
+        exitBtn.fontKey = "icon";
     } else {
         hideButton(exitBtn);
     }
 
     if (layoutRects.controls.visible) {
-        // Preserve all three controls in narrow/tall custom mini-window sizes by
-        // reducing their gap and hit box together rather than letting Next spill
-        // outside the panel. At the default size this resolves to the full metrics.
+        prevBtn.fontKey = "icon";
+        playBtn.fontKey = "icon";
+        nextBtn.fontKey = "icon";
+        loveBtn.fontKey = "icon";
+        // Shrink gap and hit box together rather than letting Next spill out.
+        // At the default size this resolves to the full metrics.
         buttonGap = Math.min(BTN_GAP, Math.max(0, Math.floor(layoutRects.controls.w * 0.08)));
         buttonSize = Math.min(BTN_SIZE, layoutRects.controls.h,
             Math.max(0, Math.floor((layoutRects.controls.w - buttonGap * 2) / 3)));
@@ -868,34 +1164,14 @@ function layout() {
             };
         } else {
             showRating = false;
-            layoutRects.rating = {
-                x: -100, y: -100, w: 0, h: 0,
-                visible: false, starX: -100, starSize: 0, starGap: 0
-            };
-            ratingHover = 0;
-            ratingPressed = 0;
+            clearRatingRect();
         }
     } else {
         hideButton(prevBtn);
         hideButton(playBtn);
         hideButton(nextBtn);
         hideButton(loveBtn);
-        layoutRects.rating = {
-            x: -100, y: -100, w: 0, h: 0,
-            visible: false, starX: -100, starSize: 0, starGap: 0
-        };
-        ratingHover = 0;
-        ratingPressed = 0;
-    }
-
-    if (panelIsVisible()) {
-        rebuildArtRender();
-        prepareMarquee();
-    } else {
-        // Keep the normally hidden panel dormant; both resources are rebuilt
-        // lazily when JSplitter shows us and on_paint runs again.
-        clearArtRender();
-        resetMarquee();
+        clearRatingRect();
     }
 }
 
@@ -903,13 +1179,11 @@ function layout() {
 
 function on_paint(gr) {
     var i, btn, smoothingChanged = false;
-    // Some host builds can deliver a queued repaint after Show(false). Do not
-    // let that stale paint wake the normally dormant compact panel back up.
+    // A queued repaint can arrive after Show(false); don't let it wake us.
     if (!panelIsVisible()) return;
 
-    // JSplitter normally sends on_size before the first paint after Show(true),
-    // but a native child rebuild can deliver only the paint. Reconcile geometry
-    // here as a last line of defence, then lazily rebuild the hidden marquee.
+    // A native child rebuild can deliver a paint with no on_size, so reconcile
+    // geometry here as a last line of defence.
     if (layoutWidth !== window.Width || layoutHeight !== window.Height) {
         updateDpiFromHeight();
         layout();
@@ -918,6 +1192,10 @@ function on_paint(gr) {
     startPendingArtRefresh();
     startSeekTickTimer();
     startMarqueeTimer();
+
+    // Rectangular backdrop before anti-aliasing: GDI+ shape smoothing filters the
+    // DrawImage destination edge into a visible seam on the left and top rows.
+    RivageBackdrop.paint(gr, 0, 0, Math.max(0, window.Width), Math.max(0, window.Height), theme.background);
 
     if (typeof gr.SetSmoothingMode === "function") {
         try {
@@ -928,10 +1206,9 @@ function on_paint(gr) {
         }
     }
 
-    gr.FillSolidRect(0, 0, Math.max(0, window.Width), Math.max(0, window.Height), theme.background);
-
     if (layoutRects.art && layoutRects.art.visible) drawArt(gr, layoutRects.art);
-    if (layoutRects.info && layoutRects.info.visible) drawTrackInfo(gr, layoutRects.info);
+    if (isCoverLayout()) drawCoverText(gr);
+    else if (layoutRects.info && layoutRects.info.visible) drawTrackInfo(gr, layoutRects.info);
     if (layoutRects.seek && layoutRects.seek.visible) seekbar.draw(gr, layoutRects.seek, currentAccent());
     drawRating(gr);
 
@@ -949,8 +1226,7 @@ function on_paint(gr) {
     }
 }
 
-// Menu - deliberately small: this view exists to get out of the way, not to
-// carry its own settings screen.
+// Menu - deliberately small; this view exists to get out of the way.
 
 function on_mouse_rbtn_up(x, y) {
     var menu = window.CreatePopupMenu();
@@ -1081,8 +1357,7 @@ function on_mouse_lbtn_up(x, y) {
         return;
     }
 
-    // Matches Album Art's own click-to-play/pause placeholder behaviour, but
-    // only when the press also began on the artwork.
+    // Matches Album Art, but only when the press began on the artwork.
     if (activateArt) fb.PlayOrPause();
 }
 
@@ -1095,7 +1370,7 @@ function on_colours_changed() {
     refreshHostColours();
     if (panelIsVisible()) prepareMarquee();
     else resetMarquee();
-    window.Repaint(true);
+    SharedThemeProtocol.requestRepaint();
 }
 
 function on_playback_new_track(metadb) {
@@ -1108,7 +1383,7 @@ function on_playback_new_track(metadb) {
     scheduleArtRefresh();
     resetMarquee();
     layout();
-    window.Repaint(true);
+    window.Repaint();
 }
 
 function on_playback_dynamic_info_track() {
@@ -1121,7 +1396,7 @@ function on_playback_dynamic_info_track() {
     scheduleArtRefresh();
     resetMarquee();
     layout();
-    window.Repaint(true);
+    window.Repaint();
 }
 
 function on_playback_dynamic_info() {
@@ -1163,7 +1438,7 @@ function on_playback_stop(reason) {
     clearArtRender();
     resetMarquee();
     layout();
-    window.Repaint(true);
+    window.Repaint();
 }
 
 function on_playback_pause(state) {
@@ -1234,9 +1509,8 @@ function on_notify_data(name, info) {
         return;
     }
 
-    // Global edits are broadcast directly to every panel. Adopt a playback-
-    // statistics source change immediately; the authority's UPDATE handshake
-    // remains the fallback for arbitrary panel load order.
+    // Adopt a global playback-statistics change immediately; the UPDATE
+    // handshake stays the fallback for arbitrary load order.
     if (name === SettingsRegistry.VALUE_CHANGED && info && info.panelId === "global" &&
         PlaybackStatsSource.applySetting(info.settingId, info.value)) return;
     if (PlaybackStatsSource.onNotifyData(name, info, false)) return;
@@ -1245,10 +1519,11 @@ function on_notify_data(name, info) {
         var nextAccent = SharedAccentProtocol.opaque(info);
         if (nextAccent === sharedAlbumAccent) return;
         sharedAlbumAccent = nextAccent;
+        if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
         refreshHostColours();
         if (panelIsVisible()) prepareMarquee();
         else resetMarquee();
-        window.Repaint(true);
+        window.Repaint();
     }
 }
 

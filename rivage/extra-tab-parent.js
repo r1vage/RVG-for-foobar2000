@@ -1,18 +1,21 @@
 ﻿'use strict';
 
 window.DrawMode = 0; // GDI+
+window.EraseOnRepaint = false; // This host paints its complete backing surface itself.
 
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\settings_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\panel_host_kit.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\tab_bar_style.js');
 
 window.DefineScript('RVG Top Tabs', {
     author: 'RivaGe',
-    version: '3.1.0'
+    version: '3.11.1'
 });
 
 // Narrow failure reporting. Most empty catches in this file guard timer
@@ -67,7 +70,6 @@ var MIN_TAB_WIDTH = 84;
 var MAX_TAB_WIDTH = 220;
 var TAB_LIST_BUTTON_WIDTH = 36;
 
-// ----- Helpers ---------------------------------------------------------------
 function clamp(value, minimum, maximum) {
     return Math.max(minimum, Math.min(maximum, value));
 }
@@ -84,7 +86,7 @@ function blendColours(foreground, background, amount) {
     return RivageUI.mix(background, foreground, amount);
 }
 
-var dpi = (typeof window.DPI === 'number' && window.DPI > 0) ? window.DPI : 96;
+var dpi = RivageScale.dpi() || 96;
 
 function scale(value) {
     return Math.max(1, Math.round(value * dpi / 96));
@@ -102,7 +104,6 @@ function cleanCaption(caption) {
     return PanelHostKit.visibleCaptionPart(caption).toUpperCase();
 }
 
-// ----- Colours and fonts -----------------------------------------------------
 var COLOUR_CONTENT        = RGB(32, 32, 32);
 var COLOUR_TAB_BAR        = RGB(28, 28, 28);
 var COLOUR_SEPARATOR      = RGB(51, 51, 51);
@@ -131,7 +132,6 @@ function rebuildTabFont() {
 }
 rebuildTabFont();
 
-// ----- Runtime state ---------------------------------------------------------
 var tabs = [];
 var detectedPanelCount = -1;
 var detectedPanelFingerprint = '';
@@ -151,6 +151,11 @@ var startupTimer = null;
 var childWatchTimer = null;
 var pendingActiveKey = '';
 
+// Pseudo-transparent children cache the root's pixels and a new Artwork Palette
+// colour alone does not refresh that copy, so arm one same-geometry nudge after
+// the root surface is drawn. Never toggle their flag; never nudge for Mica.
+var palettePseudoChildRefreshPending = false;
+
 var activeIndex = parseInt(window.GetProperty(PROPERTY_ACTIVE_INDEX, 0), 10);
 if (!isFinite(activeIndex) || activeIndex < 0) activeIndex = 0;
 var savedActiveKey = String(window.GetProperty(PROPERTY_ACTIVE_KEY, '') || '');
@@ -167,7 +172,6 @@ var scrollX = 0;
 var lastMouseX = -1;
 var lastMouseY = -1;
 
-// ----- Child discovery -------------------------------------------------------
 function findIndexByKey(key) {
     if (!key) return -1;
     for (var i = 0; i < tabs.length; i++) {
@@ -393,7 +397,6 @@ function persistActiveTab() {
     window.SetProperty(PROPERTY_ACTIVE_INDEX, activeIndex);
 }
 
-// ----- Geometry --------------------------------------------------------------
 function tabBarHeight() {
     if (panelHeight <= 0) return 0;
     return Math.min(panelHeight, scale(TabBarStyle.settings.tabBarHeight));
@@ -526,6 +529,15 @@ function safeConfigurePanel(panel) {
         if (panel.ShowCaption !== false) panel.ShowCaption = false;
         // Locked prevents layout-editor drag/resize; runtime placement stays script-owned.
         if (panel.Locked !== true) panel.Locked = true;
+        // A pseudo-transparent child must also stop erasing its own background, or
+        // the erase brush covers the copied backing. tab-switcher-right.js pairs
+        // these two flags on the EXTRA wrapper; this host only ever set the first.
+        try {
+            if (panel.SupportPseudoTransparency === true && panel.EraseBackground !== false) {
+                panel.EraseBackground = false;
+            }
+        } catch (eErase) { }
+        RivageBackdrop.configureChildPanel(panel);
         return true;
     } catch (e) {
         return false;
@@ -570,9 +582,13 @@ function layoutChildren(width, height, targetIndex, configureAll, hideOthers) {
         var complete = true;
         var i;
         if (configureAll) {
+            // Full enumeration: scope it so tabs removed from the layout stop
+            // answering Mica frame requests from their last known rectangle.
+            RivageBackdrop.beginChildScan();
             for (i = 0; i < panels.length; i++) {
                 if (!safeConfigurePanel(panels[i])) complete = false;
             }
+            RivageBackdrop.endChildScan(complete);
         } else if (!safeConfigurePanel(panels[targetIndex])) {
             complete = false;
         }
@@ -620,6 +636,7 @@ function commitActiveTab(index) {
     ensureTabVisible(activeIndex);
     updateHoverFromPointer(false);
     broadcastActiveTab();
+    if (armPalettePseudoChildRefresh()) SharedThemeProtocol.requestRepaint();
     return true;
 }
 
@@ -690,7 +707,57 @@ function findTabIndex(value) {
     return -1;
 }
 
-// ----- Accent ---------------------------------------------------------------
+function armPalettePseudoChildRefresh() {
+    // Both artwork-backed surface modes need this: a third-party child cannot
+    // root-map its own slice, so without the nudge it keeps the one it last copied.
+    if (!RivageBackdrop.isSharedArtworkSurfaceMode()) {
+        palettePseudoChildRefreshPending = false;
+        return false;
+    }
+    palettePseudoChildRefreshPending = true;
+    return true;
+}
+
+function refreshActivePseudoTransparentChildBackground() {
+    if (!palettePseudoChildRefreshPending) return false;
+    if (!RivageBackdrop.isSharedArtworkSurfaceMode()) {
+        palettePseudoChildRefreshPending = false;
+        return false;
+    }
+    if (!initialized || scanBusy || layoutBusy || !tabs.length || !hostIsVisible()) return false;
+
+    var panels = acquirePanelSnapshot();
+    if (!panels || !panels[activeIndex]) return false;
+
+    var panel = panels[activeIndex];
+    try {
+        if (panel.Hidden || panel.SupportPseudoTransparency !== true) {
+            palettePseudoChildRefreshPending = false;
+            return true;
+        }
+
+        var x = Math.floor(Number(panel.X));
+        var y = Math.floor(Number(panel.Y));
+        var w = Math.floor(Number(panel.Width));
+        var h = Math.floor(Number(panel.Height));
+        if (!isFinite(x) || !isFinite(y) || !isFinite(w) || !isFinite(h) || w <= 0 || h <= 0) return false;
+
+        // Equal geometry on purpose (safeMovePanel would skip it): the Move is the
+        // native refresh edge that makes the child recopy its background from the
+        // painted Extra root, with no resize/hide and no second host paint wave.
+        panel.Move(x, y, w, h, false);
+        try { RivageBackdrop.noteChildPanel(panel); } catch (e2) { }
+        palettePseudoChildRefreshPending = false;
+        return true;
+    } catch (e) {
+        reportFailure('the active pseudo-transparent child background could not be refreshed', e);
+        return false;
+    } finally {
+        panel = null;
+        panels = null;
+    }
+}
+
 function currentAccent() {
     return TabBarStyle.settings.accentMode === TabBarStyle.ACCENT_SHARED ? sharedAlbumAccent : DEFAULT_UWP_ACCENT;
 }
@@ -705,7 +772,6 @@ function setAccentMode(mode) {
     repaintTabBar(true);
 }
 
-// ----- Painting -------------------------------------------------------------
 function drawNoPanelsMessage(gr) {
     if (!messageFont || tabs.length || contentHeight() <= scale(20)) return;
 
@@ -787,11 +853,10 @@ function drawTabBar(gr) {
         if (hoveredTabListButton) buttonBackground = hoverBackground;
         if (pressedTabListButton) buttonBackground = pressedBackground;
 
-        // This button is the final opaque overlay in the tab bar. Always repaint
-        // its full rectangle, even in the normal state, so a partially visible
-        // tab can never bleed underneath and cover the chevron. For GDI-drawn
-        // controls there is no separate z-index; paint order + an opaque final
-        // pass is the top-most equivalent.
+        // Final overlay in the tab bar: paint order is GDI's only z-index, so repaint
+        // the full rectangle even when normal or a partly visible tab bleeds over the
+        // chevron. Backdrop first - COLOUR_TAB_BAR is translucent in Mica.
+        RivageBackdrop.paint(gr, buttonRect.x, buttonRect.y, buttonRect.w, buttonRect.h, COLOUR_CONTENT);
         gr.FillSolidRect(buttonRect.x, buttonRect.y, buttonRect.w, buttonRect.h, buttonBackground);
 
         gr.FillSolidRect(buttonRect.x, buttonRect.y, scale(1), Math.max(1, buttonRect.h - scale(1)), COLOUR_SEPARATOR);
@@ -830,13 +895,16 @@ function reassertCursor() {
 
 function on_paint(gr) {
     updateHoverFromPointer(false);
-    gr.FillSolidRect(0, 0, panelWidth, panelHeight, COLOUR_CONTENT);
+    RivageBackdrop.paint(gr, 0, 0, panelWidth, panelHeight, COLOUR_CONTENT);
     drawNoPanelsMessage(gr);
     drawTabBar(gr);
     reassertCursor();
+
+    // Do this only after the new Artwork Palette backing pixels exist in this
+    // nested JSplitter root. It is a one-shot same-geometry refresh, not layout.
+    refreshActivePseudoTransparentChildBackground();
 }
 
-// ----- Mouse ----------------------------------------------------------------
 function on_mouse_move(x, y, mask) {
     var index = hitTestTab(x, y);
     var overTabListButton = hitTestTabListButton(x, y);
@@ -892,7 +960,6 @@ function on_mouse_wheel(step) {
     selectTab(next);
 }
 
-// ----- Context menu ----------------------------------------------------------
 function menuSafeLabel(text) {
     return String(text || '').replace(/&/g, '&&');
 }
@@ -990,10 +1057,10 @@ function on_mouse_rbtn_up(x, y, mask) {
     return false;
 }
 
-// ----- Callbacks -------------------------------------------------------------
 function on_colours_changed() {
     refreshTheme();
-    window.Repaint(true);
+    armPalettePseudoChildRefresh();
+    SharedThemeProtocol.requestRepaint();
 }
 
 function on_font_changed() {
@@ -1023,7 +1090,8 @@ function on_notify_data(name, info) {
         var nextAccent = opaqueColour(info);
         if (nextAccent === sharedAlbumAccent) return;
         sharedAlbumAccent = nextAccent;
-        if (TabBarStyle.settings.accentMode === TabBarStyle.ACCENT_SHARED) repaintTabBar(true);
+        if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
+        if (TabBarStyle.settings.accentMode === TabBarStyle.ACCENT_SHARED) repaintTabBar(false);
         return;
     }
 

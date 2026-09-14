@@ -5,18 +5,20 @@ window.DrawMode = 0;
 // Direct children are discovered dynamically. Native PanelObject wrappers stay
 // callback-local, and recurring discovery/layout work is idle while hidden.
 
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\settings_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\bottom_bar_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\panel_host_kit.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\resizing_mode_protocol.js');
 
 window.DefineScript('RVG Bottom Bar Host', {
     author: 'RivaGe',
-    version: '2.4.0',
+    version: '2.8.5',
     features: { drag_n_drop: false, grab_focus: false }
 });
 
@@ -58,6 +60,7 @@ var DIVIDER_HIT_SIZE = 8;
 var FRAME_STYLE_SPACING = 'spacing';
 var FRAME_STYLE_CARD = 'card';
 var FRAME_STYLE_WINDOW = 'window';
+var FRAME_STYLE_LINE = 'line';
 
 var PROPERTY_FRAME_STYLE = 'RIVAGE.BottomBar.FrameStyle.v1';
 var PROPERTY_OUTER_PADDING = 'RIVAGE.BottomBar.OuterPadding.v1';
@@ -89,15 +92,30 @@ var COLOUR_BACKGROUND = 0xff202022; //0xff272727 for 039 039 039
 var COLOUR_FRAME = 0xff202022;
 var COLOUR_TITLE_BAR = 0xff1c1c1e;
 var COLOUR_BORDER = 0xff3a3a3e;
+var COLOUR_FRAME_RIM = 0xff3a3a3e;
 var COLOUR_TITLE_TEXT = 0xffb8b8b8;
+var COLOUR_SEPARATOR = 0xff333333;
+var micaSurfaces = false;
 
+// Under Panel defaults the only pixels this theme owns are the gaps and the outer
+// padding, so the background has to be the one the child panels paint - 'host', as
+// the splitters already resolve - or every gap reads as a dark groove between them.
+// The artwork modes override the mode themselves.
 function refreshTheme() {
-    var resolved = RivageUI.createTheme({ mode: 'dark', accent: sharedAlbumAccent });
+    var resolved = RivageUI.createTheme({ mode: 'host', accent: sharedAlbumAccent });
     COLOUR_BACKGROUND = resolved.background;
     COLOUR_FRAME = resolved.card;
     COLOUR_TITLE_BAR = resolved.header;
     COLOUR_BORDER = resolved.stroke;
     COLOUR_TITLE_TEXT = resolved.textSecondary;
+    // Over the blurred cover the palette stroke reads bright on a dark artwork and
+    // all but vanishes on a pale one. The text colour at low alpha keeps the same
+    // weight either way - the same rim the playlist's inset card uses.
+    micaSurfaces = resolved.mica === true;
+    COLOUR_FRAME_RIM = micaSurfaces ? RivageUI.withAlpha(resolved.textPrimary, 42) : COLOUR_BORDER;
+    // Mica line reuses the tab bar's own separator, so both edges of the layout
+    // are the same hairline.
+    COLOUR_SEPARATOR = resolved.navigationSeparator;
 }
 
 var IDC_ARROW = 32512;
@@ -165,16 +183,33 @@ function isArray(value) {
 }
 
 
-var dpi = (typeof window.DPI === 'number' && window.DPI > 0) ? window.DPI : 96;
+var dpi = RivageScale.dpi() || 96;
 
 function scale(value) {
     return Math.max(0, Math.round(Number(value) * dpi / 96));
 }
 
-var frameStyle = String(window.GetProperty(PROPERTY_FRAME_STYLE, FRAME_STYLE_WINDOW));
-if (frameStyle !== FRAME_STYLE_SPACING && frameStyle !== FRAME_STYLE_CARD && frameStyle !== FRAME_STYLE_WINDOW) {
-    frameStyle = FRAME_STYLE_WINDOW;
+function normaliseFrameStyle(value) {
+    var style = String(value);
+    return style === FRAME_STYLE_SPACING || style === FRAME_STYLE_CARD ||
+        style === FRAME_STYLE_WINDOW || style === FRAME_STYLE_LINE
+        ? style
+        : FRAME_STYLE_WINDOW;
 }
+
+// Chrome-less styles: the panels get the whole slot and any frame drawing is a
+// hairline outside them.
+function frameStyleIsBare(style) {
+    return style === FRAME_STYLE_SPACING || style === FRAME_STYLE_LINE;
+}
+
+// One device pixel on purpose, not scale(1): at 150% the scaled hairline reads
+// as a bar rather than a line.
+function micaLineHeight() {
+    return 1;
+}
+
+var frameStyle = normaliseFrameStyle(window.GetProperty(PROPERTY_FRAME_STYLE, FRAME_STYLE_WINDOW));
 var outerPaddingPt = Math.round(clamp(window.GetProperty(PROPERTY_OUTER_PADDING, 6), 0, 32));
 var panelGapPt = Math.round(clamp(window.GetProperty(PROPERTY_PANEL_GAP, 8), 0, 40));
 var titleHeightPt = Math.round(clamp(window.GetProperty(PROPERTY_TITLE_HEIGHT, 24), 16, 48));
@@ -962,6 +997,7 @@ function safeConfigurePanel(panel) {
     try {
         if (panel.ShowCaption !== false) panel.ShowCaption = false;
         if (panel.Locked !== true) panel.Locked = true;
+        RivageBackdrop.configureChildPanel(panel);
         return true;
     } catch (e) {
         return false;
@@ -1072,6 +1108,16 @@ function applyLayoutNow() {
         usableW = Math.max(1, w - usableX * 2);
         usableH = Math.max(1, h - usableY * 2);
 
+        // The Mica line owns the top pixel row; child windows paint over anything
+        // they cover, so with no outer padding they would hide it.
+        if (frameStyle === FRAME_STYLE_LINE) {
+            var topReserve = Math.min(micaLineHeight(), Math.floor(h / 2));
+            if (usableY < topReserve) {
+                usableH = Math.max(1, usableH - (topReserve - usableY));
+                usableY = topReserve;
+            }
+        }
+
         // Dividers are carved out of the usable width first, so the stored
         // percentages always describe the panel area alone. With resizing mode
         // off dividerW is 0 and the geometry is exactly what it used to be.
@@ -1117,16 +1163,21 @@ function applyLayoutNow() {
             var slotOption = optionById(effectiveLayout.slots[i]);
             if (!slotOption) continue;
 
-            var border = frameStyle === FRAME_STYLE_SPACING ? 0 : scale(1);
+            var border = frameStyleIsBare(frameStyle) ? 0 : scale(1);
             var titleH = frameStyle === FRAME_STYLE_WINDOW && showWindowTitles
                 ? Math.min(Math.max(0, frameH - border * 2), scale(titleHeightPt))
                 : 0;
             titleH = Math.max(0, titleH);
 
-            var childX = frameX + border;
-            var childY = frameY + border + titleH;
-            var childW = Math.max(1, frameW - border * 2);
-            var childH = Math.max(1, frameH - border * 2 - titleH);
+            var frameRadius = frameStyleIsBare(frameStyle)
+                ? 0
+                : Math.min(scale(cornerRadiusPt), Math.floor(Math.min(frameW, frameH) / 2));
+            var inset = border + cornerClearance(frameRadius);
+
+            var childX = frameX + inset;
+            var childY = frameY + inset + titleH;
+            var childW = Math.max(1, frameW - inset * 2);
+            var childH = Math.max(1, frameH - inset * 2 - titleH);
 
             if (frameStyle !== FRAME_STYLE_SPACING) {
                 frameRects.push({
@@ -1636,9 +1687,11 @@ function getMySettings() {
         choiceValueType: 'string',
         choices: [
             { value: FRAME_STYLE_SPACING, label: 'No frame' },
+            { value: FRAME_STYLE_LINE, label: 'Mica line' },
             { value: FRAME_STYLE_CARD, label: 'Card frame' },
             { value: FRAME_STYLE_WINDOW, label: 'Window frame with title bar' }
         ],
+        hint: 'Mica line drops the panel boxes for one hairline along the top of the bar, matching the tab bar, with a divider in each gap.',
         section: 'Appearance'
     });
     rows.push({
@@ -1713,6 +1766,7 @@ function getMySettings() {
         type: 'choice',
         value: cornerRadiusPt,
         choiceValueType: 'number',
+        hidden: frameStyleIsBare(frameStyle),
         choices: [
             { value: 0, label: 'Square' },
             { value: 2, label: '2 px' },
@@ -1833,10 +1887,7 @@ function applyMySetting(settingId, value) {
         equalizeSlotWidths();
         return;
     case 'frameStyle':
-        frameStyle = String(value);
-        if (frameStyle !== FRAME_STYLE_SPACING && frameStyle !== FRAME_STYLE_CARD && frameStyle !== FRAME_STYLE_WINDOW) {
-            frameStyle = FRAME_STYLE_WINDOW;
-        }
+        frameStyle = normaliseFrameStyle(value);
         window.SetProperty(PROPERTY_FRAME_STYLE, frameStyle);
         requestWork(false, true);
         break;
@@ -1863,7 +1914,7 @@ function applyMySetting(settingId, value) {
     case 'cornerRadius':
         cornerRadiusPt = Math.round(clamp(value, 0, 16));
         window.SetProperty(PROPERTY_CORNER_RADIUS, cornerRadiusPt);
-        if (hostIsVisible()) window.Repaint(true);
+        requestWork(false, true);
         break;
     case 'accentLine':
         accentLineEnabled = !!value;
@@ -1904,18 +1955,132 @@ function applyMySetting(settingId, value) {
 }
 
 
+// A child panel is a real window with square corners, so it is inset far enough
+// that the frame's corner arc is never overpainted. r * (1 - 1/sqrt2) is how deep
+// the arc cuts at 45 degrees.
+function cornerClearance(radius) {
+    return radius > 0 ? Math.ceil(radius * 0.3) : 0;
+}
+
+// Edge fade for the Mica line. Same shape as the spectrum ribbon's edge fade:
+// a smoothstep over nine cached stops, rebuilt only when the colour changes.
+var MICA_FADE_SAMPLES = 9;
+// Fraction of the run that fades at each end. The gap dividers are short, so the
+// share that reads as a soft edge across the bar leaves them ticks; 0.5 has no core.
+var MICA_FADE_RATIO = 0.14;
+var MICA_FADE_RATIO_VERTICAL = 0.45;
+var micaFadeInStops = [];
+var micaFadeOutStops = [];
+var micaFadeAim = '';
+var gradientSupported = true;
+
+function ensureMicaFadeStops(colour) {
+    var aim = String(colour);
+    var alpha = (Number(colour) >>> 24) & 0xff;
+    var write = 0;
+    var i;
+    var position;
+    var smooth;
+
+    if (micaFadeAim === aim) return;
+    micaFadeAim = aim;
+    micaFadeInStops.length = MICA_FADE_SAMPLES * 2;
+    micaFadeOutStops.length = MICA_FADE_SAMPLES * 2;
+
+    for (i = 0; i < MICA_FADE_SAMPLES; i++) {
+        position = i / (MICA_FADE_SAMPLES - 1);
+        smooth = position * position * (3 - 2 * position);
+        micaFadeInStops[write] = position;
+        micaFadeOutStops[write++] = position;
+        micaFadeInStops[write] = RivageUI.withAlpha(colour, alpha * smooth);
+        micaFadeOutStops[write++] = RivageUI.withAlpha(colour, alpha * (1 - smooth));
+    }
+}
+
+// Position 0 is the left edge at angle 0 and the top edge at angle 90.
+function fadedLine(gr, x, y, w, h, vertical, colour) {
+    var run = vertical ? h : w;
+    var span;
+
+    if (w <= 0 || h <= 0) return;
+
+    span = Math.min(
+        Math.round(run * (vertical ? MICA_FADE_RATIO_VERTICAL : MICA_FADE_RATIO)),
+        Math.floor(run / 2) - 1,
+        scale(180)
+    );
+
+    if (!gradientSupported || span < 2) {
+        gr.FillSolidRect(x, y, w, h, colour);
+        return;
+    }
+
+    ensureMicaFadeStops(colour);
+
+    try {
+        if (vertical) {
+            gr.FillGradRectV2(x, y, w, span, 90, micaFadeInStops);
+            gr.FillGradRectV2(x, y + h - span, w, span, 90, micaFadeOutStops);
+            gr.FillSolidRect(x, y + span, w, h - span * 2, colour);
+        } else {
+            gr.FillGradRectV2(x, y, span, h, 0, micaFadeInStops);
+            gr.FillGradRectV2(x + w - span, y, span, h, 0, micaFadeOutStops);
+            gr.FillSolidRect(x + span, y, w - span * 2, h, colour);
+        }
+    } catch (e) {
+        // One-shot downgrade, as spectrum_panel does: builds without
+        // FillGradRectV2 keep the flat hairline for the rest of the session.
+        gradientSupported = false;
+        gr.FillSolidRect(x, y, w, h, colour);
+    }
+}
+
+// One hairline along the whole bar, as the tab bar draws it, plus a divider
+// dropped down each gap. No box, no fill: the panels keep the bare backdrop.
+function drawMicaLine(gr, width) {
+    var lineH = micaLineHeight();
+    var previous = null;
+    var frame;
+    var gapLeft;
+    var gapRight;
+    var i;
+
+    fadedLine(gr, 0, 0, Math.max(0, width), lineH, false, COLOUR_SEPARATOR);
+
+    for (i = 0; i < frameRects.length; i++) {
+        frame = frameRects[i];
+        if (previous) {
+            gapLeft = previous.x + previous.w;
+            gapRight = frame.x;
+            if (gapRight - gapLeft >= lineH) {
+                fadedLine(
+                    gr,
+                    gapLeft + Math.floor((gapRight - gapLeft - lineH) / 2),
+                    frame.y, lineH, frame.h, true, COLOUR_SEPARATOR
+                );
+            }
+        }
+        previous = frame;
+    }
+}
+
 function drawFrame(gr, frame) {
     var radius = Math.min(scale(cornerRadiusPt), Math.floor(Math.min(frame.w, frame.h) / 2));
     var accent = sharedAlbumAccent || DEFAULT_UWP_ACCENT;
+    var fill = frame.style === FRAME_STYLE_WINDOW ? COLOUR_TITLE_BAR : COLOUR_FRAME;
+    // Half-pixel offset on a 1 px pen: the rim lands on one pixel instead of
+    // straddling two at half strength and bleeding into the panel gap.
+    var rimX = frame.x + 0.5;
+    var rimY = frame.y + 0.5;
+    var rimW = Math.max(1, frame.w - 1);
+    var rimH = Math.max(1, frame.h - 1);
 
     if (radius > 0) {
-        gr.FillRoundRect(frame.x, frame.y, frame.w, frame.h, radius, radius,
-            frame.style === FRAME_STYLE_WINDOW ? COLOUR_TITLE_BAR : COLOUR_FRAME);
-        gr.DrawRoundRect(frame.x, frame.y, frame.w, frame.h, radius, radius, 1, COLOUR_BORDER);
+        gr.FillRoundRect(frame.x, frame.y, frame.w, frame.h, radius, radius, fill);
+        gr.DrawRoundRect(rimX, rimY, rimW, rimH, radius, radius, 1, COLOUR_FRAME_RIM);
     } else {
-        gr.FillSolidRect(frame.x, frame.y, frame.w, frame.h,
-            frame.style === FRAME_STYLE_WINDOW ? COLOUR_TITLE_BAR : COLOUR_FRAME);
-        gr.DrawRect(frame.x, frame.y, frame.w, frame.h, 1, COLOUR_BORDER);
+        gr.FillSolidRect(frame.x, frame.y, frame.w, frame.h, fill);
+        gr.DrawRect(rimX, rimY, rimW, rimH, 1, COLOUR_FRAME_RIM);
     }
 
     if (frame.style !== FRAME_STYLE_WINDOW || !frame.showTitle || frame.titleH <= 0) return;
@@ -1952,21 +2117,28 @@ function on_paint(gr) {
     var i;
     var smoothingChanged = false;
 
-    gr.FillSolidRect(0, 0, w, h, COLOUR_BACKGROUND);
+    RivageBackdrop.paint(gr, 0, 0, w, h, COLOUR_BACKGROUND);
 
-    if (typeof gr.SetSmoothingMode === 'function') {
-        try {
-            gr.SetSmoothingMode(4);
-            smoothingChanged = true;
-        } catch (e) {
-            smoothingChanged = false;
+    // Antialiasing is only for the box styles' corner arcs: it spreads a 1 px
+    // axis-aligned hairline over two half-strength rows, so the Mica line is drawn
+    // aliased like the tab bar's separator.
+    if (frameStyle === FRAME_STYLE_LINE) {
+        drawMicaLine(gr, w);
+    } else {
+        if (typeof gr.SetSmoothingMode === 'function') {
+            try {
+                gr.SetSmoothingMode(4);
+                smoothingChanged = true;
+            } catch (e) {
+                smoothingChanged = false;
+            }
         }
-    }
 
-    for (i = 0; i < frameRects.length; i++) drawFrame(gr, frameRects[i]);
+        for (i = 0; i < frameRects.length; i++) drawFrame(gr, frameRects[i]);
 
-    if (smoothingChanged) {
-        try { gr.SetSmoothingMode(0); } catch (e2) { }
+        if (smoothingChanged) {
+            try { gr.SetSmoothingMode(0); } catch (e2) { }
+        }
     }
 
     for (i = 0; i < dividerRects.length; i++) drawDivider(gr, dividerRects[i], i);
@@ -2068,17 +2240,21 @@ function on_mouse_lbtn_dblclk(x, y) {
 
 function on_colours_changed() {
     refreshTheme();
-    window.Repaint(true);
+    SharedThemeProtocol.requestRepaint();
 }
 
 function on_font_changed() {
-    dpi = (typeof window.DPI === 'number' && window.DPI > 0) ? window.DPI : 96;
+    dpi = RivageScale.dpi() || 96;
     rebuildFrameFont();
     requestWork(false, true);
 }
 
 function on_notify_data(name, info) {
-    if (SharedThemeProtocol.consume(name, info)) return;
+    if (SharedThemeProtocol.consume(name, info)) {
+        // Theme repaint is handled by SharedThemeProtocol. Mica frame mapping is
+        // independent of native child-window transparency, so this stays paint-only.
+        return;
+    }
     if (SettingsRegistry.provide(name, info, SETTINGS_PANEL_ID, SETTINGS_PANEL_LABEL, getMySettings)) return;
     if (SettingsRegistry.consume(name, info, SETTINGS_PANEL_ID, applyMySetting)) return;
     if (ResizingModeProtocol.consume(name, info, adoptResizingMode)) return;
@@ -2087,7 +2263,8 @@ function on_notify_data(name, info) {
         var nextAccent = SharedAccentProtocol.opaque(info);
         if (nextAccent === sharedAlbumAccent) return;
         sharedAlbumAccent = nextAccent;
-        if (hostIsVisible()) window.Repaint(true);
+        if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
+        if (hostIsVisible()) window.Repaint();
         return;
     }
 

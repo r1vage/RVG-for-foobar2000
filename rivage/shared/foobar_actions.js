@@ -30,6 +30,7 @@ var RivageCommands = typeof RivageCommands !== "undefined" ? RivageCommands : (f
         albumArtSearch: "Run service/album art search",
         removePictures: "Remove all pictures",
         musicBrainz: "Tagging/Get tags from MusicBrainz (by artist & album)",
+        musicBrainzByAlbumId: "Tagging/Get tags from MusicBrainz (by MB album ID)",
 
         lastfmSong: "Run service/Last.fm Song",
         lastfmLove: Object.freeze([

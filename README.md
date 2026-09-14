@@ -25,9 +25,12 @@ RVG is a UWP inspired, panel-based foobar2000 skin built for JSPlitter. It is a 
   - [foo_stop_after_queue*](https://www.foobar2000.org/components/view/foo_stop_after_queue)
   - [foo_stop_after_track*](https://www.foobar2000.org/components/view/foo_stop_after_track)
   - [foo_musicbrainz*](https://www.foobar2000.org/components/view/foo_musicbrainz)
-  - [Biography by Wil-B*](https://github.com/Wil-B/Biography) - put the package into Biography panel
+  - [Biography by Wil-B mod by regorxxx*](https://hydrogenaudio.org/index.php/topic,112914.msg1084983.html#msg1084983) - put the package into Biography panel
   - [Library-Tree-SMP by regorxxx*](https://github.com/regorxxx/Library-Tree-SMP) - put the package into Albums and Library panels respectively
-    
+  - [ESLyric](https://github.com/ESLyric)
+  - [Open Lyrics](https://www.foobar2000.org/components/view/foo_openlyrics)
+  - [Spectrum Analyzer](https://www.foobar2000.org/components/view/foo_vis_spectrum_analyzer)
+
     \*some features or buttons won't work without recommended plugins or throw errors until installed or removed from the layout.
 - **Icons:** Segoe Fluent Icons on Windows 11, with Segoe MDL2 Assets as the Windows 10 fallback
 - **For Last.fm integrations:** your Last.fm API key and username, entered in RVG Settings.
@@ -53,7 +56,7 @@ Most configuration lives in the central **RVG Settings** panel. Panel right-clic
 
 Open **RVG Settings › Global settings** for the settings that affect several panels:
 
-- **Global theme:** Panel defaults, Match foobar2000, RVG dark, RVG light, or one of the artwork-palette modes.
+- **Global theme:** Panel defaults, Match foobar2000, RVG dark, RVG light, the artwork-palette modes, or **Artwork Mica — blurred**. When Mica is selected, blur-radius and tint-strength controls appear directly below it.
 - **Shared accent:** when Global theme is **Panel defaults**, choose Artwork, RVG blue, or a custom colour.
 - **Last.fm API key and username:** shared by the Last.fm and Last.fm Charts panels.
 - **Playback statistics source:** `foo_playcount` fields or `Playcount 2003` fields.
@@ -61,29 +64,56 @@ Open **RVG Settings › Global settings** for the settings that affect several p
 - **Allow panel resizing:** enables the draggable layout dividers. Enable, resize, disable to save the positions.
 - **Maintain `> History` playlist:** controls RVG's automatic play-history playlist.
 - **Artwork colour extraction:** Material You palette or the legacy extractor.
+- **UI scale:** Follow Windows DPI (default), **Ignore Windows DPI (100%)**, or a custom percentage between 50 and 300 applied to every RVG panel. Windows reports its DPI to foobar2000 only at startup, so a change here takes effect after foobar2000 is restarted. It scales panel layout and the sizes RVG derives itself; text that follows a foobar2000 host font still follows that font.
 - **Backup & Restore:** export/import RVG settings as JSON.
 
 ### Theme and accent switching
 
-The **Shared accent** is the colour most panels can follow. With **Panel defaults**, you choose Artwork, RVG blue, or Custom colour yourself. Other global themes choose the effective accent automatically: **Match foobar2000** uses the host accent from Columns UI settings, **RVG dark/light** use UWP blue, and **Artwork palette** themes use artwork-derived colour.
+The **Shared accent** is the colour most panels can follow. With **Panel defaults**, you choose Artwork, RVG blue, or Custom colour yourself. Other global themes choose the effective accent automatically: **Match foobar2000** uses the host accent from Columns UI settings, **RVG dark/light** use UWP blue, and the artwork-derived themes use the current cover palette.
+
+**Artwork Mica — blurred** keeps that artwork-derived palette but also places one blurred, cover-cropped derivative of the current artwork behind the entire RVG skin, with semi-transparent cards and navigation surfaces layered over it. **Mica blur radius** controls how soft the artwork becomes; **Mica tint strength** controls how much of the semantic background colour is mixed over the blur for readability. If no artwork is available, RVG falls back to the same opaque artwork-palette background instead of leaving a transparent or broken surface. The mapped backdrop is re-anchored after Mini Player enter/exit, so returning to the full layout should restore the same continuous root composition rather than keeping coordinates from the compact window.
+
+For the three **Artwork palette** global themes, splitter/tab hosts paint the same artwork-derived semantic background across their complete backing surface. Third-party components that you have already configured for JSplitter pseudo-transparency can therefore reveal the Artwork palette just as they do under Mica. The nested **Extra** tab host needs one additional bridge because it is itself a JSplitter child: Bottom Tabs enables pseudo-transparency on the Extra host wrapper once during normal host setup, while `extra-tab-parent.js` paints the complete backing surface for its own children. After an Artwork Palette commit, Extra also issues one **same-geometry refresh** to the currently visible direct child if that child is already pseudo-transparent, but only after the new Extra root background has been painted. This refresh does not resize/hide the child or change its pseudo-transparency setting.
+
+The blurred derivative is generated once by the persistent Bottom Tabs controller. The outer **RVG Root Splitter** establishes the canonical cover crop, and each RVG script window discovers its absolute rectangle through a lightweight parent/child geometry protocol and draws only the corresponding source slice of that same runtime JPEG. Discovery is hierarchical and startup-order safe: if a deep panel asks before its immediate splitter has resolved, it retries at a bounded rate and the parent sends an identity-targeted wakeup as soon as its own root frame becomes valid. That makes the artwork line up across splitter and tab boundaries without depending on JSplitter pseudo-transparency or re-cover-cropping the image independently in every panel. GDI and Direct2D panels still load their own drawing object from the shared file because native bitmap objects cannot be passed through `NotifyOthers`; the expensive decode/resize/blur work remains producer-only. Only the **current playing/focused artwork derivative** is retained at steady state. A replacement is written to a fresh handoff path; visible consumers keep drawing the previous native image until the replacement opens successfully, while hidden consumers release the old handle immediately. Every mapped panel swaps to the new image on the same commit, and the outgoing bitmap is disposed and its runtime file retired at that point. A failed/late open is retried briefly without exposing the opaque fallback. Leaving Mica retires the current derivative too. Track/artwork/tint changes are repaint-only and do not trigger child Move/Show calls or transparency toggles. While a panel is waiting for its root-relative frame, or if no artwork is available, it paints the stable opaque semantic fallback instead of guessing a local crop. The temporary handoff file lives under `jsplitter\rivage\cache\mica\` and never modifies the source artwork. Artwork-derived theme changes use a synchronized two-phase transaction: every panel first receives a state-only semantic **PREPARE**, then the compatibility album accent, then one **COMMIT** that promotes the staged palette and queues normal repaints from the same notification turn. This avoids independent per-panel zero-delay timers and prevents the colour change from visibly rippling through the layout.
 
 Individual panels usually expose a simple **Accent colour/source** choice under their own RVG Settings page, commonly **Shared accent** or **RVG blue**. Some panels also offer a custom colour or the foobar2000 accent.
+
+### Where the artwork colours come from
+
+Artwork Mica and the three Artwork palette themes do not pick one accent from the cover - they build a full Material-style palette from it, which is why the interface reads as three distinct colour groups rather than one. Whether the palette is built dark or light follows foobar2000's own colours, exactly as **Artwork auto** does.
+
+RVG first scores the cover's colours and takes up to **three well-separated hues**: a *primary*, a *secondary* and a *tertiary* seed. If the art is too monochrome to yield three, the missing ones are derived from the primary by shifting its hue, so the companions stay tied to the cover instead of falling back to grey. Every colour below is then that seed re-rendered at a fixed lightness (tone) with its chroma scaled down and capped - a low cap means "almost neutral, faintly tinted", a high cap means "keep the cover's saturation".
+
+| What you see | Token | Built from | Chroma |
+| --- | --- | --- | --- |
+| Backgrounds, cards, tab bars, row hovers | `background`, `card`, `navigationSurface`, `rowHover` | **primary** seed, tones 6-22 (dark) / 90-98 (light) | x0.10, capped 7 - near-neutral |
+| Titles, playlist rows, panel body text, most button labels and glyphs | `textPrimary` (`onSurface`) | **primary** seed, tone 90 / 10 | x0.10, capped 7 - near-white with a faint cover tint |
+| Artist and album in the Player, subtitles, secondary captions | `textSecondary` (`onSurfaceVariant`) | **secondary** seed, tone 80 / 30 | x0.24, capped 18 |
+| Transport button glyphs, rating stars, seekbar and volume fill, selection highlight, active tab indicator | `accent` / `accentHover` (`primary`) | **primary** seed, tone 80 / 40 | x1.0, capped 64 - the vivid one |
+| Separators, outlines, card strokes | `separator`, `stroke`, `strokeHot` | **secondary** seed, low tones | x0.24, capped 18 |
+| Success / info highlights | `success` (`tertiary`) | **tertiary** seed, tone 80 / 40 | x0.82, capped 50 |
+
+So the three colours you can pick out by eye are, in order: the **near-neutral text colour** (primary seed, chroma almost removed), the **artist/album colour** (a *different* hue, the secondary seed, at roughly triple that chroma), and the **accent** (the primary seed again, this time at full chroma). The red used for warnings - the ReplayGain notice, for example - is a fixed `211, 47, 47` and is deliberately never derived from the cover, so a red-toned album cannot make a warning look like a normal label.
+
+Mica then paints those semantic surfaces at partial opacity over the blurred cover instead of filling them solid: cards ~72%, headers ~74%, chips ~66%, tab bars and the Presets strip ~50%, separators ~43%. The blurred cover underneath is mixed with the opaque `background` colour at whatever **Mica tint strength** is set to, which is the single control for how dark the whole composition reads.
 
 ### APIs and online services
 
 - **Last.fm:** enter the shared API key and username in **RVG Settings › Global settings**. The Last.fm and Last.fm Charts panels use the same credentials.
 - **Lyrics:** LRCLIB is the primary online source and needs no API key. The unofficial Musixmatch source is optional and can break if its upstream behaviour changes.
 - **Discography:** MusicBrainz is queried directly with caching/throttling; there is no RVG API-key field to configure.
+- **Live shows:** pick a source and enter its free key in **RVG Settings › Live shows**. **Ticketmaster Discovery** (consumer key from their developer portal, 5000 calls a day) is the default and the only one that publishes MusicBrainz IDs, so it can confirm an artist rather than guess. **SeatGeek** (client ID from `seatgeek.com/account/develop`) is the alternative; it matches on name alone and its catalogue is heavily US-weighted. SeatGeek's terms ask that their credit stay visible, which is why the panel header names the active source.
 
 ## Panels at a glance
 
 ### Playback and navigation
 
 - **Album artwork** — Displays front/back/disc/icon/artist artwork. Switch art type from the context menu or arrow keys; middle-click jumps between Front and Artist. Click on the art to play or pause the playback. Optional setting: optional Shared-accent border.
-- **Player** — Large now-playing card with metadata, playback controls, rating, optional seekbar/volume, and utility actions. Main settings: accent, track source, icon style, seekbar/volume visibility, and font-family override.
+- **Player** — Large now-playing card with metadata, playback controls, rating, optional seekbar/volume, and utility actions. A track with no ReplayGain tags is flagged by a small **No ReplayGain** badge above the title (hover it for how to scan), which can be switched off. Main settings: accent, track source, icon style, seekbar/volume visibility, the missing-ReplayGain warning, and font-family override.
 - **Top bar** — Compact full-width header with artwork, metadata, seekbar/volume, transport, and utility controls. Main settings: which sections are visible and Shared accent vs RVG blue.
-- **Playlist** — JSPlaylist-mod-based track list with grouping, columns, search, loved state, artwork backgrounds, and row-density controls. Main settings are grouped under Layout, Rows, Accent, Grouping, Columns, Fonts, Colours, and Background. 
-- **Mini Player** — Shrinks the real foobar2000 window into a compact now-playing view with art, playback controls, seekbar, optional Last.fm love button and rating. Remembers position and size.
+- **Playlist** — JSPlaylist-mod-based track list with grouping, columns, search, loved state, artwork backgrounds, and row-density controls. Main settings are grouped under Layout, Rows, Accent, Grouping, Columns, Fonts, Colours, and Background. Middle-click a track to queue or unqueue it, or a group header to do the same for the whole group.
+- **Mini Player** — Shrinks the real foobar2000 window into a compact now-playing view with art, playback controls, seekbar, optional Last.fm love button and rating. Remembers position and size. Main setting: **Design** — Design 1 (small cover, one title line, centred transport, full-width seekbar) or Design 2 (full-height cover art beside stacked title, artist and love+stars lines, transport inline with a short seekbar).
 
   ![Mini Player](https://i.ibb.co/nqhYpb0h/miniplayer.jpg)
 - **Compact Queue** — Small playback-queue editor with drag reorder, file drops, remove/clear actions, and recovery through a managed playlist.
@@ -92,7 +122,7 @@ Individual panels usually expose a simple **Accent colour/source** choice under 
 
 - **Playback statistics** — Shows local plays, Last.fm scrobbles, first/last played, and combined history. Main settings: one/two-card layout, source, date detail, accent, and text size.
 - **Playback history** — Keeps a compact visual list of recent qualified plays plus listening totals by periods. Clicking on tracks in the log jumps to the song in the playlist.
-- **Playback timeline** — Plots listens for the current track over time with zoom/pan, density, markers, and summary stats. Main settings: Local vs Last.fm history, marker/density style, track source, and accent.
+- **Playback timeline** — Plots listens for the current track over time with zoom/pan, density, markers, and summary stats. Main settings: Local vs Last.fm history, whether the range starts at the first listen or the date added, marker/density style, track source, and accent.
 - **Track information** — Compact metadata/statistics info panel with toggleable blocks.
 
 ### Last.fm, lyrics, and discovery
@@ -100,7 +130,9 @@ Individual panels usually expose a simple **Accent colour/source** choice under 
 - **Last.fm** — Statistics, tags, listeners, similar artists, charts, recent scrobbles, and album browsing. Configure credentials globally; panel settings control track source, visible sections, background artwork, and accent. Right clicking on tracks, artists or similar artists allows you to play or queue them, if they are available in your library.
 - **Last.fm Charts** — Side-by-side global and personal artist charts for tracks or albums. Configure credentials globally; panel settings control chart type, period, row count, cache duration, track source, and accent. Right clicking on tracks allows you to play or queue them, if they are available in your library.
 - **Lyrics** — A minimal lyrics panel with lrclib as main source. Main purpose - have a lyrics panel which will have a customizeable background color for different skin's color themes (accent, dark, light). Reads synced/plain lyrics from tags or sidecar `.lrc`, fetches missing lyrics, highlights synced lines, and can save results back. Main settings: save destination, auto-fetch, click-to-seek, lyric font/sizes, active-line accent, and optional Musixmatch source.
-- **Discography + Calendar** — Uses MusicBrainz to show which releases are missing from your library (with configurable filters) and show upcoming releases for your whole library (WIP). Main settings: view mode, accent, compact rows, calendar range, release types, and cache duration. Right clicking on releases allows you to play or queue them, if they are available in your library.
+- **Discography + Calendar** — Uses MusicBrainz to show which releases are missing from your library (with configurable filters) and show upcoming releases for your whole library. The calendar queries MusicBrainz per library artist and caches each artist group separately, so after the first build it normally runs without any network requests. Main settings: view mode, accent, compact rows, calendar range, release types, cache duration, and whether artists without MusicBrainz IDs are queried by name. Right clicking on releases allows you to play or queue them, if they are available in your library.
+- **Live shows** — Upcoming concerts for every artist in your library, grouped by month. Reuses the same MusicBrainz artist IDs the Discography panel reads from your tags, then asks Ticketmaster or SeatGeek one artist at a time and, where the source publishes an ID, verifies the answer against yours so a same-named band is not mistaken for yours; rows matched by name alone are tagged. Results are cached per artist and per source on disk, so after the first sweep it normally runs without any network requests. Main settings: source, API key, place filter (a comma narrows a place, a semicolon starts another - `California, United States; Paris`), how far ahead, minimum tracks per artist, MusicBrainz-only matching, cache duration, compact rows, and accent. Clicking a show opens its event page; right clicking also lets you play or queue the artist from your library.
+- **MusicBrainz tagger** — Tags the tracks you have selected in a playlist from a MusicBrainz release, without leaving foobar2000. Searches by the album and artist already on the files (right-click **Search** to edit them first), or loads the release ID from your `MUSICBRAINZ_ALBUMID` tag or one you paste, and ranks candidates by how closely their track count matches the selection. Picking a release opens a review screen: first the pairing, file by file, against the release's track list, then every field it could write with the current value, the new value and how many tracks would change. Tick the fields you want and confirm. It never clears a tag with an empty MusicBrainz value, withholds all per-track fields when the two track counts differ, and remembers the previous values so the whole write can be undone from the right-click menu until the panel reloads. Six fields have two spellings in circulation — album artist, artist and album-artist sort order, original release date, label and media. foobar2000's ID3v2 table maps its own names (`ORIGINAL RELEASE DATE`, `ALBUM ARTIST`, `PUBLISHER`, `MEDIA TYPE`, `ALBUMARTISTSORTORDER`, `ARTISTSORTORDER`) onto real frames, while Picard's spellings of those land in `TXXX`; other tag types just store whatever name they are given. Whichever name a file already has is reused, so nothing ends up stored twice under two names, and **Tag name style** decides the rest: *Match the file* (default) uses foobar2000's names on MP3 and the other ID3 formats and Picard's elsewhere, or you can force either. The review screen shows, per field, the name it will be written under. **Date format** chooses between the date exactly as MusicBrainz has it (`1997-05-21`) and the year on its own (`1997`); it applies to Date, while Original release date is always written in full. Main settings: contact info for the MusicBrainz User-Agent (they throttle anonymous clients), how many candidates to fetch, whether to search automatically when the selection changes, and accent.
 
 ### Visualisers
 
@@ -112,7 +144,7 @@ Individual panels usually expose a simple **Accent colour/source** choice under 
 - **Settings** — Central browser where RVG panels register their settings. Global settings tab also contains Backup & Restore.
 - **Custom buttons** — Build strips/rails of foobar2000 or RVG actions. Main settings: buttons, layout slot, orientation/alignment, style, accent mode, and target behaviour. There are 3 built-in panels (you can delete or add even more), which can be configured to be completely independent, clone each other, or be the same in functionality but have different designs.
 - **Bottom bar layout** — Hosts up to four panels, lets you drag their widths, change frame style, and save up to four layouts as presets.
-- **Presets** — Four quick buttons that load the saved Bottom bar layouts.
+- **Presets** — Four quick buttons that load the saved Bottom bar layouts. **RVG Settings › Global settings › Preset buttons side** (also on the panel's right-click menu) puts the strip at either end of the bottom bar without changing its width; the selected preset's accent bar can mirror to the inner edge when the strip sits on the right.
 - **Tabs** — Top and bottom tab hosts discover their child panels automatically. Shared settings control tab height, accent, and optional custom tab font.
 - **Left panel layout** — Chooses the top and bottom content panes and their padding; drag the divider to change the split.
 
@@ -132,7 +164,7 @@ A `custom-buttons.js` instance can be used in three common places:
 
 ### Resizing
 
-Enable **RVG Settings › Global settings › Allow panel resizing** to use the layout dividers. The splitters handle Top bar height, left/right width, bottom area height, and the Presets/Bottom bar split.
+Enable **RVG Settings › Global settings › Allow panel resizing** to use the layout dividers. The splitters handle Top bar height, left/right width, bottom area height, and the Presets/Bottom bar split. Dragging that last divider sets the Presets width whichever end the strip is docked at.
 
 ## Font wiring
 
@@ -152,6 +184,7 @@ Enable **RVG Settings › Global settings › Allow panel resizing** to use the 
 - Last.fm panels show a setup/empty state until credentials are entered.
 - Missing optional components only disable the features that depend on them; the rest of the layout can still run.
 - Playback timeline requires **Enhanced Playback Statistics** (`foo_enhanced_playcount`) for `%played_times%` / `%lastfm_played_times%` history fields.
+  Its **Date added** range mode takes the first field that holds a real date: `%added%` / `%2003_added%` (whichever the Global settings stats source prefers), then the other of the two, then `%lastfm_added%`.
 - Windows 10 may use Segoe MDL2 Assets instead of Segoe Fluent Icons.
 
 ## Credits

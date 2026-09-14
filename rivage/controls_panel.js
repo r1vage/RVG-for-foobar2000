@@ -1,7 +1,10 @@
 window.DrawMode = 0;
 
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\ui_scale.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\design_system.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\dynamic_theme_protocol.js");
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\album_accent_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\foobar_actions.js");
 
@@ -37,7 +40,7 @@ const TEXT_RENDERING_HINT_ANTIALIAS = 4;
 // Those belong to foobar2000's context menu and to custom-buttons.js.
 window.DefineScript(RivageUI.copy.popupTitle("Player"), {
     author: "RivaGe",
-    version: "4.2.1",
+    version: "4.4.0",
     options: { grab_focus: false }
 });
 
@@ -89,6 +92,12 @@ const UI = Object.freeze({
     controlsTopGap: 10,
     controlsYRatio: 0.58,
 
+    // "No ReplayGain" badge, centred in the empty strip above the title.
+    badgeHeight: 20,
+    badgeTop: 9,
+    badgePaddingX: 9,
+    badgeGlyphGap: 5,
+
     ratingHeight: 26,
     ratingGap: 10,
     ratingStarSize: 22,
@@ -110,8 +119,22 @@ const FONT_SIZES = Object.freeze({
     emptySubtitle: 12,
     transportIcon: 15,
     primaryIcon: 18,
+    badge: 12,
+    badgeGlyph: 11,
     musicIcon: 36,
     tooltip: 12
+});
+
+// Shown when %__replaygain_track_gain% is "?" - the track carries no ReplayGain
+// tags, so foobar2000 cannot level it. Replaces the unlabelled red edge stripe
+// this panel drew until v4.4.0.
+const REPLAYGAIN_BADGE = Object.freeze({
+    text: "No ReplayGain",
+    glyph: "\uE7BA",
+    tooltip: "This track has no ReplayGain information, so it plays at its raw volume.\n" +
+        "Right-click \u203A ReplayGain \u203A Scan per-file track gain adds them.",
+    fillAlpha: 38,
+    strokeAlpha: 120
 });
 
 
@@ -131,6 +154,8 @@ const settings = {
     controlStyle: clampNumber(window.GetProperty(PROPERTY_PREFIX + "Control style", 1), 0, 1),
 
     elementBorders: !!window.GetProperty(PROPERTY_PREFIX + "Element borders", false),
+
+    showReplayGainWarning: !!window.GetProperty(PROPERTY_PREFIX + "Show ReplayGain warning", true),
 
     showSeekbar: !!window.GetProperty(PROPERTY_PREFIX + "Show seekbar", false),
     showVolumeBar: !!window.GetProperty(PROPERTY_PREFIX + "Show volume bar", false),
@@ -223,6 +248,12 @@ function getMySettings() {
             ]
         },
         { id: "elementBorders", label: "Show control borders", type: "bool", value: settings.elementBorders, section: "General" },
+        {
+            id: "showReplayGainWarning", label: "Warn when the track has no ReplayGain", type: "bool",
+            value: settings.showReplayGainWarning,
+            hint: "Shows a \"No ReplayGain\" badge above the title for unscanned tracks.",
+            section: "General"
+        },
         { id: "showSeekbar", label: "Show seekbar below ratings", type: "bool", value: settings.showSeekbar, section: "General" },
         { id: "showVolumeBar", label: "Show volume bar below ratings", type: "bool", value: settings.showVolumeBar, section: "General" },
         {
@@ -272,6 +303,9 @@ function applyMySetting(settingId, value) {
         break;
     case "elementBorders":
         changed = commitSetting("elementBorders", "Element borders", !!value);
+        break;
+    case "showReplayGainWarning":
+        changed = commitSetting("showReplayGainWarning", "Show ReplayGain warning", !!value);
         break;
     case "showSeekbar":
         changed = commitSetting("showSeekbar", "Show seekbar", !!value);
@@ -392,6 +426,7 @@ const layout = {
     information: null,
 
     controls: null,
+    replayGainBadge: null,
     rating: null,
     ratingStarX: 0,
     ratingStarSize: 0,
@@ -408,6 +443,8 @@ const fonts = {
     emptySubtitle: null,
     transportIcon: null,
     primaryIcon: null,
+    badge: null,
+    badgeGlyph: null,
     star: null,
     music: null,
     tooltip: null,
@@ -571,7 +608,7 @@ function clampNumber(value, minimum, maximum) {
 }
 
 function currentDpi() {
-    const dpi = Number(window.DPI);
+    const dpi = RivageScale.dpi();
     return Number.isFinite(dpi) && dpi > 0 ? dpi : 72;
 }
 
@@ -654,6 +691,8 @@ function buildFonts() {
     fonts.album = RivageUI.font(fontNames.body, px(FONT_SIZES.album), 0);
     fonts.emptyTitle = RivageUI.font(fontNames.body, px(FONT_SIZES.emptyTitle), 1);
     fonts.emptySubtitle = RivageUI.font(fontNames.body, px(FONT_SIZES.emptySubtitle), 0);
+    fonts.badge = RivageUI.font(fontNames.body, px(FONT_SIZES.badge), 0);
+    fonts.badgeGlyph = RivageUI.font(fontNames.icon, px(FONT_SIZES.badgeGlyph), 0);
     fonts.transportIcon = RivageUI.font(fontNames.icon, px(FONT_SIZES.transportIcon), 0);
     fonts.primaryIcon = RivageUI.font(fontNames.icon, px(FONT_SIZES.primaryIcon), 0);
     fonts.star = RivageUI.font(fontNames.icon, px(UI.ratingStarSize), 0);
@@ -1720,6 +1759,35 @@ function positionTransportButtons() {
     layout.controls.w = Math.round(next.x + next.w - previous.x + px(UI.controlsPaddingX) * 2);
 }
 
+// Glyph and label are measured once per layout pass: the badge text is constant,
+// so nothing here may cost a measureText() per paint.
+function calculateReplayGainBadge() {
+    if (!fonts.badge || !fonts.badgeGlyph || layout.mainW <= 0) return null;
+
+    const glyphW = Math.ceil(measureTextWidth(REPLAYGAIN_BADGE.glyph, fonts.badgeGlyph));
+    const gap = px(UI.badgeGlyphGap);
+    const padding = px(UI.badgePaddingX);
+    const width = Math.min(
+        layout.mainW,
+        Math.ceil(measureTextWidth(REPLAYGAIN_BADGE.text, fonts.badge)) + glyphW + gap + padding * 2
+    );
+    // Too narrow for the whole label: the label gives up what is left, and its
+    // ellipsis flag does the rest. The glyph always survives.
+    const textW = Math.max(0, width - padding * 2 - glyphW - gap);
+    const contentW = glyphW + gap + textW;
+    const height = Math.min(Math.max(1, wh), px(UI.badgeHeight));
+    const x = layout.mainX + Math.round((layout.mainW - width) / 2);
+    const contentX = x + Math.round((width - contentW) / 2);
+
+    return {
+        rect: makeRect(x, Math.min(px(UI.badgeTop), Math.max(0, wh - height)), width, height),
+        glyphX: contentX,
+        glyphW: glyphW,
+        textX: contentX + glyphW + gap,
+        textW: textW
+    };
+}
+
 function calculateVerticalLayout() {
     layout.title = makeRect(layout.mainX, px(UI.contentTop), layout.mainW, px(UI.titleHeight));
     layout.artist = makeRect(
@@ -1740,6 +1808,8 @@ function calculateVerticalLayout() {
         layout.mainW,
         layout.album.y + layout.album.h - layout.title.y
     );
+
+    layout.replayGainBadge = calculateReplayGainBadge();
 
     const playSize = px(UI.playButton);
     const controlsH = playSize + px(UI.controlsPaddingY) * 2;
@@ -2030,6 +2100,10 @@ function tooltipAt(x, y) {
             "\nChange in RVG Settings \u203a Global settings";
     }
 
+    if (replayGainWarningVisible() && pointInRect(x, y, layout.replayGainBadge.rect)) {
+        return REPLAYGAIN_BADGE.tooltip;
+    }
+
     if (handle && pointInRect(x, y, titleHoverRect())) {
         return fb.IsPlaying || playbackTransitionPending
             ? "Focus the now-playing cursor in its playlist"
@@ -2082,14 +2156,49 @@ function refreshPointerState() {
 
 
 function drawBackground(gr) {
-    gr.FillSolidRect(0, 0, ww, wh, theme.background);
+    RivageBackdrop.paint(gr, 0, 0, ww, wh, theme.background);
+}
+
+// "?" is what %__replaygain_track_gain% yields for an unscanned track; see
+// refreshCache(), which keeps that literal for exactly this test.
+function replayGainWarningVisible() {
+    return !!(settings.showReplayGainWarning && handle && cache.trackGain === "?" && layout.replayGainBadge);
 }
 
 function drawReplayGainWarning(gr) {
-    if (handle && cache.trackGain === "?") {
-        const startY = layout.controls ? Math.max(0, layout.controls.y - px(13)) : 0;
-        gr.FillSolidRect(0, startY, px(3), Math.max(1, wh - startY), theme.warning);
-    }
+    if (!replayGainWarningVisible()) return;
+
+    const badge = layout.replayGainBadge;
+    ui.withAntialias(gr, () => {
+        ui.pill(gr, badge.rect, {
+            fill: RivageUI.withAlpha(theme.warning, REPLAYGAIN_BADGE.fillAlpha),
+            border: true,
+            stroke: RivageUI.withAlpha(theme.warning, REPLAYGAIN_BADGE.strokeAlpha)
+        });
+    });
+
+    // Two draws, not one string: the label is body text and the glyph only
+    // exists in the icon font.
+    gr.GdiDrawText(
+        REPLAYGAIN_BADGE.glyph,
+        fonts.badgeGlyph,
+        theme.warning,
+        badge.glyphX,
+        badge.rect.y,
+        badge.glyphW + px(2),
+        badge.rect.h,
+        TEXT_FLAGS.leftCentered
+    );
+    gr.GdiDrawText(
+        REPLAYGAIN_BADGE.text,
+        fonts.badge,
+        theme.warning,
+        badge.textX,
+        badge.rect.y,
+        badge.textW + px(2),
+        badge.rect.h,
+        TEXT_FLAGS.leftCenteredEllipsis
+    );
 }
 
 function drawEmptyState(gr) {
@@ -2602,6 +2711,7 @@ function on_notify_data(name, data) {
         const nextAccent = SharedAccentProtocol.opaque(data);
         if (nextAccent === sharedAlbumAccent) return;
         sharedAlbumAccent = nextAccent;
+        if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
         if (settings.accentPreset === 3) {
             pendingVisibleWork.theme = true;
             requestVisibleRepaint();

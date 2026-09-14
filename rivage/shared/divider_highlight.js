@@ -2,6 +2,7 @@
 
 // Shared divider highlight. Accent state is shared by all instances in one
 // panel context, and repeated includes must preserve that singleton state.
+// Include ui_scale.js before this file.
 if (typeof SharedAccentProtocol === 'undefined' ||
     typeof SHARED_ALBUM_ACCENT_UPDATE === 'undefined' ||
     typeof SHARED_ALBUM_ACCENT_REQUEST === 'undefined') {
@@ -22,10 +23,7 @@ if (typeof DividerHighlight === 'undefined') {
 
         // Match the DPI-scaled divider weight used by bottom_bar_host.js.
         function scaled(value) {
-            var dpi = 96;
-            try {
-                if (typeof window.DPI === 'number' && window.DPI > 0) dpi = window.DPI;
-            } catch (e) { }
+            var dpi = RivageScale.dpi() || 96;
             return Math.max(1, Math.round(value * dpi / 96));
         }
 
@@ -127,6 +125,9 @@ if (typeof DividerHighlight === 'undefined') {
                         if (next === accent) return true;
 
                         accent = next;
+                        if (typeof SharedThemeProtocol !== 'undefined' && SharedThemeProtocol &&
+                            typeof SharedThemeProtocol.isAccentCommitted === 'function' &&
+                            SharedThemeProtocol.isAccentCommitted(next)) return true;
                         repaintAll();
                         return true;
                     },

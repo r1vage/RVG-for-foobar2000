@@ -1,7 +1,7 @@
 'use strict';
 
 // Shared tab-bar appearance for tab-switcher-right.js and extra-tab-parent.js.
-// Include after settings_protocol.js and design_system.js.
+// Include after settings_protocol.js and design_system.js, and after ui_scale.js.
 // Host contract: read settings, use drawingFont(), register one onChange() handler,
 // route SettingsRegistry + onNotifyData(), use setAndSync() for local edits, then requestSync().
 // Both hosts intentionally share PANEL_ID "tabs". SettingsRegistry.consume() uses
@@ -48,7 +48,7 @@ var TabBarStyle = (typeof TabBarStyle !== 'undefined') ? TabBarStyle : (function
     var LEGACY_DEFAULT_FONT_FAMILY = 'Segoe UI Semibold';
 
     function defaultFontSizePx() {
-        var dpi = (typeof window.DPI === 'number' && window.DPI > 0) ? window.DPI : 96;
+        var dpi = RivageScale.dpi() || 96;
         return Math.max(MIN_FONT_SIZE, Math.round(DEFAULT_FONT_SIZE_PT * dpi / 96));
     }
 

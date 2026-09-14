@@ -239,6 +239,12 @@ var PanelHostKit = typeof PanelHostKit !== 'undefined' ? PanelHostKit : (functio
             ) {
                 panel.Move(x, y, width, height, false);
             }
+            try {
+                if (typeof RivageBackdrop !== 'undefined' && RivageBackdrop &&
+                    typeof RivageBackdrop.noteChildPanel === 'function') {
+                    RivageBackdrop.noteChildPanel(panel);
+                }
+            } catch (e2) { }
             return true;
         } catch (e) {
             return false;
@@ -252,6 +258,12 @@ var PanelHostKit = typeof PanelHostKit !== 'undefined' ? PanelHostKit : (functio
         try {
             var hidden = !!panel.Hidden;
             if (show ? hidden : !hidden) panel.Show(!!show);
+            try {
+                if (typeof RivageBackdrop !== 'undefined' && RivageBackdrop &&
+                    typeof RivageBackdrop.noteChildPanel === 'function') {
+                    RivageBackdrop.noteChildPanel(panel);
+                }
+            } catch (e2) { }
             return true;
         } catch (e) {
             return false;
@@ -262,6 +274,12 @@ var PanelHostKit = typeof PanelHostKit !== 'undefined' ? PanelHostKit : (functio
         if (!panel) return false;
         try {
             panel.Show(!!show);
+            try {
+                if (typeof RivageBackdrop !== 'undefined' && RivageBackdrop &&
+                    typeof RivageBackdrop.noteChildPanel === 'function') {
+                    RivageBackdrop.noteChildPanel(panel);
+                }
+            } catch (e2) { }
             return true;
         } catch (e) {
             return false;

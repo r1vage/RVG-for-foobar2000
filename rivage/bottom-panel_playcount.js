@@ -1,6 +1,7 @@
 ﻿window.DrawMode = 0;
 
 
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\ui_scale.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\dynamic_theme_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\album_accent_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\settings_protocol.js");
@@ -8,10 +9,11 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\design_system.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\playback_stats_source.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\track_context.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\visible_paint_work.js");
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 
 window.DefineScript("RVG Playback Statistics", {
     author: "RivaGe",
-    version: "2.12.0",
+    version: "2.13.0",
     features: { drag_n_drop: false, grab_focus: false }
 });
 
@@ -56,18 +58,7 @@ function normaliseInteger(value, min, max, fallback) {
 var panelDpi = 72;
 
 function refreshPanelDpi() {
-    var nextDpi = 72;
-    try {
-        // Some host variants expose only window.DPI.
-        if (typeof DPI !== "undefined" && Number(DPI) > 0) {
-            nextDpi = Number(DPI);
-        } else if (typeof window !== "undefined" && Number(window.DPI) > 0) {
-            nextDpi = Number(window.DPI);
-        }
-    } catch (e) {
-        nextDpi = 72;
-    }
-    panelDpi = nextDpi;
+    panelDpi = RivageScale.dpi() || 72;
 }
 
 refreshPanelDpi();
@@ -933,6 +924,10 @@ function paintCard(gr, card, values) {
 function on_paint(gr) {
     var handle, i, card, values, smoothingChanged = false;
 
+    // Rectangular backdrop before anti-aliasing: GDI+ shape smoothing filters the
+    // DrawImage destination edge into a visible seam on the left and top rows.
+    RivageBackdrop.paint(gr, 0, 0, ww, wh, theme.background);
+
     if (typeof gr.SetSmoothingMode === "function") {
         try {
             gr.SetSmoothingMode(SMOOTHING_MODE_ANTIALIAS);
@@ -942,7 +937,6 @@ function on_paint(gr) {
         }
     }
 
-    gr.FillSolidRect(0, 0, ww, wh, theme.background);
     regions = [];
     handle = ensureStats();
 
@@ -1162,7 +1156,7 @@ function on_size(width, height) {
 
 function on_colours_changed() {
     refreshHostColours();
-    window.Repaint(true);
+    SharedThemeProtocol.requestRepaint();
 }
 
 function refreshForTrackSelectionChange() {
@@ -1232,7 +1226,8 @@ function on_notify_data(name, info) {
         var nextAccent = SharedAccentProtocol.opaque(info);
         if (nextAccent === sharedAlbumAccent) return;
         sharedAlbumAccent = nextAccent;
-        if (settings.accentMode === 1) window.Repaint(true);
+        if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
+        if (settings.accentMode === 1) window.Repaint();
     }
 }
 

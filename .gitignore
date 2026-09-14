@@ -1,0 +1,5 @@
+# Runtime derivatives written by the skin, never source.
+rivage/cache/
+
+# Local packaging output.
+jsplitter.zip

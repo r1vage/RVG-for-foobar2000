@@ -1,4 +1,4 @@
-window.DrawMode = 0;
+﻿window.DrawMode = 0;
 // JSplitter requires the draw mode before fonts or graphics resources are created.
 
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\settings_protocol.js');
@@ -10,8 +10,9 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\library_resolver_v2.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\library_actions_v2.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\lastfm_credentials_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 
-window.DefineScript('RVG Last.fm', { author: 'RivaGe', version: '2.8.0', features: { drag_n_drop: false } });
+window.DefineScript('RVG Last.fm', { author: 'RivaGe', version: '2.8.2', features: { drag_n_drop: false } });
 
 // Narrow failure reporting. Most empty catches in this file guard host reads
 // and cleanup calls that are *expected* to fail (an aborted request, a timer
@@ -815,7 +816,9 @@ var NOOP_GR = {
 	DrawRoundRect: function () {},
 	DrawImage: function () {},
 	FillEllipse: function () {},
-	GdiDrawText: function () {}
+	GdiDrawText: function () {},
+	PushClip: function () {},
+	PopClip: function () {}
 };
 function draw_card(real_gr, y, content_fn, tone) {
 	var x0 = lm, x1 = lm + content_w();
@@ -948,36 +951,43 @@ function draw_list_column(gr, items, id_prefix, x0, y, w, two_line, scroll_off, 
 	if (name_w < zoom(40, g_dpi)) name_w = zoom(40, g_dpi);
 	var row_h = two_line ? (lh(f_body_em) + lh(f_label)) : (lh(f_body_em) + zoom(4, g_dpi));
 	var step = row_h + zoom(3, g_dpi);
-	var snapped = has_clip ? -Math.round(-scroll_off / step) * step : scroll_off;
-	var cy = y + snapped;
-	// Only whole rows enter the clipped band; row-snapped scrolling prevents edge bleed.
-	for (var i = 0; i < items.length; i++) {
-		var row_top = cy + Y_OFFSET;
-		var row_bot = row_top + row_h;
-		if (has_clip && (row_top < clip_top - 1 || row_bot > clip_bot + 1)) { cy += step; continue; }
-		var it = items[i];
-		var id = id_prefix + i;
-		var hot = (hover_id == id || down_id == id);
-		if (it.now) {
-			gr.FillSolidRect(x0 + _scale(3), cy + _scale(3) + Y_OFFSET, _scale(2), Math.max(_scale(6), row_h - _scale(6)), col.primary);
-		} else {
-			write(gr, (i + 1) + '', f_label, col.on_surface_var, x0, cy + Y_OFFSET, rank_w, lh(f_body_em),
-				DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-		}
-		write(gr, it.name, f_body_em, (hot || it.now) ? col.primary : col.on_surface, name_x, cy + Y_OFFSET, name_w, lh(f_body_em),
-			DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-		if (it.plays) {
-			write(gr, it.plays, f_label, col.on_surface_var, x0 + w - plays_w, cy + Y_OFFSET, plays_w, lh(f_body_em),
-				DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-		}
-		if (two_line && it.sub) {
-			write(gr, it.sub, f_label, col.on_surface_var, name_x, cy + lh(f_body_em) - zoom(2, g_dpi) + Y_OFFSET, name_w, lh(f_label),
+	// The clip band bounds partial rows, so scrolling is free-running; link rects are
+	// clamped to it or a half-row would stay clickable where it is drawn over the header.
+	var cy = y + scroll_off;
+	if (has_clip) gr.PushClip(x0, clip_top, w, clip_bot - clip_top);
+	try {
+		for (var i = 0; i < items.length; i++) {
+			var row_top = cy + Y_OFFSET;
+			var row_bot = row_top + row_h;
+			if (has_clip && (row_bot <= clip_top || row_top >= clip_bot)) { cy += step; continue; }
+			var it = items[i];
+			var id = id_prefix + i;
+			var hot = (hover_id == id || down_id == id);
+			if (it.now) {
+				gr.FillSolidRect(x0 + _scale(3), cy + _scale(3) + Y_OFFSET, _scale(2), Math.max(_scale(6), row_h - _scale(6)), col.primary);
+			} else {
+				write(gr, (i + 1) + '', f_label, col.on_surface_var, x0, cy + Y_OFFSET, rank_w, lh(f_body_em),
+					DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+			}
+			write(gr, it.name, f_body_em, (hot || it.now) ? col.primary : col.on_surface, name_x, cy + Y_OFFSET, name_w, lh(f_body_em),
 				DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+			if (it.plays) {
+				write(gr, it.plays, f_label, col.on_surface_var, x0 + w - plays_w, cy + Y_OFFSET, plays_w, lh(f_body_em),
+					DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+			}
+			if (two_line && it.sub) {
+				write(gr, it.sub, f_label, col.on_surface_var, name_x, cy + lh(f_body_em) - zoom(2, g_dpi) + Y_OFFSET, name_w, lh(f_label),
+					DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+			}
+			if (it.url) {
+				var vis_top = has_clip ? Math.max(row_top, clip_top) : row_top;
+				var vis_bot = has_clip ? Math.min(row_bot, clip_bot) : row_bot;
+				if (vis_bot > vis_top) add_link(id, x0, vis_top - Y_OFFSET, w, vis_bot - vis_top, it.url, list_item_meta(it, id_prefix));
+			}
+			cy += step;
 		}
-		if (it.url && (!has_clip || (row_top >= clip_top - 1 && row_bot <= clip_bot + 1))) {
-			add_link(id, x0, cy, w, row_h, it.url, list_item_meta(it, id_prefix));
-		}
-		cy += step;
+	} finally {
+		if (has_clip) gr.PopClip();
 	}
 	return (cy - scroll_off) - y; // unscrolled content height
 }
@@ -1273,8 +1283,9 @@ function on_size(width, height) {
 function on_paint(gr) {
 	run_pending_refresh();
 	links = [];
-	gr.FillSolidRect(0, 0, ww, wh, col.bg);
-	if (opt_blur_bg && art_img) {
+	var sharedMicaMode = RivageBackdrop.isMicaMode();
+	RivageBackdrop.paint(gr, 0, 0, ww, wh, col.bg);
+	if (!sharedMicaMode && opt_blur_bg && art_img) {
 		var iw = art_img.Width, ih = art_img.Height;
 		var scale = Math.max(ww / iw, wh / ih); // cover
 		var dw = iw * scale, dh = ih * scale;
@@ -1619,10 +1630,11 @@ function on_notify_data(name, info) {
 	colour = SharedAccentProtocol.opaque(info);
 	if (colour === shared_album_accent) return;
 	shared_album_accent = colour;
+	if (SharedThemeProtocol.isAccentCommitted(colour)) return;
 	if (opt_accent_mode == AccentMode.AlbumArt) {
 		apply_accent(shared_album_accent);
-		// Accent updates are rare and should bypass JSplitter's batched repaint delay.
-		window.Repaint(true);
+		// Let JSplitter batch track-driven accent updates with the semantic theme.
+		window.Repaint();
 	}
 }
 function on_playback_new_track(handle) {

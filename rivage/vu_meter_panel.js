@@ -2,17 +2,19 @@
 
 // RVG shared modules. This panel is a consumer of the shared album-art
 // accent; it never decodes artwork or performs colour scoring itself.
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\settings_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 
 window.EraseOnRepaint = false;
 
 window.DefineScript('RVG VU Meter', {
     author: 'Case + marc2003; adapted by RivaGe',
-    version: '2.8.1',
+    version: '2.9.0',
     features: {
         drag_n_drop: false,
         grab_focus: false
@@ -542,10 +544,7 @@ function invalidateStaticCaches() {
 }
 
 function refreshPanelDpi() {
-    var nextDpi = 72;
-    try {
-        if (Number(window.DPI) > 0) nextDpi = Number(window.DPI);
-    } catch (e) { }
+    var nextDpi = RivageScale.dpi() || 72;
     if (nextDpi !== panelDpi) invalidateLayout();
     panelDpi = nextDpi;
 }
@@ -2195,7 +2194,7 @@ function on_paint(gr) {
         panelH = nextH;
         invalidateLayout();
     }
-    gr.FillSolidRect(0, 0, panelW, panelH, getMeterRenderCache().backgroundPaint);
+    RivageBackdrop.paint(gr, 0, 0, panelW, panelH, theme.background);
     if (panelW <= 0 || panelH <= 0) return;
 
     var currentLayout = getCachedLayout();
@@ -2290,6 +2289,7 @@ function on_notify_data(name, info) {
         var nextAccent = SharedAccentProtocol.opaque(info);
         if (nextAccent === sharedAlbumAccent) return;
         sharedAlbumAccent = nextAccent;
+        if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
         if (settings.accentMode === 'shared') {
             refreshTheme();
             window.Repaint();

@@ -1,0 +1,5 @@
+# This tree deliberately mixes line endings and BOMs per file: several scripts
+# are CRLF and/or BOM'd because JSplitter decodes a BOM-less file as ANSI, so
+# literal non-ASCII punctuation only survives behind a BOM. Never let git
+# normalise either, or menu labels silently turn into mojibake.
+* -text

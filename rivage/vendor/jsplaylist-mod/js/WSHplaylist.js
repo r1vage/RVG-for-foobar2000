@@ -162,12 +162,19 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 			var tf2_h = 0;
 		}
 
+		// The card style pulls the row wash in on the right, so a right-aligned last column
+		// would otherwise sit on or past the rounded edge. Clamp every column's box to the
+		// wash's edge less g_z5; in practice only the last column is ever wide enough to hit it.
+		var col_inset = row_highlight_inset();
+		var col_right = this.x + this.w - col_inset - g_z5;
+
 		var fin = p.headerBar.columns.length;
 		for (var j = 0; j < fin; j++) {
 			tf1 = tf2 = null;
 			if (p.headerBar.columns[j].w > 0) {
 				cx = p.headerBar.columns[j].x + g_z5;
 				cw = (Math.abs(p.headerBar.w * p.headerBar.columns[j].percent / 100000)) - g_z10;
+				if (col_inset > 0 && cx + cw > col_right) cw = Math.max(0, col_right - cx);
 				switch (p.headerBar.columns[j].ref) {
 				case "State":
 					if (p.headerBar.columns[j].tf == "null") {
@@ -428,7 +435,7 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 							var uwp_parity = ((this.track_index / 2) == Math.floor(this.track_index / 2) ? 1 : 0);
 						};
 						if (uwp_parity == 0) {
-							gr.FillSolidRect(uwp_x, this.y, uwp_w, this.h, g_color_normal_txt & 0x05ffffff);
+							fill_row_highlight(gr, uwp_x, this.y, uwp_w, this.h, g_color_normal_txt & 0x05ffffff);
 						};
 					};
 
@@ -467,7 +474,7 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 									var parity = ((this.track_index / 2) == Math.floor(this.track_index / 2) ? 1 : 0);
 								};
 								if (parity == 0) {
-									gr.FillSolidRect(this.x + cover.w, this.y, this.w - cover.w, this.h, g_color_normal_txt & 0x05ffffff);
+									fill_row_highlight(gr, this.x + cover.w, this.y, this.w - cover.w, this.h, g_color_normal_txt & 0x05ffffff);
 								};
 							};
 						};
@@ -500,7 +507,7 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 									var parity = ((this.track_index / 2) == Math.floor(this.track_index / 2) ? 1 : 0);
 								};
 								if (parity == 0) {
-									gr.FillSolidRect(this.x + cover.w, this.y, this.w - cover.w, this.h, g_color_normal_txt & 0x05ffffff);
+									fill_row_highlight(gr, this.x + cover.w, this.y, this.w - cover.w, this.h, g_color_normal_txt & 0x05ffffff);
 								};
 							};
 						};
@@ -562,7 +569,7 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 					//
 					if (typeof this.cover_img != "undefined") {
 						if (this.cover_img == null) {
-							this.cover_img = images.nocover;
+							this.cover_img = g_image_cache.placeholder();
 						};
 						if (this.cover_img) {
 							if (cover.keepaspectratio) {
@@ -591,15 +598,28 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 								// *** check aspect ratio *** //
 							};
 
+							var cv_r = cover_corner_radius_drawn(this.cover_img, cv_w);
 							gr.SetSmoothingMode(2);
-							gr.DrawRect(cv_x + 1, cv_y + 1, cv_w - 2.0, cv_h - 2.0, 6.0, RGBA(0, 0, 10, 60));
+							if (cv_r > 0) {
+								gr.DrawRoundRect(cv_x + 1, cv_y + 1, cv_w - 2.0, cv_h - 2.0, cv_r, cv_r, 6.0, RGBA(0, 0, 10, 60));
+							} else {
+								gr.DrawRect(cv_x + 1, cv_y + 1, cv_w - 2.0, cv_h - 2.0, 6.0, RGBA(0, 0, 10, 60));
+							};
 							gr.SetSmoothingMode(0);
 							if (p.headerBar.columns[0].w < cover.max_w) {
 								gr.DrawImage(this.cover_img.Resize(cv_w, cv_h, 2), cv_x, cv_y, cv_w, cv_h, 0, 0, cv_w, cv_h);
 							} else {
 								gr.DrawImage(this.cover_img, cv_x, cv_y, cv_w, cv_h, 0, 0, this.cover_img.Width, this.cover_img.Height);
 							};
-							gr.DrawRect(cv_x, cv_y, cv_w, cv_h, 2.0, RGB(255, 255, 255));
+							if (clamp_int(properties.groupHeaderStyle, 0, 1) == 0) {
+								gr.DrawRect(cv_x, cv_y, cv_w, cv_h, 2.0, RGB(255, 255, 255));
+							} else if (cv_r > 0) {
+								gr.SetSmoothingMode(2);
+								gr.DrawRoundRect(cv_x, cv_y, cv_w - 1, cv_h - 1, cv_r, cv_r, 1.0, g_color_normal_txt & 0x30ffffff);
+								gr.SetSmoothingMode(0);
+							} else {
+								gr.DrawRect(cv_x, cv_y, cv_w - 1, cv_h - 1, 1.0, g_color_normal_txt & 0x30ffffff);
+							};
 						};
 					} else {
 						gr.DrawImage(images.loading, cv_x - 2, cv_y - 2, cv_w, cv_h, 0, 0, images.loading.Width, images.loading.Height, images.loading_angle, 225);
@@ -672,26 +692,73 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 			};
 			var groupDelta = this.groupRowDelta * cTrack.height;
 
+			// ---- GROUP HEADER STYLE (styles 0/1) -------------------------------
+			// 0 Classic (default, unchanged), 1 Inset card. Everything the two styles need
+			// is resolved once per header here; the paint sites below only read it.
+			// gh_accent gates the HEADER's own accent use alone - it never touches
+			// properties.albumAccentEnabled or any accent elsewhere in the panel.
+			var gh_style = clamp_int(properties.groupHeaderStyle, 0, 1);
+			var gh_accent = properties.albumAccentEnabled && properties.groupHeaderAccent;
+			var gh_top = this.y - groupDelta;
+			var gh_inset_x = (gh_style == 1) ? zoom(8, g_dpi) : 0;
+			var gh_inset_y = (gh_style == 1) ? 2 : 0;
+			var gh_card_x = this.x + gh_inset_x;
+			var gh_card_y = gh_top + gh_inset_y;
+			var gh_card_w = Math.max(1, this.w - gh_inset_x * 2);
+			var gh_card_h = Math.max(1, this.h - gh_inset_y * 2);
+			var gh_bar_w = Math.max(2, zoom(3, g_dpi));
+			var gh_bar_colour = gh_accent ? accent_colour(230) : (g_color_normal_txt & 0x78ffffff);
+			var gh_tint_factor = Math.min(1.5, clamp_int(properties.accentStrength, 0, 400) / 100);
+			// The corner radius is capped by how far the cover art sits inside the card: a
+			// square inset d from both edges of a radius-r corner stays clear only while
+			// r <= 3.41 * d, and at 100% artwork size with small padding d shrinks to
+			// nothing. Deriving it here means no artwork size or padding can clip a corner;
+			// at the extreme the card just goes square instead.
+			var gh_art_pad = Math.max(1, zoom(clamp_int(properties.groupHeaderPadding, 0, 24), g_dpi));
+			var gh_art_gap = Math.min(gh_art_pad, Math.floor((this.h - Math.max(0, cover.w - gh_art_pad * 2)) / 2) - gh_inset_y);
+			var gh_radius = (gh_style == 1)
+				? Math.max(1, Math.min(zoom(10, g_dpi), Math.floor(gh_art_gap * 3.41), Math.floor(gh_card_w / 2), Math.floor(gh_card_h / 2)))
+				: 0;
+
 			// group header bg
 			// Subtly tinted with the shared album accent, like jssp: the background is blended
 			// 12% towards the accent, with a faint accent hairline around the block.
-			if (properties.albumAccentEnabled) {
-				var gh_tint = blendColors(g_color_normal_bg, AlbumAccent.colour, 0.12 * Math.min(1.5, clamp_int(properties.accentStrength, 0, 400) / 100));
-				gr.FillSolidRect(this.x, (this.y - groupDelta), this.w, 1, accent_colour(160));
-				gr.FillSolidRect(this.x, (this.y - groupDelta) + 1, this.w, this.h - 2, gh_tint & 0xdaffffff);   // alpha 218, matches jssp
-				gr.DrawRect(this.x, (this.y - groupDelta), this.w - 1, this.h - 1, 1.0, accent_colour(90));
-				// collapsed groups get the same leading accent bar the rows use
-				if (this.obj && this.obj.collapsed) {
-					gr.FillSolidRect(this.x, (this.y - groupDelta) + 1, Math.max(2, zoom(3, g_dpi)), this.h - 2, accent_colour(230));
+			if (gh_style == 0) {
+				if (gh_accent) {
+					var gh_tint = blendColors(g_color_normal_bg, AlbumAccent.colour, 0.12 * gh_tint_factor);
+					gr.FillSolidRect(this.x, gh_top, this.w, 1, accent_colour(160));
+					gr.FillSolidRect(this.x, gh_top + 1, this.w, this.h - 2, gh_tint & 0xdaffffff);   // alpha 218, matches jssp
+					gr.DrawRect(this.x, gh_top, this.w - 1, this.h - 1, 1.0, accent_colour(90));
+					// collapsed groups get the same leading accent bar the rows use
+					if (this.obj && this.obj.collapsed) {
+						gr.FillSolidRect(this.x, gh_top + 1, gh_bar_w, this.h - 2, accent_colour(230));
+					};
+				} else {
+					gr.FillSolidRect(this.x, gh_top, this.w, 1, g_color_normal_txt & 0x10ffffff);
+					gr.FillSolidRect(this.x, gh_top + 1, this.w, this.h - 2, g_color_normal_txt & 0x04ffffff);
 				};
 			} else {
-				gr.FillSolidRect(this.x, (this.y - groupDelta), this.w, 1, g_color_normal_txt & 0x10ffffff);
-				gr.FillSolidRect(this.x, (this.y - groupDelta) + 1, this.w, this.h - 2, g_color_normal_txt & 0x04ffffff);
+				// Inset card: a glass pane stepped in from the row edge. Neutral it is mostly
+				// rim over a barely-there fill; with the accent on, the tint is pushed hard
+				// enough to actually read as a colour, and the rim takes it too.
+				var gh_fill = gh_accent
+					? (blendColors(g_color_normal_bg, AlbumAccent.colour, 0.32 * gh_tint_factor) & 0x72ffffff)
+					: (g_color_normal_txt & 0x2cffffff);
+				var gh_rim = gh_accent ? accent_colour(120) : (g_color_normal_txt & 0x2affffff);
+				gr.SetSmoothingMode(2);
+				gr.FillRoundRect(gh_card_x, gh_card_y, gh_card_w, gh_card_h, gh_radius, gh_radius, gh_fill);
+				gr.DrawRoundRect(gh_card_x, gh_card_y, gh_card_w - 1, gh_card_h - 1, gh_radius, gh_radius, 1.0, gh_rim);
+				gr.SetSmoothingMode(0);
+				// No separate top-edge highlight: the antialiased rim already lights that row,
+				// and a second line one pixel away just reads as a doubled border.
+				if (this.obj && this.obj.collapsed) {
+					gr.FillSolidRect(gh_card_x, gh_card_y + gh_radius, gh_bar_w, Math.max(1, gh_card_h - gh_radius * 2), gh_bar_colour);
+				};
 			};
 
 			// draw group text infos
 			// (2.7) configurable inner padding and line gap
-			var text_left_padding = Math.max(1, zoom(clamp_int(properties.groupHeaderPadding, 0, 24), g_dpi));
+			var text_left_padding = gh_art_pad;
 			var header_line_gap = zoom(clamp_int(properties.groupHeaderLineGap, -8, 24), g_dpi);
 			// Reserve the scrollbar's width when it is actually on screen. This was inverted,
 			// which is why the right-hand header fields were clipped by the scrollbar.
@@ -701,29 +768,33 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 			// The now-playing group is not recoloured - the accent tint already marks it.
 			this.l1_color = g_color_normal_txt;
 			this.l2_color = fade_text(g_color_normal_txt, 218);
-			var line_color = p.list.line_color;
+			var gh_footer_colour = fade_text(this.l1_color, 170);
+			// the rule above the footer line is accent-coloured in the card style; with the
+			// header accent off it falls back to the configurable Footer line alpha
+			var line_color = (gh_style == 1 && gh_accent) ? accent_colour(170) : p.list.line_color;
 
 			// Draw Header content
 			// ===================
 			switch (this.heightInRow) {
 			case 1:
 				var lg1_right_field_w = gr.CalcTextWidth(this.r1, g_font_group1) + cList.borderWidth * 2;
-				gr.GdiDrawText(this.l1 + " / " + this.l2, g_font_group1, this.l1_color, this.x + cover.w + text_left_padding, (this.y - groupDelta) - 1, this.w - cover.w - text_left_padding * 4 - lg1_right_field_w - scrollbar_gape, this.h, DT_LEFT | DT_VCENTER | DT_CALCRECT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS);
-				gr.GdiDrawText(this.r1, g_font_group1, this.l1_color, this.x + cover.w + text_left_padding, (this.y - groupDelta) - 1, this.w - cover.w - text_left_padding * 5 + 2 - scrollbar_gape, this.h, DT_RIGHT | DT_VCENTER | DT_CALCRECT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-				gr.FillSolidRect(this.x + cover.w + text_left_padding, Math.round(this.y + cTrack.height * 1 - groupDelta - 5), this.w - cover.w - text_left_padding * 5 + 2 - scrollbar_gape, 1.0, line_color);
+				var gh1_text_x = this.x + gh_inset_x + cover.w + text_left_padding;
+				var gh1_avail_w = this.w - gh_inset_x * 2 - cover.w - scrollbar_gape;
+				gr.GdiDrawText(this.l1 + " / " + this.l2, g_font_group1, this.l1_color, gh1_text_x, gh_top - 1, gh1_avail_w - text_left_padding * 4 - lg1_right_field_w, this.h, DT_LEFT | DT_VCENTER | DT_CALCRECT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS);
+				gr.GdiDrawText(this.r1, g_font_group1, this.l1_color, gh1_text_x, gh_top - 1, gh1_avail_w - text_left_padding * 5 + 2, this.h, DT_RIGHT | DT_VCENTER | DT_CALCRECT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+				gr.FillSolidRect(gh1_text_x, Math.round(gh_top + cTrack.height - 5), gh1_avail_w - text_left_padding * 5 + 2, 1.0, line_color);
 				break;
 				default:
 					// ---- jssp 3-line header ----------------------------------------------------
 					// The three lines are packed into equal thirds of the content box (header height
 					// minus padding) and the block is centred vertically, instead of giving each line
 					// a whole track row. That is what makes jssp headers compact.
-					var gh_y = this.y - groupDelta;
-					var gh_text_x = this.x + cover.w + text_left_padding;
-					var gh_text_w = Math.max(0, this.w - cover.w - text_left_padding * 2 - scrollbar_gape);
+					var gh_text_x = this.x + gh_inset_x + cover.w + text_left_padding;
+					var gh_text_w = Math.max(0, this.w - gh_inset_x * 2 - cover.w - text_left_padding * 2 - scrollbar_gape);
 					var gh_content_h = Math.max(3, this.h - text_left_padding * 2);
 					var gh_line_h = Math.max(zoom(10, g_dpi), Math.floor((gh_content_h - header_line_gap * 2) / 3));
 					var gh_block_h = gh_line_h * 3 + header_line_gap * 2;
-					var gh_line_y = gh_y + Math.floor((this.h - gh_block_h) / 2);
+					var gh_line_y = gh_top + Math.floor((this.h - gh_block_h) / 2);
 
 					// line 1 - title
 					var gh_r1_w = gr.CalcTextWidth(this.r1, g_font_group1) + cList.borderWidth * 2;
@@ -743,7 +814,6 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 					var lg3_left_field = this.l3 || "";
 					var lg3_right_field = this.r3 || "";
 					var lg3_right_field_w = gr.CalcTextWidth(lg3_right_field, g_font_group_footer) + cList.borderWidth * 2;
-					var gh_footer_colour = fade_text(this.l1_color, 170);
 					gr.GdiDrawText(lg3_left_field, g_font_group_footer, gh_footer_colour, gh_text_x, gh_line_y, Math.max(0, gh_text_w - lg3_right_field_w - zoom(8, g_dpi)), gh_line_h, DT_LEFT | DT_VCENTER | DT_CALCRECT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS);
 					gr.GdiDrawText(lg3_right_field, g_font_group_footer, gh_footer_colour, gh_text_x, gh_line_y, gh_text_w, gh_line_h, DT_RIGHT | DT_VCENTER | DT_CALCRECT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS);
 			};
@@ -753,16 +823,30 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 			if (this.obj) {
 				for (var k = 0; k < this.obj.count; k++) {
 					if (plman.IsPlaylistItemSelected(p.list.playlist, this.obj.start + k) && this.obj.collapsed) {
-						gr.FillSolidRect(this.x, (this.y - groupDelta) + 1, this.w, this.h - 2,
-							properties.albumAccentEnabled ? accent_colour(55) : g_color_selected_bg & 0x20ffffff);
+						if (gh_style == 1) {
+							gr.SetSmoothingMode(2);
+							gr.FillRoundRect(gh_card_x, gh_card_y, gh_card_w, gh_card_h, gh_radius, gh_radius,
+								gh_accent ? accent_colour(55) : g_color_selected_bg & 0x20ffffff);
+							gr.SetSmoothingMode(0);
+						} else {
+							gr.FillSolidRect(this.x, gh_top + 1, this.w, this.h - 2,
+								gh_accent ? accent_colour(55) : g_color_selected_bg & 0x20ffffff);
+						};
 						break;
 					} else {
 						// highlight the now playing group header
 						if (fb.IsPlaying) {
 							if (p.list.nowplaying && p.list.nowplaying.PlaylistIndex == this.playlist) {
 								if (!now_playing_found && p.list.nowplaying.PlaylistItemIndex >= this.obj.start && p.list.nowplaying.PlaylistItemIndex < this.obj.start + this.obj.count && this.obj.collapsed) {
-									gr.FillSolidRect(this.x, (this.y - groupDelta) + 1, this.w, this.h - 2,
-										properties.albumAccentEnabled ? accent_colour(45) : g_color_highlight & 0x16ffffff);
+									if (gh_style == 1) {
+										gr.SetSmoothingMode(2);
+										gr.FillRoundRect(gh_card_x, gh_card_y, gh_card_w, gh_card_h, gh_radius, gh_radius,
+											gh_accent ? accent_colour(45) : g_color_highlight & 0x16ffffff);
+										gr.SetSmoothingMode(0);
+									} else {
+										gr.FillSolidRect(this.x, gh_top + 1, this.w, this.h - 2,
+											gh_accent ? accent_colour(45) : g_color_highlight & 0x16ffffff);
+									};
 									now_playing_found = true;
 								};
 							};
@@ -779,17 +863,17 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 						// cover bg
 						// inset by the header padding on every side, vertically centred in the
 						// header - jssp's art_x / art_y / art_size
-						var gh_pad2 = Math.max(1, zoom(clamp_int(properties.groupHeaderPadding, 0, 24), g_dpi));
+						var gh_pad2 = gh_art_pad;
 						var cv_w = Math.floor(cover.w - gh_pad2 * 2);
 						var cv_h = cv_w;
-						var cv_x = Math.floor(this.x + gh_pad2);
-						var cv_y = Math.floor((this.y - groupDelta) + (this.h - cv_h) / 2);
+						var cv_x = Math.floor(this.x + gh_inset_x + gh_pad2);
+						var cv_y = Math.floor(gh_top + (this.h - cv_h) / 2);
 						//
 						this.cover_img = g_image_cache.hit(this.metadb);
 						//
 						if (typeof this.cover_img != "undefined") {
 							if (this.cover_img == null) {
-								this.cover_img = images.nocover;
+								this.cover_img = g_image_cache.placeholder();
 							};
 							if (this.cover_img) {
 								if (cover.keepaspectratio) {
@@ -818,15 +902,28 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 									// *** check aspect ratio *** //
 								};
 
+								var cv_r = cover_corner_radius_drawn(this.cover_img, cv_w);
 								gr.SetSmoothingMode(2);
-								gr.DrawRect(cv_x + 1, cv_y + 1, cv_w - 2.0, cv_h - 2.0, 6.0, RGBA(0, 0, 10, 60));
+								if (cv_r > 0) {
+									gr.DrawRoundRect(cv_x + 1, cv_y + 1, cv_w - 2.0, cv_h - 2.0, cv_r, cv_r, 6.0, RGBA(0, 0, 10, 60));
+								} else {
+									gr.DrawRect(cv_x + 1, cv_y + 1, cv_w - 2.0, cv_h - 2.0, 6.0, RGBA(0, 0, 10, 60));
+								};
 								gr.SetSmoothingMode(0);
 								if (this.obj.collapsed) {
 									gr.DrawImage(this.cover_img.Resize(cv_w, cv_h, 2), cv_x, cv_y, cv_w, cv_h, 0, 0, cv_w, cv_h);
 								} else {
 									gr.DrawImage(this.cover_img, cv_x, cv_y, cv_w, cv_h, 0, 0, this.cover_img.Width, this.cover_img.Height);
 								};
-								gr.DrawRect(cv_x, cv_y, cv_w, cv_h, 2.0, RGB(255, 255, 255));
+								if (gh_style == 0) {
+									gr.DrawRect(cv_x, cv_y, cv_w, cv_h, 2.0, RGB(255, 255, 255));
+								} else if (cv_r > 0) {
+									gr.SetSmoothingMode(2);
+									gr.DrawRoundRect(cv_x, cv_y, cv_w - 1, cv_h - 1, cv_r, cv_r, 1.0, g_color_normal_txt & 0x30ffffff);
+									gr.SetSmoothingMode(0);
+								} else {
+									gr.DrawRect(cv_x, cv_y, cv_w - 1, cv_h - 1, 1.0, g_color_normal_txt & 0x30ffffff);
+								};
 							};
 						} else {
 							gr.DrawImage(images.loading, cv_x - 2, cv_y - 2, cv_w, cv_h, 0, 0, images.loading.Width, images.loading.Height, images.loading_angle, 225);

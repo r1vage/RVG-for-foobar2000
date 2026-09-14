@@ -2,7 +2,7 @@
 
 window.DefineScript('RVG Bottom Splitter', {
     author: 'RivaGe',
-    version: '1.1.0',
+    version: '1.6.0',
     features: { drag_n_drop: false, grab_focus: false }
 });
 
@@ -25,10 +25,19 @@ function logDiagnostic(message, once) {
 // Native child wrappers are reacquired for every layout pass because JSplitter
 // can rebuild its child collection without changing this panel's dimensions.
 
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\resizing_mode_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\divider_highlight.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\presets_side_protocol.js');
 
 const PRESETS_RATIO_PROPERTY = 'RIVAGE.Layout.BottomHorizontal.PresetsRatio';
+// Startup hint only; tab-switcher-right.js owns the side and re-broadcasts it.
+// Without the local copy the layout would flip once on every start.
+const PRESETS_SIDE_PROPERTY = 'RIVAGE.Layout.BottomHorizontal.PresetsSide';
 const RATIO_SCALE = 1000000;
 const DEFAULT_PRESETS_RATIO = 0.30;
 const DIVIDER_SIZE = 6;
@@ -47,6 +56,9 @@ let lastSavedRatioValue = savedPresetsState.needsWrite
     ? null
     : ratioToStoredValue(preferredPresetsRatio);
 let resizingModeEnabled = true;
+let presetsSide = PresetsSideProtocol.normalise(
+    window.GetProperty(PRESETS_SIDE_PROPERTY, PresetsSideProtocol.Side.Left)
+);
 let draggingDivider = false;
 let dividerGrabOffset = 0;
 let backgroundColour = getBackgroundColour();
@@ -126,6 +138,7 @@ function preparePanel(panel) {
     try {
         if (panel.ShowCaption !== false) panel.ShowCaption = false;
         if (panel.Locked !== true) panel.Locked = true;
+        RivageBackdrop.configureChildPanel(panel);
         return true;
     } catch (e) {
         return false;
@@ -142,6 +155,7 @@ function movePanel(panel, x, y, width, height) {
         ) {
             panel.Move(x, y, width, height);
         }
+        RivageBackdrop.noteChildPanel(panel);
         return true;
     } catch (e) {
         return false;
@@ -150,8 +164,12 @@ function movePanel(panel, x, y, width, height) {
 
 function getBackgroundColour() {
     try {
-        return window.GetColourCUI(3);
+        return RivageUI.createTheme({ mode: 'host' }).background;
     } catch (e) { }
+
+    try {
+        return window.GetColourCUI(3);
+    } catch (e2) { }
 
     try {
         return window.GetColourDUI(1);
@@ -191,6 +209,27 @@ function setResizingModeEnabled(enabled) {
     repaintDivider();
 }
 
+function presetsOnRight() {
+    return presetsSide === PresetsSideProtocol.Side.Right;
+}
+
+function setPresetsSide(side) {
+    const next = PresetsSideProtocol.normalise(side);
+    if (next === presetsSide) return;
+
+    presetsSide = next;
+    try { window.SetProperty(PRESETS_SIDE_PROPERTY, presetsSide); } catch (e) { }
+
+    if (draggingDivider) {
+        draggingDivider = false;
+        dividerGrabOffset = 0;
+        dividerHighlight.dragging(false);
+    }
+
+    requestDeferredLayout(true);
+    window.Repaint();
+}
+
 function getDividerWidth() {
     if (!resizingModeEnabled) {
         return 0;
@@ -226,8 +265,10 @@ function getPresetsWidth() {
     );
 }
 
+// The stored ratio is always the presets share, so swapping sides keeps the width.
 function getDividerX() {
-    return getPresetsWidth();
+    const presetsWidth = getPresetsWidth();
+    return presetsOnRight() ? getAvailableWidth() - presetsWidth : presetsWidth;
 }
 
 function isOverDivider(x) {
@@ -264,8 +305,10 @@ function layoutPanels() {
     const height = Math.max(0, window.Height);
     const dividerWidth = getDividerWidth();
     const presetsWidth = getPresetsWidth();
-    const bottomBarX = presetsWidth + dividerWidth;
-    const bottomBarWidth = Math.max(0, width - bottomBarX);
+    const onRight = presetsOnRight();
+    const presetsX = onRight ? Math.max(0, width - presetsWidth) : 0;
+    const bottomBarX = onRight ? 0 : presetsWidth + dividerWidth;
+    const bottomBarWidth = Math.max(0, width - presetsWidth - dividerWidth);
     let complete = true;
     let panel = getPanel('PRESETS');
 
@@ -273,7 +316,7 @@ function layoutPanels() {
         complete = false;
     } else {
         if (!preparePanel(panel)) complete = false;
-        if (!movePanel(panel, 0, 0, presetsWidth, height)) complete = false;
+        if (!movePanel(panel, presetsX, 0, presetsWidth, height)) complete = false;
         panel = null;
     }
 
@@ -403,7 +446,7 @@ function updatePreferredRatio(dividerX) {
     }
 
     const presetsWidth = clamp(
-        Math.round(dividerX),
+        Math.round(presetsOnRight() ? availableWidth - dividerX : dividerX),
         getMinimumPresetsWidth(),
         getMaximumPresetsWidth()
     );
@@ -507,18 +550,36 @@ function on_paint(gr) {
         scheduleLayoutWork();
     }
 
+    // Only a child running a FOREIGN component samples this host's pixels. A child
+    // JSplitter panel runs an RVG script that opens its paint with an opaque
+    // full-rect fill, so it can never reveal what this host drew underneath -
+    // and JSplitter sets the pseudo-transparency flag on all of them regardless.
+    var fullSurface = RivageBackdrop.isSharedArtworkSurfaceMode() &&
+        RivageBackdrop.hasForeignPseudoChild();
+    if (fullSurface) {
+        RivageBackdrop.paint(
+            gr, 0, 0, Math.max(0, window.Width), Math.max(0, window.Height),
+            backgroundColour
+        );
+    }
+
     const dividerWidth = getDividerWidth();
     if (dividerWidth <= 0) {
         return;
     }
 
-    gr.FillSolidRect(
-        getDividerX(),
-        0,
-        dividerWidth,
-        Math.max(0, window.Height),
-        backgroundColour
-    );
+    if (!fullSurface) {
+        // paint() maps the slice from this panel's own root frame; the divider
+        // rectangle is all this host still owes.
+        RivageBackdrop.paint(
+            gr,
+            getDividerX(),
+            0,
+            dividerWidth,
+            Math.max(0, window.Height),
+            backgroundColour
+        );
+    }
 
     dividerHighlight.draw(
         gr,
@@ -530,21 +591,24 @@ function on_paint(gr) {
 }
 
 function on_colours_changed() {
-    const nextColour = getBackgroundColour();
-    if (nextColour === backgroundColour) {
-        return;
-    }
-
-    backgroundColour = nextColour;
-    repaintDivider();
+    backgroundColour = getBackgroundColour();
+    if (RivageBackdrop.isSharedArtworkSurfaceMode()) SharedThemeProtocol.requestRepaint();
+    else repaintDivider();
 }
 
 function on_notify_data(name, info) {
+    // SharedThemeProtocol applies the semantic state synchronously but defers
+    // on_colours_changed/repaint by one turn. Do not issue an immediate backing-
+    // surface paint here: that would expose a half-committed frame before the
+    // compatibility accent and replacement Mica bitmap have been adopted.
+    if (SharedThemeProtocol.consume(name, info)) return;
     if (dividerHighlight.onNotifyData(name, info)) {
         return;
     }
 
-    ResizingModeProtocol.consume(name, info, setResizingModeEnabled);
+    if (ResizingModeProtocol.consume(name, info, setResizingModeEnabled)) return;
+
+    PresetsSideProtocol.consume(name, info, setPresetsSide);
 }
 
 function on_script_unload() {
@@ -564,5 +628,7 @@ function on_script_unload() {
 }
 
 requestDeferredLayout(true);
+SharedThemeProtocol.request();
 ResizingModeProtocol.requestUntilAnswered();
+PresetsSideProtocol.requestUntilAnswered();
 dividerHighlight.requestAccent();

@@ -1,13 +1,15 @@
-window.DrawMode = 0;
+﻿window.DrawMode = 0;
 
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\dynamic_theme_protocol.js");
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\album_accent_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\settings_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\design_system.js");
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 
 window.DefineScript("RVG Settings", {
     author: "RivaGe",
-    version: "1.6.0",
+    version: "1.6.2",
     features: { drag_n_drop: false, grab_focus: false }
 });
 
@@ -622,7 +624,7 @@ function on_size(width, height) {
 
 function on_colours_changed() {
     refreshTheme();
-    window.Repaint(true);
+    SharedThemeProtocol.requestRepaint();
 }
 
 function drawSwitch(gr, x, y, w, h, on) {
@@ -722,6 +724,10 @@ function on_paint(gr) {
     headerH = _scale(HEADER_H_PT);
     panel = findPanel(activePanelId);
 
+    // Rectangular backdrop before anti-aliasing: GDI+ shape smoothing filters the
+    // DrawImage destination edge into a visible seam on the left and top rows.
+    RivageBackdrop.paint(gr, 0, 0, ww, wh, theme.background);
+
     // Without this, the toggle-switch knobs (FillEllipse) render visibly
     // jagged under GDI+'s default smoothing mode.
     if (typeof gr.SetSmoothingMode === "function") {
@@ -733,26 +739,28 @@ function on_paint(gr) {
         }
     }
 
-    gr.FillSolidRect(0, 0, ww, wh, theme.background);
-
     gr.FillSolidRect(0, 0, sidebarW, wh, theme.sidebar);
-    for (i = 0; i < sidebarRows.length; i++) {
-        row = sidebarRows[i];
-        sy = row.y - sidebarScrollOffset;
-        if (sy + row.h <= 0 || sy >= sidebarViewportBottom) continue; // scrolled out of view
-        if (i === sidebarHover) {
-            gr.FillSolidRect(0, sy, sidebarW, row.h, theme.sidebarHover);
+    gr.PushClip(0, 0, sidebarW, sidebarViewportBottom);
+    try {
+        for (i = 0; i < sidebarRows.length; i++) {
+            row = sidebarRows[i];
+            sy = row.y - sidebarScrollOffset;
+            if (sy + row.h <= 0 || sy >= sidebarViewportBottom) continue; // scrolled out of view
+            if (i === sidebarHover) {
+                gr.FillSolidRect(0, sy, sidebarW, row.h, theme.sidebarHover);
+            }
+            if (row.panel.panelId === activePanelId) {
+                gr.FillSolidRect(0, sy, _scale(3), row.h, sharedAccentOrDefault());
+            }
+            gr.GdiDrawText(row.panel.panelLabel, fonts.sidebar,
+                row.panel.panelId === activePanelId ? theme.text : theme.textMuted,
+                _scale(14), sy, sidebarW - _scale(24), row.h,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
-        if (row.panel.panelId === activePanelId) {
-            gr.FillSolidRect(0, sy, _scale(3), row.h, sharedAccentOrDefault());
-        }
-        gr.GdiDrawText(row.panel.panelLabel, fonts.sidebar,
-            row.panel.panelId === activePanelId ? theme.text : theme.textMuted,
-            _scale(14), sy, sidebarW - _scale(24), row.h,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    } finally {
+        gr.PopClip();
     }
     if (sidebarMaxScroll > 0) {
-        gr.FillSolidRect(0, sidebarViewportBottom, sidebarW, Math.max(0, wh - sidebarViewportBottom), theme.sidebar);
         thumb = sidebarScrollThumb();
         gr.FillSolidRect(sidebarW - _scale(3), 0, _scale(3), sidebarViewportBottom,
             blendColours(theme.sidebar, theme.text, 0.06));
@@ -766,7 +774,6 @@ function on_paint(gr) {
             DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
     }
 
-    // Paint fixed header/tabs last so scrolled rows cannot overdraw them.
     if (!panel) {
         gr.GdiDrawText("Select a panel on the left.", fonts.label, theme.textMuted,
             sidebarW + _scale(18), headerH + _scale(10), ww - sidebarW - _scale(36), _scale(30),
@@ -777,8 +784,14 @@ function on_paint(gr) {
                 sidebarW + _scale(18), contentTop() + _scale(10), ww - sidebarW - _scale(36), _scale(30),
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         }
-        for (i = 0; i < contentRows.length; i++) {
-            drawRowInContentArea(gr, contentRows[i], i === rowHover, sidebarW);
+        // Clipped below the header and sub-tab bar, so a scrolled row cannot reach them.
+        gr.PushClip(sidebarW, contentTop(), Math.max(0, ww - sidebarW), Math.max(0, wh - contentTop()));
+        try {
+            for (i = 0; i < contentRows.length; i++) {
+                drawRowInContentArea(gr, contentRows[i], i === rowHover, sidebarW);
+            }
+        } finally {
+            gr.PopClip();
         }
         if (maxScroll > 0) {
             thumb = contentScrollThumb();
@@ -788,7 +801,6 @@ function on_paint(gr) {
         }
     }
 
-    gr.FillSolidRect(sidebarW, 0, Math.max(0, ww - sidebarW), headerH, theme.background);
     gr.DrawLine(sidebarW, headerH - 1, ww, headerH - 1, 1, theme.stroke);
 
     titleText = panel ? panel.panelLabel : "Settings";
@@ -802,7 +814,6 @@ function on_paint(gr) {
     drawIconButton(gr, refreshHitbox, GLYPHS.refresh, refreshHover, sharedAccentOrDefault());
 
     if (subTabs.length > 1) {
-        gr.FillSolidRect(sidebarW, headerH, Math.max(0, ww - sidebarW), subTabBarH(), theme.background);
         for (i = 0; i < subTabs.length; i++) {
             drawSubTab(gr, subTabs[i], i === subTabHover);
         }
@@ -1472,7 +1483,8 @@ function on_notify_data(name, info) {
         var nextAccent = SharedAccentProtocol.opaque(info);
         if (nextAccent === sharedAlbumAccent) return;
         sharedAlbumAccent = nextAccent;
-        window.Repaint(true);
+        if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
+        window.Repaint();
     }
 }
 

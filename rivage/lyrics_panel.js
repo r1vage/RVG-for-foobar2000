@@ -9,6 +9,7 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js')
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\track_context.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 
 window.DefineScript(RivageUI.copy.popupTitle('Lyrics'), { author: 'RivaGe', version: '2.9.0', features: { drag_n_drop: false } });
 
@@ -1560,7 +1561,7 @@ function draw_search_overlay(gr) {
 
 function on_paint(gr) {
 	source_refresh_work.runFromPaint();
-	gr.FillSolidRect(0, 0, ww, wh, col.bg);
+	RivageBackdrop.paint(gr, 0, 0, ww, wh, col.bg);
 	if (ww < _scale(24) || wh < _scale(24)) return;
 	links = [];
 
@@ -1969,14 +1970,15 @@ function on_notify_data(name, info) {
 
 	if (SharedThemeProtocol.consume(name, info, function () {
 		rebuild_visual_theme();
-		window.Repaint(true);
+		SharedThemeProtocol.requestRepaint();
 	})) return;
 
 	if (name != SHARED_ALBUM_ACCENT_UPDATE || !SharedAccentProtocol.isColour(info)) return;
 	var colour = SharedAccentProtocol.opaque(info);
 	if (colour === shared_album_accent) return;
 	shared_album_accent = colour;
-	if (opt_accent_mode == AccentMode.AlbumArt) { rebuild_visual_theme(); window.Repaint(true); }
+	if (SharedThemeProtocol.isAccentCommitted(colour)) return;
+	if (opt_accent_mode == AccentMode.AlbumArt) { rebuild_visual_theme(); window.Repaint(); }
 }
 function on_playback_new_track(handle) {
 	var t = 0;

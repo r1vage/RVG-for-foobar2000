@@ -7,7 +7,9 @@
 // registry (see shared/settings_protocol.js) but no longer hosts the screen
 // itself - that now lives in the dedicated settings_panel.js panel. See
 // shared/SETTINGS_FRAMEWORK.md.
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\ui_scale.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\dynamic_theme_protocol.js");
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\album_accent_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\foobar_actions.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\settings_protocol.js");
@@ -16,12 +18,13 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\seekbar_widget.js");
 // Volume bar reuses SeekbarWidget appearance settings; keep this include after seekbar_widget.js.
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\volume_bar_widget.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\design_system.js");
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 // Shared scrolling-text engine, used by the track-info marquee below.
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\marquee_widget.js");
 
 window.DefineScript("RVG Top Bar", {
     author: "RivaGe (based on a SMP/JScript sample)",
-    version: "3.7.0",
+    version: "3.8.0",
     features: { drag_n_drop: false, grab_focus: false }
 });
 
@@ -706,7 +709,7 @@ function updateDpiFromHeight() {
     var h = window.Height;
     if (h <= 0) return false;
 
-    var dpiFactor = (Number(window.DPI) || 96) / 96;
+    var dpiFactor = (RivageScale.dpi() || 96) / 96;
     var sizeFactor = clampNumber(h / REFERENCE_BAR_HEIGHT, MIN_SIZE_SCALE, MAX_SIZE_SCALE);
     var nextDpi = clampNumber(Math.round(dpiFactor * sizeFactor * 100), MIN_DPI_PERCENT, MAX_DPI_PERCENT);
 
@@ -894,6 +897,11 @@ function on_paint(gr) {
     var i, btn, smoothingChanged = false;
     startMarqueeTimer();
 
+    // Paint the rectangular Mica/background first. Shape anti-aliasing is only
+    // needed by the rounded controls below; enabling it before DrawImage can
+    // make a child-window edge participate in GDI+'s edge filtering.
+    RivageBackdrop.paint(gr, 0, 0, ww, wh, theme.background);
+
     // GDI+'s default smoothing leaves rounded controls visibly jagged.
     if (typeof gr.SetSmoothingMode === "function") {
         try {
@@ -903,8 +911,6 @@ function on_paint(gr) {
             smoothingChanged = false;
         }
     }
-
-    gr.FillSolidRect(0, 0, ww, wh, theme.background);
 
     if (layoutRects.art && layoutRects.art.visible) drawArt(gr, layoutRects.art);
     if (layoutRects.info && layoutRects.info.visible) drawTrackInfo(gr, layoutRects.info);
@@ -1224,7 +1230,7 @@ function on_size(width, height) {
 function on_colours_changed() {
     refreshHostColours();
     prepareMarquee();
-    window.Repaint(true);
+    SharedThemeProtocol.requestRepaint();
 }
 
 function on_playback_new_track(metadb) {
@@ -1336,9 +1342,10 @@ function on_notify_data(name, info) {
         var nextAccent = SharedAccentProtocol.opaque(info);
         if (nextAccent === sharedAlbumAccent) return;
         sharedAlbumAccent = nextAccent;
+        if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
         if (settings.accentMode === 1) {
             refreshHostColours();
-            window.Repaint(true);
+            window.Repaint();
         }
     }
 }

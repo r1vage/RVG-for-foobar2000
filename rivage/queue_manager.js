@@ -6,13 +6,17 @@
 
 window.DrawMode = 0;
 
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\miniplayer_protocol.js');
 
 window.DefineScript('RVG Compact Queue', {
     author: 'RivaGe',
-    version: '2.11.0',
+    version: '2.14.0',
     features: { drag_n_drop: true, grab_focus: true }
 });
 
@@ -62,19 +66,7 @@ var CLEAR_BUTTON_MIN_SIZE = 12;
 var panelDpi = 72;
 
 function refreshPanelDpi() {
-    var nextDpi = 72;
-
-    try {
-        if (typeof DPI !== 'undefined' && Number(DPI) > 0) {
-            nextDpi = Number(DPI);
-        } else if (typeof window !== 'undefined' && Number(window.DPI) > 0) {
-            nextDpi = Number(window.DPI);
-        }
-    } catch (e) {
-        nextDpi = 72;
-    }
-
-    panelDpi = nextDpi;
+    panelDpi = RivageScale.dpi() || 72;
 }
 
 function scale(value) {
@@ -1307,7 +1299,7 @@ function paintDropIndicator(gr) {
 }
 
 function on_paint(gr) {
-    gr.FillSolidRect(0, 0, ww, wh, theme.background);
+    RivageBackdrop.paint(gr, 0, 0, ww, wh, theme.background);
 
     if (!queueEntries.length) {
         gr.GdiDrawText(
@@ -1580,11 +1572,18 @@ function on_playlists_changed() {
 function on_size(width, height) {
     layout();
     refreshPointerState();
+
+    // The compact queue can be kept alive while Mini Player changes which host
+    // branch is visible. A resize is a strong hint that its absolute root slice
+    // changed, so make the consumer frame stale now rather than waiting for the
+    // first paint to discover the mismatch. Parent affinity is preserved here;
+    // Mini Player state changes below are the cases that deliberately rebind it.
+    if (RivageBackdrop.isMicaMode()) RivageBackdrop.invalidateConsumerFrame(false);
 }
 
 function on_colours_changed() {
     refreshVisualResources(false);
-    window.Repaint(true);
+    SharedThemeProtocol.requestRepaint();
 }
 
 function on_playback_queue_changed(origin) {
@@ -1620,12 +1619,25 @@ function on_metadb_changed(handleList, fromHook) {
 
 function on_notify_data(name, info) {
     if (SharedThemeProtocol.consume(name, info)) return;
+
+    // A Compact Queue instance may live on a branch that is only exposed in
+    // Mini Player mode. Enter/exit can therefore change its immediate host even
+    // when this script instance survives. Drop the old parent affinity and start
+    // a fresh mapped-frame discovery immediately. This sends notifications only:
+    // it does not Move/Show panels or toggle pseudo-transparency, so it cannot
+    // reintroduce the earlier layout flicker.
+    if (MiniPlayerProtocol.consumeState(name, info, function () {
+        RivageBackdrop.invalidateConsumerFrame(true);
+        try { window.Repaint(true); } catch (e) { }
+    })) return;
+
     if (name === SHARED_ALBUM_ACCENT_UPDATE && SharedAccentProtocol.isColour(info)) {
         var nextAccent = SharedAccentProtocol.opaque(info);
         if (nextAccent === sharedAccent) return;
         sharedAccent = nextAccent;
+        if (SharedThemeProtocol.isAccentCommitted(nextAccent)) return;
         refreshTheme();
-        window.Repaint(true);
+        window.Repaint();
     }
 }
 

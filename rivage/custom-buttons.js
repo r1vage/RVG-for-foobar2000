@@ -1,7 +1,10 @@
-window.DrawMode = 0;
+﻿window.DrawMode = 0;
 
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\ui_scale.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\design_system.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\dynamic_theme_protocol.js");
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\album_accent_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\settings_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\foobar_actions.js");
@@ -14,7 +17,7 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\miniplayer_protocol.js");
 // focus grabbing and drag-and-drop.
 window.DefineScript(RivageUI.copy.popupTitle("Custom buttons"), {
     author: "RivaGe",
-    version: "2.13.1",
+    version: "2.15.0",
     features: { drag_n_drop: false, grab_focus: false }
 });
 
@@ -313,9 +316,9 @@ var BUILTIN_ACTIONS = Object.freeze([
     { id: "toggle_mini_player", label: "Enter Mini Player" },
 
     // Opens the MusicBrainz.org release search for the target track's
-    // %artist%/%title% in the default browser. The Tagging button's default
+    // %artist%/%album% in the default browser. The Tagging button's default
     // middle-click, but any button can pick it.
-    { id: "musicbrainz_search", label: "Search MusicBrainz.org (artist + title)" },
+    { id: "musicbrainz_search", label: "Search MusicBrainz.org (artist + album)" },
 
     // General panel/playback actions.
     { id: "show_console", label: "Open console" },
@@ -981,6 +984,23 @@ function normaliseButtons(values) {
     return result;
 }
 
+// One-shot repair for configs saved before v2.14.1: the factory MusicBrainz
+// Tags button's right-click stored an empty context command because
+// COMMANDS.musicBrainzByAlbumId did not exist yet. An empty context command
+// can only come from that bug - a deliberately cleared action stores as
+// ACTION_NONE - so filling it in cannot overwrite a user's own choice.
+function repairMusicBrainzRightClick(buttons) {
+    var i, action, repaired = false;
+    for (i = 0; i < buttons.length; i++) {
+        if (buttons[i].id !== "musicbrainz_tags") continue;
+        action = buttons[i].right;
+        if (action.type !== ACTION_CONTEXT || action.command) continue;
+        action.command = normaliseMenuPath(COMMANDS.musicBrainzByAlbumId);
+        repaired = true;
+    }
+    return repaired;
+}
+
 function loadButtons() {
     var raw = readProperty("Buttons JSON", "");
     var parsed, normalised, legacyNormalised, defaults;
@@ -997,6 +1017,10 @@ function loadButtons() {
             defaults = normaliseButtons(defaultButtons());
             window.SetProperty(PROPERTY_PREFIX + "Buttons JSON", jsonStringifyAscii(defaults));
             return defaults;
+        }
+
+        if (repairMusicBrainzRightClick(normalised)) {
+            window.SetProperty(PROPERTY_PREFIX + "Buttons JSON", jsonStringifyAscii(normalised));
         }
         return normalised;
     } catch (e) {
@@ -1589,7 +1613,7 @@ function adoptSharedAlbumAccent(value) {
     return true;
 }
 
-var hostDpi = Math.max(0.5, Math.min(3, (Number(window.DPI) || 96) / 96));
+var hostDpi = Math.max(0.5, Math.min(3, (RivageScale.dpi() || 96) / 96));
 
 function px(value) {
     if (Number(value) === 0) return 0;
@@ -1636,7 +1660,7 @@ function ensureFonts() {
 }
 
 function refreshHostMetrics() {
-    hostDpi = Math.max(0.5, Math.min(3, (Number(window.DPI) || 96) / 96));
+    hostDpi = Math.max(0.5, Math.min(3, (RivageScale.dpi() || 96) / 96));
     rebuildTheme();
     rebuildFonts();
     layoutDirty = true;
@@ -2344,7 +2368,9 @@ function paintEmptyState(gr) {
 function on_paint(gr) {
     ensureFonts();
     if (layoutDirty) layoutButtons();
-    if (settings.panelBackground) gr.FillSolidRect(0, 0, ww, wh, theme.background);
+    if (settings.panelBackground || RivageBackdrop.isMicaMode()) {
+        RivageBackdrop.paint(gr, 0, 0, ww, wh, theme.background);
+    }
 
     if (!layoutEntries.length) paintEmptyState(gr);
     else {
@@ -2414,9 +2440,9 @@ function targetLabel(target) {
 // Same query+type=release+method=indexed search MusicBrainz.org's own site
 // search form uses. See discography_and_calendar.js for the same
 // utils.Run(url) pattern against musicbrainz.org (that panel searches by
-// artist alone; this one is artist+title for the Tagging button).
-function musicBrainzSearchUrl(artist, title) {
-    var query = (String(artist || "") + " " + String(title || "")).replace(/\s+/g, " ").trim();
+// artist alone; this one is artist+album for the Tagging button).
+function musicBrainzSearchUrl(artist, album) {
+    var query = (String(artist || "") + " " + String(album || "")).replace(/\s+/g, " ").trim();
     return "https://musicbrainz.org/search?query=" + encodeURIComponent(query) + "&type=release&method=indexed";
 }
 
@@ -2425,7 +2451,7 @@ function runMusicBrainzSearch(options) {
     // FbMetadbHandleList has no .Item() in this component - elements are
     // reached with a plain array accessor (docs/html/FbMetadbHandleList.html).
     var handle = items && items.Count > 0 ? items[0] : null;
-    var artist = "", title = "";
+    var artist = "", album = "";
 
     if (!handle) {
         if (!options || !options.silent) showPopup("No track is available to search MusicBrainz for.");
@@ -2434,16 +2460,16 @@ function runMusicBrainzSearch(options) {
 
     try { artist = fb.TitleFormat("%artist%").EvalWithMetadb(handle); }
     catch (e) { reportFailure("%artist% could not be read for the MusicBrainz search", e); }
-    try { title = fb.TitleFormat("%title%").EvalWithMetadb(handle); }
-    catch (e) { reportFailure("%title% could not be read for the MusicBrainz search", e); }
+    try { album = fb.TitleFormat("%album%").EvalWithMetadb(handle); }
+    catch (e) { reportFailure("%album% could not be read for the MusicBrainz search", e); }
 
-    if (!trimText(artist) && !trimText(title)) {
-        if (!options || !options.silent) showPopup("This track has no %artist%/%title% tags to search MusicBrainz with.");
+    if (!trimText(artist) && !trimText(album)) {
+        if (!options || !options.silent) showPopup("This track has no %artist%/%album% tags to search MusicBrainz with.");
         return false;
     }
 
     try {
-        utils.Run(musicBrainzSearchUrl(artist, title));
+        utils.Run(musicBrainzSearchUrl(artist, album));
         return true;
     } catch (e) {
         if (!options || !options.silent) showPopup("Could not open the MusicBrainz search page.\n\n" + String(e.message || e));
@@ -3666,7 +3692,7 @@ function on_notify_data(name, info) {
         // if the legacy accent UPDATE happened before this panel registered.
         if (payload) adoptSharedAlbumAccent(Number(payload.accent));
         rebuildTheme();
-        window.Repaint(true);
+        SharedThemeProtocol.requestRepaint();
     })) return;
 
     if (SettingsRegistry.provide(name, info, settingsPanelId(), settingsPanelLabel(), getMySettings)) return;
@@ -3677,8 +3703,9 @@ function on_notify_data(name, info) {
 
     if (name === SHARED_ALBUM_ACCENT_UPDATE && SharedAccentProtocol.isColour(info)) {
         var changed = adoptSharedAlbumAccent(info);
+        if (changed && SharedThemeProtocol.isAccentCommitted(info)) return;
         if (changed && settings.accentMode === ACCENT_SHARED) rebuildTheme();
-        if (changed && (settings.accentMode === ACCENT_SHARED || anyButtonUsesSharedAlbumAccent())) window.Repaint(true);
+        if (changed && (settings.accentMode === ACCENT_SHARED || anyButtonUsesSharedAlbumAccent())) window.Repaint();
     }
 }
 
