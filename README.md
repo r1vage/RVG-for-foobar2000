@@ -118,7 +118,7 @@ Mica then paints those semantic surfaces at partial opacity over the blurred cov
 - **Mini Player** — Shrinks the real foobar2000 window into a compact now-playing view with art, playback controls, seekbar, optional Last.fm love button and rating. Remembers position and size. Main setting: **Design** — Design 1 (small cover, one title line, centred transport, full-width seekbar) or Design 2 (full-height cover art beside stacked title, artist and love+stars lines, transport inline with a short seekbar).
 
   ![Mini Player](https://i.ibb.co/nqhYpb0h/miniplayer.jpg)
-- **Quick switcher** — A search box that floats over the layout: type part of an artist, album, track, playlist or command and play, queue or open it from the keyboard. Open it with a keyboard shortcut or the **Open quick switcher** Custom Buttons action. Needs a one-time panel; see [Quick switcher](#quick-switcher).
+- **Quick switcher** — A search box that floats over the layout: type part of an artist, album, track, playlist or command and play, queue or open it from the keyboard. Open it with a keyboard shortcut or the **Open quick switcher** Custom Buttons action. Needs a keyboard shortcut; see [Quick switcher](#quick-switcher).
 - **Compact Queue** — Small playback-queue editor with drag reorder, file drops, remove/clear actions, and recovery through a managed playlist.
 
 ### Listening history and metadata
@@ -172,9 +172,15 @@ Add a Compact Queue (`queue_manager.js`) as a direct child of the left side and 
 
 ### Quick switcher
 
-**One-time setup:** add a panel under the root splitter, at the same level as `TOP BUTTONS` and `MINI PLAYER`, point it at `quick_switcher_panel.js` and caption it `QUICK SWITCHER` (exact, case-sensitive). Size and position don't matter: it stays hidden and floats above the layout while open.
+It is already in the layout; it just needs a keyboard shortcut:
 
-**Opening it:** bind **Quick switcher** in Preferences › Keyboard Shortcuts (Ctrl+K works well; the same shortcut closes it), or give a Custom Buttons button the **Open quick switcher** action. Click the search box once to start typing — JSplitter can't move keyboard focus into a panel by itself. Clicking anywhere else closes it.
+1. Start foobar2000 with the RVG layout loaded once, so the skin can register its **Quick switcher** command.
+2. Open **Preferences › Keyboard Shortcuts**, click **Add new**, type `quick` in the filter and pick **Quick switcher**.
+3. Press the key you want (Ctrl+K works well) in the key box, then **Apply**. The same shortcut closes it again.
+
+If **Quick switcher** isn't in the list, look in the console for `Quick switcher: the main-menu command could not be registered`. A Custom Buttons button with the **Open quick switcher** action opens it too.
+
+Click the search box once to start typing — JSplitter can't move keyboard focus into a panel by itself. Clicking anywhere else closes it.
 
 | Input | Does |
 | --- | --- |
@@ -189,7 +195,7 @@ Add a Compact Queue (`queue_manager.js`) as a direct child of the left side and 
 | `>` `@` `#` `/` first | Search only Commands, Artists, Albums or Playlists |
 | Esc | Back out of actions, then clear the text, then close |
 
-Matching ignores case and accents; an empty box shows the last eight things you opened. The library is indexed on first open and again after it changes, never in the background. To remove it, delete the panel; nothing else depends on it.
+Matching ignores case and accents; an empty box shows the last eight things you opened. The library is indexed on first open and again after it changes, never in the background.
 
 ### Resizing
 
