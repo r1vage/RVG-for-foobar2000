@@ -118,7 +118,7 @@ Mica then paints those semantic surfaces at partial opacity over the blurred cov
 - **Mini Player** — Shrinks the real foobar2000 window into a compact now-playing view with art, playback controls, seekbar, optional Last.fm love button and rating. Remembers position and size. Main setting: **Design** — Design 1 (small cover, one title line, centred transport, full-width seekbar) or Design 2 (full-height cover art beside stacked title, artist and love+stars lines, transport inline with a short seekbar).
 
   ![Mini Player](https://i.ibb.co/nqhYpb0h/miniplayer.jpg)
-- **Quick switcher** — A search box that floats over the layout: type part of an artist, album, track, playlist or command and play, queue or open it from the keyboard. Open it with a keyboard shortcut or the **Open quick switcher** Custom Buttons action. Needs a one-time panel; see `QUICK_SWITCHER_SETUP.md`.
+- **Quick switcher** — A search box that floats over the layout: type part of an artist, album, track, playlist or command and play, queue or open it from the keyboard. Open it with a keyboard shortcut or the **Open quick switcher** Custom Buttons action. Needs a one-time panel; see [Quick switcher](#quick-switcher).
 - **Compact Queue** — Small playback-queue editor with drag reorder, file drops, remove/clear actions, and recovery through a managed playlist.
 
 ### Listening history and metadata
@@ -169,6 +169,27 @@ A `custom-buttons.js` instance can be used in three common places:
 ### Queue peek
 
 Add a Compact Queue (`queue_manager.js`) as a direct child of the left side and caption it `QUEUE PEEK`. It stays hidden until the Player's **Next** line is clicked, then takes the Player's place under a back strip; click the strip or press Esc in the queue to return. It is never saved, so a restart always opens on the Player. Without that child the **Next** line still shows, and clicking it does nothing.
+
+### Quick switcher
+
+**One-time setup:** add a panel under the root splitter, at the same level as `TOP BUTTONS` and `MINI PLAYER`, point it at `quick_switcher_panel.js` and caption it `QUICK SWITCHER` (exact, case-sensitive). Size and position don't matter: it stays hidden and floats above the layout while open.
+
+**Opening it:** bind **Quick switcher** in Preferences › Keyboard Shortcuts (Ctrl+K works well; the same shortcut closes it), or give a Custom Buttons button the **Open quick switcher** action. Click the search box once to start typing — JSplitter can't move keyboard focus into a panel by itself. Clicking anywhere else closes it.
+
+| Input | Does |
+| --- | --- |
+| Up / Down, Page Up / Page Down | Move the selection |
+| Enter | Play the artist or album, play a track inside its album, switch to a playlist, run a command |
+| Shift+Enter / Ctrl+Enter | Add to the playback queue / play next |
+| Click a cover | Play it from the current playlist when it's there, else as Enter would |
+| Click a row | Select the artist, album or track in your playlist; switch to a playlist; run a command |
+| Middle-click a row | Queue it and keep the switcher open |
+| Right-click, or Right at the end of the text | More actions: play next, queue, add to playlist, show in playlist |
+| Tab / Shift+Tab | Filter: All, Artists, Albums, Tracks, Playlists, Commands |
+| `>` `@` `#` `/` first | Search only Commands, Artists, Albums or Playlists |
+| Esc | Back out of actions, then clear the text, then close |
+
+Matching ignores case and accents; an empty box shows the last eight things you opened. The library is indexed on first open and again after it changes, never in the background. To remove it, delete the panel; nothing else depends on it.
 
 ### Resizing
 

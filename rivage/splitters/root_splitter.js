@@ -485,7 +485,7 @@ function openQuickSwitcher(size) {
     if (miniModeActive || !check.ok || !check.panel) {
         if (check.ok && !check.panel) {
             logDiagnostic('Quick switcher: no panel captioned "' + QuickSwitcherProtocol.CAPTION +
-                '" in this layout - see QUICK_SWITCHER_SETUP.md.', true);
+                '" in this layout - see "Quick switcher" in the README.', true);
         }
         QuickSwitcherProtocol.state(false);
         return;
