@@ -13,10 +13,11 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\miniplayer_protocol.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\queue_peek_protocol.js');
 
 window.DefineScript('RVG Compact Queue', {
     author: 'RivaGe',
-    version: '2.14.0',
+    version: '2.15.1',
     features: { drag_n_drop: true, grab_focus: true }
 });
 
@@ -44,6 +45,9 @@ var DROPEFFECT_COPY = 1;
 
 var IDC_ARROW = 32512;
 var IDC_HAND = 32649;
+var VK_ESCAPE = 0x1B;
+var DLGC_WANTALLKEYS = 0x0004;
+window.DlgCode = DLGC_WANTALLKEYS;
 
 
 var PROPERTY_PREFIX = 'Rivage Compact Queue.';
@@ -85,7 +89,7 @@ function clampNumber(value, min, max) {
 // Keep body typography aligned with Play Log while scaling for panel size and DPI.
 var BODY_FONT_PT = 9;
 var MINIMUM_FONT_PT = 8;
-var MAXIMUM_FONT_PT = 14;
+var MAXIMUM_FONT_PT = 11;
 var REFERENCE_WIDTH_PT = 150;
 var REFERENCE_HEIGHT_PT = 80;
 var adaptiveFontScale = 1;
@@ -1228,7 +1232,8 @@ function paintRows(gr) {
 
         if (selected) background = RivageUI.mix(theme.background, accent, 0.16);
         else if (hovered) background = theme.rowHover;
-        else if ((i & 1) === 1) background = theme.card;
+        // A faint wash, not the card surface: the card is far heavier under Mica.
+        else if ((i & 1) === 1) background = RivageUI.withAlpha(theme.textPrimary, 7);
 
         if (background !== theme.background) {
             gr.FillSolidRect(0, y, ww, height, background);
@@ -1400,6 +1405,11 @@ function on_mouse_lbtn_up(x, y) {
         refreshPointerState();
         window.Repaint();
     }
+}
+
+// Esc leaves the queue peek (settings_host.js). Harmless when not peeking.
+function on_key_down(vkey) {
+    if (vkey === VK_ESCAPE) QueuePeekProtocol.close();
 }
 
 function on_mouse_wheel(step) {

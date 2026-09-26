@@ -2,6 +2,7 @@ window.DrawMode = 0;
 
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\ui_scale.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\design_system.js");
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\power_mode.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\dynamic_theme_protocol.js");
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
@@ -18,8 +19,11 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\track_context.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\seekbar_widget.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\volume_bar_widget.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\marquee_widget.js");
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\queue_peek_protocol.js");
 
 const TEXT_FLAGS = RivageUI.textFlags;
+// Unscaled slack for ink past a section's rect (seekbar thumb, button rims).
+const PAINT_AREA_PAD = 12;
 const FILL_MODE_WINDING = 1;
 const MENU_STRING = 0x00000000;
 const MENU_GRAYED = 0x00000001;
@@ -40,7 +44,7 @@ const TEXT_RENDERING_HINT_ANTIALIAS = 4;
 // Those belong to foobar2000's context menu and to custom-buttons.js.
 window.DefineScript(RivageUI.copy.popupTitle("Player"), {
     author: "RivaGe",
-    version: "4.4.0",
+    version: "4.7.0",
     options: { grab_focus: false }
 });
 
@@ -79,8 +83,8 @@ const UI = Object.freeze({
     titleHeight: 40,
     artistHeight: 31,
     albumHeight: 32,
-    titleArtistGap: 0,
-    artistAlbumGap: 0,
+    titleArtistGap: 4,
+    artistAlbumGap: 3,
 
     transportButton: 26,
     playButton: 38,
@@ -89,10 +93,12 @@ const UI = Object.freeze({
     controlsPaddingX: 1,
     controlsPaddingY: 4,
     controlsRadius: 3,
-    controlsTopGap: 10,
-    controlsYRatio: 0.58,
+    controlsTopGap: 18,
+    controlsYRatio: 0.62,
 
-    // "No ReplayGain" badge, centred in the empty strip above the title.
+    // The strip above the title holds the "No ReplayGain" badge and the queue's
+    // "Next" line; sharing a row, they are centred together as one group.
+    nextBadgeGap: 12,
     badgeHeight: 20,
     badgeTop: 9,
     badgePaddingX: 9,
@@ -113,6 +119,7 @@ const UI = Object.freeze({
 
 const FONT_SIZES = Object.freeze({
     title: 26,
+    next: 13,
     artist: 21,
     album: 17,
     emptyTitle: 20,
@@ -415,11 +422,80 @@ const cache = {
     rating: 0
 };
 
+// First queued item: always what plays next, whatever the playback order.
+const queueNext = { text: "", count: 0 };
+const NEXT_TF = fb.TitleFormat("[%artist% \u2013 ]$if2(%title%,$filename(%path%))");
+
+function refreshQueueNext() {
+    let count = 0;
+    let text = "";
+    try {
+        const items = plman.GetPlaybackQueueContents();
+        count = items.length;
+        if (count) text = safeText(NEXT_TF.EvalWithMetadb(items[0].Handle));
+    } catch (e) {
+        reportFailure("the playback queue could not be read", e);
+    }
+    const presenceChanged = !!count !== !!queueNext.count;
+    queueNext.count = count;
+    queueNext.text = count ? "Next \u00B7 " + text + (count > 1 ? "  \u00B7  +" + (count - 1) : "") : "";
+    return presenceChanged;
+}
+
+function nextLineVisible() {
+    return !!(handle && queueNext.count && layout.next);
+}
+
+function replayGainWarningWanted() {
+    return !!(settings.showReplayGainWarning && handle && cache.trackGain === "?");
+}
+
+// Places the Next line and the badge in the strip above the title. Nothing
+// else moves, so the queue appearing or emptying never shifts the layout.
+let topStripKey = "";
+function arrangeTopStrip(force = false) {
+    const base = layout.replayGainBadgeBase;
+    const badgeShown = !!base && replayGainWarningWanted();
+    const key = [queueNext.text, badgeShown, layout.mainX, layout.mainW, base ? base.rect.y : -1, fonts.next ? fonts.titlePx : 0].join("\u001f");
+    if (!force && key === topStripKey) return;
+    topStripKey = key;
+
+    layout.replayGainBadge = base;
+    layout.next = null;
+    if (!queueNext.count || !base || !fonts.next || layout.mainW <= 0) return;
+
+    const y = base.rect.y;
+    const h = base.rect.h;
+    if (!badgeShown) {
+        layout.next = makeRect(layout.mainX, y, layout.mainW, h);
+        layout.nextFlags = TEXT_FLAGS.centeredEllipsis;
+        return;
+    }
+
+    const gap = px(UI.nextBadgeGap);
+    const textW = Math.max(0, Math.min(
+        Math.ceil(measureTextWidth(queueNext.text, fonts.next)) + px(2),
+        layout.mainW - base.rect.w - gap
+    ));
+    const startX = layout.mainX + Math.round((layout.mainW - textW - gap - base.rect.w) / 2);
+    const shift = startX + textW + gap - base.rect.x;
+    layout.next = makeRect(startX, y, textW, h);
+    layout.nextFlags = TEXT_FLAGS.leftCenteredEllipsis;
+    layout.replayGainBadge = {
+        rect: makeRect(base.rect.x + shift, y, base.rect.w, h),
+        glyphX: base.glyphX + shift,
+        glyphW: base.glyphW,
+        textX: base.textX + shift,
+        textW: base.textW
+    };
+}
+
 const layout = {
     scale: 1,
     mainX: 0,
     mainW: 0,
 
+    next: null,
     title: null,
     artist: null,
     album: null,
@@ -427,6 +503,8 @@ const layout = {
 
     controls: null,
     replayGainBadge: null,
+    replayGainBadgeBase: null,
+    nextFlags: 0,
     rating: null,
     ratingStarX: 0,
     ratingStarSize: 0,
@@ -436,6 +514,7 @@ const layout = {
 };
 
 const fonts = {
+    next: null,
     title: null,
     artist: null,
     album: null,
@@ -466,6 +545,7 @@ let fontNames = {
 // hidden and consumed once, immediately before that first visible paint.
 
 const pendingVisibleWork = {
+    queue: true,
     trackState: false,
     requestAccent: false,
     hostColours: false,
@@ -567,8 +647,16 @@ function syncLayoutToHostFromPaint(force = false) {
     return true;
 }
 
+// Returns true when anything was applied, which makes this paint a full one.
 function flushVisibleWorkFromPaint() {
-    if (!hostIsVisible()) return;
+    if (!hostIsVisible()) return false;
+    const pending = pendingVisibleWork.font || pendingVisibleWork.hostColours ||
+        pendingVisibleWork.theme || pendingVisibleWork.trackState || pendingVisibleWork.queue;
+
+    if (pendingVisibleWork.queue) {
+        pendingVisibleWork.queue = false;
+        if (refreshQueueNext()) layoutDirty = true;
+    }
 
     if (pendingVisibleWork.font) {
         pendingVisibleWork.font = false;
@@ -600,6 +688,7 @@ function flushVisibleWorkFromPaint() {
         pendingVisibleWork.requestAccent = false;
         requestAlbumAccent();
     }
+    return pending || laidOut;
 }
 
 
@@ -687,6 +776,7 @@ function buildFonts() {
 
     fonts.titlePx = px(FONT_SIZES.title);
     fonts.title = RivageUI.font(fontNames.title, fonts.titlePx, 1);
+    fonts.next = RivageUI.font(fontNames.body, px(FONT_SIZES.next), 0);
     fonts.artist = RivageUI.font(fontNames.body, px(FONT_SIZES.artist), 0);
     fonts.album = RivageUI.font(fontNames.body, px(FONT_SIZES.album), 0);
     fonts.emptyTitle = RivageUI.font(fontNames.body, px(FONT_SIZES.emptyTitle), 1);
@@ -703,7 +793,7 @@ function buildFonts() {
 
 function ensureFonts() {
     const required = [
-        "title", "artist", "album", "emptyTitle", "emptySubtitle",
+        "next", "title", "artist", "album", "emptyTitle", "emptySubtitle",
         "transportIcon", "primaryIcon", "star", "music", "tooltip"
     ];
     if (required.every(key => !!fonts[key])) return false;
@@ -938,6 +1028,7 @@ function measureTextWidth(text, font) {
 const HOVER_ZONE_PADDING = 6; // logical px each side, purely forgiveness around the glyphs.
 
 const hoverHit = {
+    next: { rect: null, text: null, font: null, x: 0, y: 0, w: 0, h: 0 },
     title: { rect: null, text: null, font: null, x: 0, y: 0, w: 0, h: 0 },
     artist: { rect: null, text: null, font: null, x: 0, y: 0, w: 0, h: 0 },
     album: { rect: null, text: null, font: null, x: 0, y: 0, w: 0, h: 0 }
@@ -968,6 +1059,10 @@ function hoverRectFor(key, text, font, row) {
     return hit.rect;
 }
 
+function nextHoverRect() {
+    if (!nextLineVisible()) return null;
+    return hoverRectFor("next", queueNext.text, fonts.next, layout.next);
+}
 function titleHoverRect() {
     return hoverRectFor("title", cache.title, fonts.title, layout.title);
 }
@@ -1809,7 +1904,8 @@ function calculateVerticalLayout() {
         layout.album.y + layout.album.h - layout.title.y
     );
 
-    layout.replayGainBadge = calculateReplayGainBadge();
+    layout.replayGainBadgeBase = calculateReplayGainBadge();
+    arrangeTopStrip(true);
 
     const playSize = px(UI.playButton);
     const controlsH = playSize + px(UI.controlsPaddingY) * 2;
@@ -2077,6 +2173,7 @@ function drawTooltip(gr) {
 
 function visualHoverRegionAt(x, y) {
     if (!handle) return "";
+    if (pointInRect(x, y, nextHoverRect())) return "next";
     if (pointInRect(x, y, titleHoverRect())) return "title";
     if (pointInRect(x, y, artistHoverRect())) return "artist";
     if (pointInRect(x, y, albumHoverRect())) return "album";
@@ -2104,6 +2201,10 @@ function tooltipAt(x, y) {
         return REPLAYGAIN_BADGE.tooltip;
     }
 
+    if (pointInRect(x, y, nextHoverRect())) {
+        return queueNext.count === 1 ? "Show the queued track" : "Show all " + queueNext.count + " queued tracks";
+    }
+
     if (handle && pointInRect(x, y, titleHoverRect())) {
         return fb.IsPlaying || playbackTransitionPending
             ? "Focus the now-playing cursor in its playlist"
@@ -2119,7 +2220,7 @@ function pointIsClickable(x, y) {
     for (const button of interactiveButtons) {
         if (button.contains(x, y) && button.isInteractive()) return true;
     }
-    return !!ratingStarAt(x, y) ||
+    return !!ratingStarAt(x, y) || pointInRect(x, y, nextHoverRect()) ||
         (handle && (pointInRect(x, y, titleHoverRect()) || pointInRect(x, y, artistHoverRect()) || pointInRect(x, y, albumHoverRect())));
 }
 
@@ -2162,7 +2263,7 @@ function drawBackground(gr) {
 // "?" is what %__replaygain_track_gain% yields for an unscanned track; see
 // refreshCache(), which keeps that literal for exactly this test.
 function replayGainWarningVisible() {
-    return !!(settings.showReplayGainWarning && handle && cache.trackGain === "?" && layout.replayGainBadge);
+    return !!(replayGainWarningWanted() && layout.replayGainBadge);
 }
 
 function drawReplayGainWarning(gr) {
@@ -2236,6 +2337,26 @@ function drawEmptyState(gr) {
     );
 }
 
+function drawNextLine(gr) {
+    const hovered = pointInRect(mouse.x, mouse.y, nextHoverRect());
+    gr.GdiDrawText(
+        queueNext.text,
+        fonts.next,
+        hovered ? theme.textPrimary : theme.textTertiary,
+        layout.next.x,
+        layout.next.y,
+        layout.next.w,
+        layout.next.h,
+        layout.nextFlags
+    );
+    if (hovered) {
+        const rect = nextHoverRect();
+        const underlineW = Math.round(rect.w * 0.5);
+        gr.FillSolidRect(rect.x + Math.round((rect.w - underlineW) / 2), layout.next.y + layout.next.h - px(2),
+            underlineW, px(1), theme.accentHover);
+    }
+}
+
 function drawTitle(gr) {
     const hovered = pointInRect(mouse.x, mouse.y, titleHoverRect());
 
@@ -2264,7 +2385,7 @@ function drawTitle(gr) {
     }
 }
 
-function drawTrackInformation(gr) {
+function drawTrackInformation(gr, area, pad) {
     if (!handle) {
         // A fresh playback start has no outgoing metadata to retain. Keep
         // the content area clean until on_playback_new_track supplies it.
@@ -2272,7 +2393,9 @@ function drawTrackInformation(gr) {
         return;
     }
 
-    drawTitle(gr);
+    if (nextLineVisible() && RivageUI.areaHits(area, layout.next, pad)) drawNextLine(gr);
+    if (RivageUI.areaHits(area, layout.title, pad)) drawTitle(gr);
+    if (!RivageUI.areaHits(area, layout.artist, pad) && !RivageUI.areaHits(area, layout.album, pad)) return;
 
     const artistHover = pointInRect(mouse.x, mouse.y, artistHoverRect());
     const albumHover = pointInRect(mouse.x, mouse.y, albumHoverRect());
@@ -2322,9 +2445,11 @@ function drawTrackInformation(gr) {
     }
 }
 
-function drawButtons(gr) {
+function drawButtons(gr, area, pad) {
     if (!handle || !layout.controls) return;
-    for (const button of transportButtons) button.paint(gr);
+    for (const button of transportButtons) {
+        if (RivageUI.areaHits(area, button, pad)) button.paint(gr);
+    }
 }
 
 function drawRating(gr) {
@@ -2359,32 +2484,43 @@ function on_size(width, height) {
     // this one layout pass when its first paint arrives after Show(true).
 }
 
-function on_paint(gr) {
-    flushVisibleWorkFromPaint();
-    ensureFonts();
+function on_paint(gr, x, y, width, height) {
+    const flushed = flushVisibleWorkFromPaint();
+    const fontsBuilt = ensureFonts();
+    arrangeTopStrip();
 
-    drawBackground(gr);
-    drawReplayGainWarning(gr);
-    drawTrackInformation(gr);
-    drawButtons(gr);
+    // Marquee and seekbar ticks invalidate one section; skip the others.
+    const area = flushed || fontsBuilt ? null : RivageUI.paintArea(x, y, width, height, ww, wh);
+    const pad = px(PAINT_AREA_PAD);
+    if (area) gr.PushClip(area.x, area.y, area.w, area.h);
+    try {
+        drawBackground(gr);
+        if (replayGainWarningVisible() && RivageUI.areaHits(area, layout.replayGainBadge.rect, pad)) {
+            drawReplayGainWarning(gr);
+        }
+        drawTrackInformation(gr, area, pad);
+        drawButtons(gr, area, pad);
 
-    if (handle) {
-        drawRating(gr);
+        if (handle && RivageUI.areaHits(area, layout.rating, pad)) {
+            drawRating(gr);
+        }
+
+        if (settings.showSeekbar && layout.seekbar && RivageUI.areaHits(area, layout.seekbar, pad)) {
+            ui.withAntialias(gr, () => {
+                seekbarWidget.draw(gr, layout.seekbar, theme.accent);
+            });
+        }
+
+        if (settings.showVolumeBar && layout.volumeBar && RivageUI.areaHits(area, layout.volumeBar, pad)) {
+            ui.withAntialias(gr, () => {
+                volumeBarWidget.draw(gr, layout.volumeBar, theme.accent);
+            });
+        }
+
+        drawTooltip(gr);
+    } finally {
+        if (area) gr.PopClip();
     }
-
-    if (settings.showSeekbar && layout.seekbar) {
-        ui.withAntialias(gr, () => {
-            seekbarWidget.draw(gr, layout.seekbar, theme.accent);
-        });
-    }
-
-    if (settings.showVolumeBar && layout.volumeBar) {
-        ui.withAntialias(gr, () => {
-            volumeBarWidget.draw(gr, layout.volumeBar, theme.accent);
-        });
-    }
-
-    drawTooltip(gr);
 
     // These timers self-stop as soon as the panel becomes hidden and are
     // restarted by the first subsequent visible paint.
@@ -2502,6 +2638,11 @@ function on_mouse_lbtn_up(x, y) {
         return;
     }
 
+    if (pointInRect(x, y, nextHoverRect())) {
+        setTooltip("", x, y);
+        QueuePeekProtocol.open();
+        return;
+    }
     if (handle && pointInRect(x, y, artistHoverRect())) {
         openArtistPlaylist();
         return;
@@ -2585,7 +2726,13 @@ function on_mouse_rbtn_up(x, y) {
 }
 
 function on_metadb_changed() {
+    pendingVisibleWork.queue = true;
     queueTrackState(true);
+}
+
+function on_playback_queue_changed() {
+    pendingVisibleWork.queue = true;
+    requestVisibleRepaint(true);
 }
 
 function on_item_focus_change() {
@@ -2683,6 +2830,8 @@ function on_font_changed() {
 }
 
 function on_notify_data(name, data) {
+    // Scrolling titles stop or resume on the next paint.
+    if (RivagePowerMode.consume(name, data)) { window.Repaint(); return; }
     if (SharedThemeProtocol.consume(name, data)) return;
     // NOTE: SettingsRegistry.provide() returns true for ANY schema request,
     // regardless of which panelId it was called with (a request is a broadcast,

@@ -5,13 +5,14 @@ try { window.EraseOnRepaint = false; } catch (e) {}
 // and must remain explicitly opt-in because its anonymous-token API may change.
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\settings_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\power_mode.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\track_context.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 
-window.DefineScript(RivageUI.copy.popupTitle('Lyrics'), { author: 'RivaGe', version: '2.9.0', features: { drag_n_drop: false } });
+window.DefineScript(RivageUI.copy.popupTitle('Lyrics'), { author: 'RivaGe', version: '2.9.1', features: { drag_n_drop: false } });
 
 // Narrow failure reporting. Most empty catches in this file guard host reads
 // that are *expected* to fail (an aborted request has no .status, a handle may
@@ -966,7 +967,7 @@ function clone_number_map(src) {
 	return out;
 }
 function anim_frame_interval_ms() {
-	return Math.max(8, 1000 / Math.max(1, opt_anim_fps));
+	return Math.max(8, 1000 / Math.max(1, RivagePowerMode.fps(opt_anim_fps)));
 }
 // Visibility is part of timer liveness so hidden panels do not keep re-arming animation ticks.
 function anim_timer_should_run() {
@@ -1814,6 +1815,7 @@ function getMySettings() {
 		{ id: 'smoothScroll', label: 'Smooth line transitions', type: 'bool', value: opt_smooth_scroll },
 		{ id: 'continuousScroll', label: 'Scroll continuously during playback', type: 'bool', value: opt_continuous_scroll },
 		{ id: 'animFps', label: 'Animation frame rate', type: 'choice', value: opt_anim_fps, choiceValueType: 'number',
+			hint: RivagePowerMode.capNote(opt_anim_fps),
 			choices: [
 				{ value: 20, label: '20 fps' },
 				{ value: 30, label: '30 fps' },
@@ -1946,7 +1948,7 @@ function applyMySetting(settingId, value) {
 			window.Repaint();
 			return;
 		case 'changeFont':
-			var chosen = utils.FontPicker(f_active);
+			var chosen = utils.FontPicker(f_active, window.ID);
 			if (!chosen || chosen == f_active) return;
 			var nextName = String(chosen.Name || opt_line_font_name);
 			var nextSize = Number(chosen.Size) || opt_active_size;
@@ -1963,6 +1965,7 @@ function applyMySetting(settingId, value) {
 }
 
 function on_notify_data(name, info) {
+	if (RivagePowerMode.consume(name, info)) return;
 	if (SettingsRegistry.provide(name, info, SETTINGS_PANEL_ID, SETTINGS_PANEL_LABEL, getMySettings)) return;
 	if (SettingsRegistry.consume(name, info, SETTINGS_PANEL_ID, applyMySetting)) return;
 	if (SettingsRegistry.consume(name, info, 'global', TrackContext.applySetting)) return;

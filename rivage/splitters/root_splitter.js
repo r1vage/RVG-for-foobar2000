@@ -2,7 +2,7 @@
 
 window.DefineScript('RVG Root Splitter', {
     author: 'RivaGe',
-    version: '1.8.2',
+    version: '1.10.0',
     features: { drag_n_drop: false, grab_focus: false }
 });
 
@@ -17,6 +17,7 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\resizing_mode_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\divider_highlight.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\miniplayer_protocol.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\quick_switcher_protocol.js');
 
 const TOP_HEIGHT_PROPERTY = 'RIVAGE.Layout.Root.TopBarHeight';
 const TOP_BUTTONS_WIDTH_PROPERTY = 'RIVAGE.Layout.Root.TopButtonsWidth';
@@ -42,6 +43,17 @@ const MINI_DEFAULT_HEIGHT = 120;
 // A rect this small is treated as unusable rather than trusted - guards a
 // corrupted property and an all-zero readout during host startup alike.
 const MINI_MIN_SIZE = 80;
+
+// Quick switcher - optional TopMost child captioned QUICK SWITCHER, floated
+// centred near the top while open. Absent panel = feature off, nothing else changes.
+const QUICK_SWITCHER_TOP_FRACTION = 0.12;
+const QUICK_SWITCHER_MARGIN = 16;
+// The command lives here, not in the switcher: JSplitter does not run a hidden
+// panel's script at startup, so a command registered there vanished on launch
+// and foobar2000 dropped its keyboard shortcut.
+const QUICK_SWITCHER_MENU_ID = 1;
+let quickSwitcherOpen = false;
+let quickSwitcherSize = { w: 640, h: 520 };
 
 const DEFAULT_TOP_BAR_HEIGHT = 72;
 const DIVIDER_SIZE = 6;
@@ -448,6 +460,58 @@ function defaultMiniRect(normalRect) {
     };
 }
 
+function layoutQuickSwitcher(width, height) {
+    const result = acquirePanel(QuickSwitcherProtocol.CAPTION);
+    if (!result.ok) return false;
+    const panel = result.panel;
+    if (!panel) return true;
+    if (!quickSwitcherOpen || miniModeActive) return showPanel(panel, false);
+
+    const w = clamp(quickSwitcherSize.w, 1, Math.max(1, width - QUICK_SWITCHER_MARGIN * 2));
+    const y = Math.round(height * QUICK_SWITCHER_TOP_FRACTION);
+    const h = clamp(quickSwitcherSize.h, 1, Math.max(1, height - y - QUICK_SWITCHER_MARGIN));
+    const x = Math.round((width - w) / 2);
+    if (!preparePanel(panel)) return false;
+    try {
+        if (panel.TopMost !== true) panel.TopMost = true;
+    } catch (e) {
+        logDiagnostic('Quick switcher: the panel could not be raised above the layout: ' + e, true);
+    }
+    return movePanel(panel, x, y, w, h) && showPanel(panel, true);
+}
+
+function openQuickSwitcher(size) {
+    const check = acquirePanel(QuickSwitcherProtocol.CAPTION);
+    if (miniModeActive || !check.ok || !check.panel) {
+        if (check.ok && !check.panel) {
+            logDiagnostic('Quick switcher: no panel captioned "' + QuickSwitcherProtocol.CAPTION +
+                '" in this layout - see QUICK_SWITCHER_SETUP.md.', true);
+        }
+        QuickSwitcherProtocol.state(false);
+        return;
+    }
+    if (size) quickSwitcherSize = size;
+    quickSwitcherOpen = true;
+    requestDeferredLayout(true);
+    QuickSwitcherProtocol.state(true);
+}
+
+function toggleQuickSwitcher() {
+    if (quickSwitcherOpen) closeQuickSwitcher();
+    else openQuickSwitcher(null);
+}
+
+function on_main_menu_dynamic(id) {
+    if (id === QUICK_SWITCHER_MENU_ID) toggleQuickSwitcher();
+}
+
+function closeQuickSwitcher() {
+    if (!quickSwitcherOpen) return;
+    quickSwitcherOpen = false;
+    requestDeferredLayout(true);
+    QuickSwitcherProtocol.state(false);
+}
+
 function hideMiniPanel() {
     const miniResult = acquirePanel(MINI_PANEL_CAPTION);
     if (!miniResult.ok) return false;
@@ -482,6 +546,7 @@ function layoutMiniMode(width, height) {
     }
 
     if (miniReady) {
+        if (!layoutQuickSwitcher(width, height)) complete = false;
         if (topBarResult.panel && !showPanel(topBarResult.panel, false)) complete = false;
         if (bodyResult.panel && !showPanel(bodyResult.panel, false)) complete = false;
         if (topButtonsResult.panel && !showPanel(topButtonsResult.panel, false)) complete = false;
@@ -549,6 +614,7 @@ function enterMiniMode() {
 
     miniModeActive = true;
     miniBackdropRefreshPending = true;
+    closeQuickSwitcher();
     requestDeferredLayout(true);
     if (!applyWindowRect(miniRect)) {
         miniModeActive = false;
@@ -783,6 +849,7 @@ function layoutPanels() {
     // is ready behind it. This makes exit/recovery transactional: a transient
     // child-wrapper failure cannot expose a blank or half-restored main window.
     if (complete && !hideMiniPanel()) complete = false;
+    if (!layoutQuickSwitcher(width, height)) complete = false;
 
     return complete;
 }
@@ -1063,6 +1130,9 @@ function on_notify_data(name, info) {
     if (consumeButtonsMeasure(name, info)) return;
     if (dividerHighlight.onNotifyData(name, info)) return;
     if (MiniPlayerProtocol.isEnter(name)) { enterMiniMode(); return; }
+    if (name === QuickSwitcherProtocol.TOGGLE) { toggleQuickSwitcher(); return; }
+    if (name === QuickSwitcherProtocol.SHOW) { openQuickSwitcher(QuickSwitcherProtocol.parseSize(info)); return; }
+    if (name === QuickSwitcherProtocol.HIDE) { closeQuickSwitcher(); return; }
     if (MiniPlayerProtocol.isExit(name)) { exitMiniMode(); return; }
     if (MiniPlayerProtocol.consumeSettings(name, info, adoptMiniPlayerSettings)) return;
     ResizingModeProtocol.consume(name, info, setResizingModeEnabled);
@@ -1082,6 +1152,13 @@ function on_script_unload() {
     workScheduled = false;
     cancelRetryTimer();
     clearMeasureTimer();
+    try { fb.UnregisterMainMenuCommand(QUICK_SWITCHER_MENU_ID); } catch (e) { }
+}
+
+try {
+    fb.RegisterMainMenuCommand(QUICK_SWITCHER_MENU_ID, 'Quick switcher', 'Open or close the RVG quick switcher');
+} catch (e) {
+    logDiagnostic('Quick switcher: the main-menu command could not be registered: ' + e, true);
 }
 
 recoverFromUncleanMiniExit();

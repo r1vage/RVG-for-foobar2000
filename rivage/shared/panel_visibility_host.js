@@ -16,7 +16,8 @@ if (typeof togglePanelVisibilityHost === 'undefined') {
         try {
             panel = window.GetPanel(info.caption);
             if (!panel) return true;
-            panel.Show(!!panel.Hidden);
+            // info.show forces a state (true/false); without it the panel toggles.
+            panel.Show(typeof info.show === 'boolean' ? info.show : !!panel.Hidden);
         } catch (e) {
             try {
                 console.log('[PanelVisibilityHost] GetPanel/Show failed for "' +

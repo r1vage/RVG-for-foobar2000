@@ -15,7 +15,7 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 
 window.DefineScript('RVG Bottom Bar Presets', {
     author: 'RivaGe',
-    version: '1.8.0',
+    version: '1.8.1',
     features: { drag_n_drop: false, grab_focus: false }
 });
 
@@ -132,7 +132,7 @@ function chooseCustomButtonFont() {
     var current, chosen;
     try {
         current = gdi.Font(info.fontFamily, info.fontSize, info.fontStyle || 0);
-        chosen = utils.FontPicker(current);
+        chosen = utils.FontPicker(current, window.ID);
     } catch (e) {
         return;
     }

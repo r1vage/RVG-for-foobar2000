@@ -9,6 +9,16 @@ var SHARED_RIVAGE_THEME_UPDATE = 'SHARED_RIVAGE_THEME.UPDATE';
 var SHARED_RIVAGE_THEME_PREPARE = 'SHARED_RIVAGE_THEME.PREPARE';
 var SHARED_RIVAGE_THEME_COMMIT = 'SHARED_RIVAGE_THEME.COMMIT';
 var SHARED_RIVAGE_THEME_REQUEST = 'SHARED_RIVAGE_THEME.REQUEST';
+// Settings > Storage broadcasts this; every loaded panel logs its own native memory.
+var RIVAGE_MEMORY_REPORT = 'RIVAGE.MEMORY_REPORT';
+
+function rivageLogPanelMemory() {
+    var m = window.JsMemoryStats;
+    if (!m) return;
+    var name = window.ScriptInfo && window.ScriptInfo.Name ? String(window.ScriptInfo.Name) : '?';
+    console.log('[RVG memory] ' + name + ' [' + window.Name + ']: ' +
+        (m.CurrentPanelExternalUsage / 1048576).toFixed(1) + ' MB external');
+}
 
 if (typeof SharedThemeProtocol === 'undefined') {
     var SharedThemeProtocol = (function () {
@@ -145,13 +155,18 @@ if (typeof SharedThemeProtocol === 'undefined') {
             if (blurRadius < 2 || blurRadius > 254 || tintAlpha < 0 || tintAlpha > 255) return false;
             if (backdrop.enabled && !backdrop.path) return false;
 
+            // Optional and paint-only: an older producer simply sends no grain.
+            var noise = Math.round(Number(backdrop.noise));
+            if (!isFinite(noise)) noise = 0;
+
             return {
                 version: 1,
                 enabled: backdrop.enabled,
                 key: backdrop.key,
                 path: backdrop.enabled ? backdrop.path : '',
                 blurRadius: blurRadius,
-                tintAlpha: tintAlpha
+                tintAlpha: tintAlpha,
+                noise: Math.max(0, Math.min(20, noise))
             };
         }
 
@@ -466,6 +481,10 @@ if (typeof SharedThemeProtocol === 'undefined') {
             },
 
             consume: function (name, info, callback) {
+                if (name === RIVAGE_MEMORY_REPORT) {
+                    rivageLogPanelMemory();
+                    return true;
+                }
                 // Mica frame discovery deliberately piggybacks on the shared
                 // notification path so every normal RVG consumer can answer its
                 // direct children without registering another callback wrapper.

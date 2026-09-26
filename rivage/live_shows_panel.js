@@ -11,8 +11,9 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\library_resolver_v2.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\library_actions_v2.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\visible_paint_work.js");
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\cache_protocol.js');
 
-const PANEL_VERSION = '2.2.2';
+const PANEL_VERSION = '2.4.0';
 
 window.DefineScript(RivageUI.copy.popupTitle('Live shows'), {
     author: 'RivaGe',
@@ -37,7 +38,6 @@ const SETTINGS_PANEL_ID = 'live_shows';
 const SETTINGS_PANEL_LABEL = 'Live shows';
 
 const TICKETMASTER_ROOT = 'https://app.ticketmaster.com/discovery/v2';
-const SEATGEEK_ROOT = 'https://api.seatgeek.com/2';
 const USER_AGENT = 'foobar2000-JSplitter-LiveShows/' + PANEL_VERSION;
 
 const CACHE_DIR = fb.ProfilePath + 'jsplitter_live_shows_cache\\';
@@ -45,15 +45,12 @@ const CACHE_FILE = CACHE_DIR + 'upcoming_shows_v2.json';
 const CACHE_VERSION = 2;
 const CACHE_WRITE_INTERVAL_MS = 8000;
 
-// verifiesMbid is the source's ability to return a MusicBrainz ID at all, which
-// gates both the strict setting and the per-row name-match tag.
-const SOURCE_DEFS = {
-    ticketmaster: { id: 'ticketmaster', label: 'Ticketmaster', intervalMs: 260, verifiesMbid: true },
-    seatgeek: { id: 'seatgeek', label: 'SeatGeek', intervalMs: 400, verifiesMbid: false }
-};
-const DEFAULT_SOURCE = 'ticketmaster';
+// The one show source. It publishes MusicBrainz IDs, so an artist match can be
+// confirmed rather than guessed. Its id prefixes cache keys.
+const SOURCE = { id: 'ticketmaster', label: 'Ticketmaster', intervalMs: 260 };
 
 const MAX_TRANSIENT_RETRIES = 4;
+const REQUEST_TIMEOUT_MS = 45000;
 const RETRY_BASE_MS = 2000;
 const RETRY_MAX_DELAY_MS = 60000;
 const RETRY_JITTER_MS = 1000;
@@ -64,7 +61,6 @@ const EMPTY_CACHE_MULTIPLIER = 2;
 // One page only, sorted nearest-first: an artist with more than this many
 // upcoming dates loses the far tail, never the shows that matter.
 const TICKETMASTER_EVENT_PAGE_SIZE = 60;
-const SEATGEEK_EVENT_PAGE_SIZE = 50;
 
 const MF_STRING = 0x00000000;
 const MF_GRAYED = 0x00000001;
@@ -110,11 +106,6 @@ let HEADER_GAP = 8;
 let SECTION_H = 30;
 let ITEM_H = 64;
 
-function normalizeSource(value) {
-    const key = String(value || '').toLowerCase();
-    return SOURCE_DEFS[key] ? key : DEFAULT_SOURCE;
-}
-
 function normalizeHorizon(value) {
     const days = Math.round(Number(value) || 0);
     if (days <= 90) return 90;
@@ -123,9 +114,7 @@ function normalizeHorizon(value) {
     return 365;
 }
 
-let source = normalizeSource(window.GetProperty(PROP + 'Source', DEFAULT_SOURCE));
 let ticketmasterApiKey = String(window.GetProperty(PROP + 'Ticketmaster API key', ''));
-let seatgeekClientId = String(window.GetProperty(PROP + 'SeatGeek client ID', ''));
 let locationFilter = String(window.GetProperty(PROP + 'Location filter', ''));
 let horizonDays = normalizeHorizon(window.GetProperty(PROP + 'Horizon days', 365));
 let cacheDays = clamp(Math.round(Number(window.GetProperty(PROP + 'Cache days', 7)) || 7), 1, 60);
@@ -190,6 +179,7 @@ let requestContexts = new Map();
 let requestTimer = 0;
 let lastRequestAt = 0;
 let blockedUntil = 0;
+let requestWatchdog = 0;
 let consecutiveTransientErrors = 0;
 let networkDebug = { state: 'idle', kind: '', at: 0, httpStatus: 0, detail: '' };
 
@@ -354,19 +344,15 @@ function venueLine(show) {
 }
 
 function currentSourceDef() {
-    return SOURCE_DEFS[source] || SOURCE_DEFS[DEFAULT_SOURCE];
-}
-
-function sourceVerifiesMbid() {
-    return !!currentSourceDef().verifiesMbid;
+    return SOURCE;
 }
 
 function sourceCredential() {
-    return source === 'seatgeek' ? seatgeekClientId : ticketmasterApiKey;
+    return ticketmasterApiKey;
 }
 
 function credentialLabel() {
-    return source === 'seatgeek' ? 'SeatGeek client ID' : 'Ticketmaster API key';
+    return 'Ticketmaster API key';
 }
 
 // A semicolon starts another place; a comma narrows the one you are in. So
@@ -562,7 +548,7 @@ function emptyCache() {
 }
 
 function cacheKey(artistKey) {
-    return source + '|' + artistKey;
+    return SOURCE.id + '|' + artistKey;
 }
 
 function loadCacheFile() {
@@ -663,8 +649,8 @@ function pruneCacheToLibrary() {
     const keys = Object.keys(store.artists);
     let removed = 0;
     for (let i = 0; i < keys.length; i++) {
-        // Only this source's keys are pruned; the other source keeps its cache.
-        if (keys[i].indexOf(source + '|') !== 0) continue;
+        // Anything not a current library artist goes, including entries from the
+        // SeatGeek source that 2.3.0 and earlier offered.
         if (!live.has(keys[i])) {
             delete store.artists[keys[i]];
             removed++;
@@ -725,12 +711,31 @@ function pumpRequestQueue() {
         const taskId = utils.HTTPRequestAsync(0, context.url, requestHeaders());
         lastRequestAt = Date.now();
         requestContexts.set(taskId, context);
+        armRequestWatchdog(taskId);
     } catch (e) {
         // Deferred, or a host that throws for every URL would recurse through
         // the whole sweep on one stack.
         const detail = String(e);
         window.SetTimeout(function () { handleRequestFailure(context, 0, detail); }, 0);
     }
+}
+
+// A request the host never settles would hold the serial queue forever, so
+// give up on it and treat it like a dropped connection.
+function armRequestWatchdog(taskId) {
+    clearTimer(requestWatchdog);
+    requestWatchdog = window.SetTimeout(function () {
+        requestWatchdog = 0;
+        if (!scriptActive) return;
+        const context = requestContexts.get(taskId);
+        if (!context) return;
+        requestContexts.delete(taskId);
+        if (context.generation !== generation) {
+            pumpRequestQueue();
+            return;
+        }
+        handleRequestFailure(context, 0, 'No response after ' + Math.round(REQUEST_TIMEOUT_MS / 1000) + ' s');
+    }, REQUEST_TIMEOUT_MS);
 }
 
 function handleRequestFailure(context, status, detail) {
@@ -768,6 +773,8 @@ function on_http_request_done(taskId, success, responseText, status) {
     const context = requestContexts.get(taskId);
     if (!context) return;
     requestContexts.delete(taskId);
+    clearTimer(requestWatchdog);
+    requestWatchdog = 0;
 
     if (context.generation !== generation) {
         pumpRequestQueue();
@@ -791,8 +798,6 @@ function on_http_request_done(taskId, success, responseText, status) {
     try {
         if (context.kind === 'tm-attraction') handleTicketmasterAttraction(context, data);
         else if (context.kind === 'tm-events') handleTicketmasterEvents(context, data);
-        else if (context.kind === 'sg-performer') handleSeatgeekPerformer(context, data);
-        else if (context.kind === 'sg-events') handleSeatgeekEvents(context, data);
     } catch (e) {
         reportFailure('a ' + context.kind + ' response could not be processed', e);
         finishArtist(context, [], '', false, debugSnippet(e, 160));
@@ -917,96 +922,6 @@ function handleTicketmasterEvents(context, data) {
     finishArtist(context, shows, context.mbid || '', !!context.confirmed, '');
 }
 
-function requestSeatgeekPerformer(artist, index) {
-    enqueueRequest({
-        kind: 'sg-performer',
-        generation: generation,
-        artist: artist,
-        index: index,
-        retries: 0,
-        url: SEATGEEK_ROOT + '/performers?client_id=' + encodeURIComponent(seatgeekClientId) +
-            '&per_page=10&q=' + encodeURIComponent(artist.name)
-    });
-}
-
-// SeatGeek indexes sports teams and shows alongside bands under one performer
-// namespace, so a name match alone could hand back a basketball team.
-function seatgeekPerformerIsMusic(performer) {
-    const type = String((performer && performer.type) || '').toLowerCase();
-    if (type === 'band' || type === 'musician') return true;
-    return !!(performer && Array.isArray(performer.genres) && performer.genres.length);
-}
-
-function handleSeatgeekPerformer(context, data) {
-    const artist = context.artist;
-    const performers = data && Array.isArray(data.performers) ? data.performers : [];
-
-    let chosen = null;
-    for (let i = 0; i < performers.length; i++) {
-        const performer = performers[i];
-        if (normalizeArtist(performer && performer.name) !== artist.key) continue;
-        if (!seatgeekPerformerIsMusic(performer)) continue;
-        chosen = performer;
-        break;
-    }
-
-    if (!chosen || !chosen.id) {
-        finishArtist(context, [], '', false, '', performers.length ? 'no music performer of that name' : '');
-        return;
-    }
-
-    // Same saving as an artist-info call elsewhere: a performer with nothing
-    // booked costs one request instead of two.
-    if (chosen.num_upcoming_events !== undefined && !(Number(chosen.num_upcoming_events) > 0)) {
-        finishArtist(context, [], '', false, '', '');
-        return;
-    }
-
-    enqueueRequest({
-        kind: 'sg-events',
-        generation: generation,
-        artist: artist,
-        index: context.index,
-        retries: 0,
-        url: SEATGEEK_ROOT + '/events?client_id=' + encodeURIComponent(seatgeekClientId) +
-            '&performers.id=' + encodeURIComponent(String(chosen.id)) +
-            '&per_page=' + SEATGEEK_EVENT_PAGE_SIZE + '&sort=datetime_local.asc' +
-            '&datetime_utc.gte=' + todayIso()
-    });
-}
-
-function handleSeatgeekEvents(context, data) {
-    const events = data && Array.isArray(data.events) ? data.events : [];
-    const shows = [];
-
-    for (let i = 0; i < events.length; i++) {
-        const event = events[i];
-        if (!event) continue;
-        const local = String(event.datetime_local || '');
-        const date = local.substring(0, 10);
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
-        const venue = event.venue || {};
-        shows.push({
-            date: date,
-            // SeatGeek marks an unknown start time as 03:00, its own sentinel.
-            time: local.substring(11, 16) === '03:00' ? '' : local.substring(11, 16),
-            artist: context.artist.name,
-            artistKey: context.artist.key,
-            title: cleanSpaces(event.title),
-            venue: cleanSpaces(venue.name),
-            city: cleanSpaces(venue.city),
-            region: cleanSpaces(venue.state),
-            country: cleanSpaces(venue.country),
-            // venue.country is an ISO2 code, so the spelled-out location is kept
-            // for the place filter to match on without being displayed.
-            place: cleanSpaces(venue.display_location),
-            url: String(event.url || ''),
-            tickets: String(event.url || '')
-        });
-    }
-    finishArtist(context, shows, '', false, '', '');
-}
-
 function identityRejection(remoteMbid) {
     return remoteMbid ? 'MusicBrainz ID mismatch' : 'no MusicBrainz ID to verify against';
 }
@@ -1018,7 +933,7 @@ function artistIdentityConfirmed(artist, remoteMbid) {
 // Strict mode demands confirmation on both sides; otherwise only a positive
 // mismatch rejects, since that means a different artist of the same name.
 function artistIdentityAccepted(artist, remoteMbid) {
-    if (requireMbidMatch && sourceVerifiesMbid()) return artistIdentityConfirmed(artist, remoteMbid);
+    if (requireMbidMatch) return artistIdentityConfirmed(artist, remoteMbid);
     if (!remoteMbid || !artist.mbids.length) return true;
     return artistIdentityConfirmed(artist, remoteMbid);
 }
@@ -1100,11 +1015,10 @@ function advanceSweep() {
 }
 
 function requestArtist(artist, index) {
-    if (source === 'seatgeek') requestSeatgeekPerformer(artist, index);
-    else requestTicketmasterAttraction(artist, index);
+    requestTicketmasterAttraction(artist, index);
 }
 
-// Every source path funnels here, so the cache write and the sweep step happen
+// Every response path funnels here, so the cache write and the sweep step happen
 // exactly once per artist whatever the outcome.
 function finishArtist(context, shows, matchedMbid, verified, error, note) {
     if (context.generation !== generation) return;
@@ -1268,8 +1182,7 @@ function paintHeader(gr) {
 
     const left = card.x + PAD;
     const width = Math.max(scaleUi(20), card.x + card.w - PAD - left);
-    // Visible source credit: SeatGeek's terms require attribution wherever its
-    // data is shown, and it doubles as the "which source is live" indicator.
+    // Visible credit for where the show data comes from.
     const creditText = 'Data by ' + currentSourceDef().label;
     let creditW = 0;
     try { creditW = Math.ceil(gr.CalcTextWidth(creditText, fonts.small)) + scaleUi(4); } catch (e) { creditW = scaleUi(110); }
@@ -1340,7 +1253,7 @@ function paintShowRow(gr, row, index, y) {
         cardX + scaleUi(12), bottomY, dateW, lineH,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
-    const nameOnly = sourceVerifiesMbid() && nameOnlyArtists.has(show.artistKey);
+    const nameOnly = nameOnlyArtists.has(show.artistKey);
     const tagW = nameOnly ? scaleUi(74) : 0;
     drawText(gr, show.artist, fonts.bold, colours.text,
         textX, topY, Math.max(scaleUi(20), textW - tagW), lineH,
@@ -1582,7 +1495,7 @@ function describeLibraryDebug() {
 function describeCacheDebug() {
     return cacheDebug.state + '; ' + plural(cacheDebug.artists, 'artist entry', 'artist entries') + '; ' +
         plural(cacheDebug.shows, 'show') +
-        (sourceVerifiesMbid() ? '; ' + stats.unverified + ' matched by name only' : '; name matching only on this source') +
+        '; ' + stats.unverified + ' matched by name only' +
         '; saved ' + debugDateTime(cacheDebug.savedAt) +
         (cacheDebug.error ? '; ' + cacheDebug.error : '');
 }
@@ -1603,23 +1516,9 @@ function describeNetworkDebug() {
 function getLiveShowsSettings() {
     return [
         {
-            id: 'source', label: 'Show source', type: 'choice', value: source,
-            section: 'Options', choiceValueType: 'string',
-            choices: [
-                { value: 'ticketmaster', label: 'Ticketmaster' },
-                { value: 'seatgeek', label: 'SeatGeek' }
-            ],
-            hint: 'Each source keeps its own cache, so switching back is free. Only Ticketmaster can confirm an artist by MusicBrainz ID.'
-        },
-        {
             id: 'ticketmasterApiKey', label: 'Ticketmaster API key', type: 'string', value: ticketmasterApiKey,
             section: 'Options',
             hint: 'The consumer key from a Ticketmaster developer app. 5000 calls a day.'
-        },
-        {
-            id: 'seatgeekClientId', label: 'SeatGeek client ID', type: 'string', value: seatgeekClientId,
-            section: 'Options',
-            hint: 'The client ID from a SeatGeek developer app. Their terms ask that the SeatGeek credit stay visible.'
         },
         {
             id: 'locationFilter', label: 'Only these places', type: 'string', value: locationFilter,
@@ -1643,10 +1542,8 @@ function getLiveShowsSettings() {
         },
         {
             id: 'requireMbidMatch', label: 'Only artists verified by MusicBrainz ID', type: 'bool', value: requireMbidMatch,
-            section: 'Options', disabled: !sourceVerifiesMbid(),
-            hint: sourceVerifiesMbid()
-                ? 'Stricter: drops any artist Ticketmaster cannot confirm against your tagged MusicBrainz IDs.'
-                : 'Not available on SeatGeek, which publishes no MusicBrainz IDs; its matches are by name alone.'
+            section: 'Options',
+            hint: 'Stricter: drops any artist Ticketmaster cannot confirm against your tagged MusicBrainz IDs.'
         },
         {
             id: 'cacheDays', label: 'Cache duration (days)', type: 'number', value: cacheDays,
@@ -1679,26 +1576,12 @@ function applyLiveShowsSetting(settingId, value) {
     let next;
 
     switch (settingId) {
-        case 'source':
-            next = normalizeSource(value);
-            if (next === source) return;
-            window.SetProperty(PROP + 'Source', next);
-            source = next;
-            startSweep(false);
-            return;
         case 'ticketmasterApiKey':
             next = cleanSpaces(value);
             if (next === ticketmasterApiKey) return;
             window.SetProperty(PROP + 'Ticketmaster API key', next);
             ticketmasterApiKey = next;
-            if (source === 'ticketmaster') startSweep(false);
-            return;
-        case 'seatgeekClientId':
-            next = cleanSpaces(value);
-            if (next === seatgeekClientId) return;
-            window.SetProperty(PROP + 'SeatGeek client ID', next);
-            seatgeekClientId = next;
-            if (source === 'seatgeek') startSweep(false);
+            startSweep(false);
             return;
         case 'locationFilter':
             next = cleanSpaces(value);
@@ -1759,6 +1642,7 @@ function applyLiveShowsSetting(settingId, value) {
 }
 
 function on_notify_data(name, info) {
+    if (CacheProtocol.consumeClear(name, info, 'liveShows', clearCache)) return;
     if (SharedThemeProtocol.consume(name, info, function () {
         updateTheme();
         SharedThemeProtocol.requestRepaint();

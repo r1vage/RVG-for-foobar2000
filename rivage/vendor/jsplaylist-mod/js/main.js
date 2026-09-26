@@ -3,7 +3,7 @@
 // Modified by RivaGe
 // *****************************************************************************************************************************************
 
-var g_script_version = "2.13.0";
+var g_script_version = "2.18.0";
 var g_LDT = DT_LEFT | DT_VCENTER | DT_CALCRECT | DT_NOPREFIX | DT_END_ELLIPSIS;
 var g_middle_clicked = false;
 var g_middle_click_timer = false;
@@ -20,6 +20,12 @@ var g_timer1 = false, need_repaint = false;
 // wakeups while the playlist is idle.
 var SKIP_WORK_WHEN_HIDDEN = true;
 var g_mouse_wheel_timer = false;
+// Smooth-scroll state, declared up here because system_init() runs before the rest
+// of this file is evaluated (see set_scroll_delta).
+var SMOOTH_SCROLL_TAU_MS = 55;
+var smooth_scroll = { shown: null, active: false, from: 0, target: 0, start: 0, timer: false, frames: 0, paint_ms: 0, list_ms: 0, header_ms: 0, track_ms: 0 };
+// Diagnostics: logs frames and average paint time per glide to the console.
+var SMOOTH_SCROLL_TRACE = !!window.GetProperty("SYSTEM.Trace smooth scroll", false);
 // drag'n drop from windows system
 var g_dragndrop_status = false;
 var g_dragndrop_x = -1;
@@ -173,6 +179,8 @@ properties = {
 	lovedAlwaysPink: window.GetProperty("CUSTOM.Loved Always Pink", false),
 	// incremental search, jssp semantics
 	directSearchEnabled: window.GetProperty("CUSTOM.Direct Search Enabled", true),
+	searchClearSeconds: window.GetProperty("CUSTOM.Search Clear Seconds", 3),
+	searchPreviewRows: window.GetProperty("CUSTOM.Search Preview Rows", 6),
 
 	// --- jssp look ------------------------------------------------------------------
 	// 2.5 font system: one family, independent sizes per element (all DPI-scaled)
@@ -319,15 +327,33 @@ function toggle_loved(metadb, currently_loved) {
 	};
 };
 
-// =================================================================== // Incremental search state (jssp semantics)
+// =================================================================== // Quick search state
+// g_incremental_search_timer is the countdown interval; the unload handler clears it.
 var g_incremental_search = "";
-var g_incremental_search_indexes = [];
 var g_incremental_search_position = -1;
 var g_incremental_search_no_result = false;
 var g_incremental_search_timer = false;
-// lower-cased haystack, one entry per playlist item, rebuilt whenever the list is rebuilt
+// One lower-cased, accent-folded string per item: artist, album artist, title, album, date,
+// genre joined by QS_SEP. Built on the first search; list rebuilds reset it to [].
 var g_direct_search_values = [];
-var tf_direct_search = fb.TitleFormat("$lower($if2(%artist%,) | $if2(%album artist%,) | $if2(%title%,) | $if2(%album%,))");
+var QS_SEP = "\u241f";
+var tf_direct_search = fb.TitleFormat("$lower([%artist%]" + QS_SEP + "[%album artist%]" + QS_SEP + "[%title%]" + QS_SEP + "[%album%]" + QS_SEP + "[%date%]" + QS_SEP + "[%genre%])");
+var tf_qs_display = fb.TitleFormat("[%artist%]" + QS_SEP + "[%title%]" + QS_SEP + "[%album artist%]" + QS_SEP + "[%album%]" + QS_SEP + "[%date%]");
+// U+00C0..U+024F -> ASCII base letter; "_" keeps the character. One char per char, so
+// match offsets in folded text are valid in the original.
+var QS_FOLD = "aaaaaa_ceeeeiiii_nooooo_ouuuuy__aaaaaa_ceeeeiiii_nooooo_ouuuuy_yaaaaaaccccccccddddeeeeeeeeeegggggggghhhhiiiiiiii_i__jjkk_llllll__llnnnnnn___oooooo__rrrrrrssssssssttttttuuuuuuuuuuuuwwyyyzzzzzz_b______________________i________oo_____________uu____zz______________________aaiioouuuuuuuuuu_aaaa____ggkkoooo__j___gg__nnaa____aaaaeeeeiiiioooorrrruuuusstt__hh______aaeeooooooooyy_______________b____________";
+// fields index the arrays above; group = header fields matched against a group's first track
+var QS_SCOPES = [
+	{ label: "All", fields: null, group: [1, 3] },
+	{ label: "Artist", fields: [0, 1], group: [1] },
+	{ label: "Album", fields: [3], group: [3] },
+	{ label: "Title", fields: [2], group: null },
+	{ label: "Year", fields: [4], group: [4] },
+	{ label: "Genre", fields: [5], group: [5] }
+];
+// entries: {t: track index, g: group index for a header entry else -1}, in playlist order
+var qs = { scope: 0, entries: [], matchSet: {}, tokens: [], origin: null, remaining: 0, last: 0,
+	ringStep: -1, hover: -1, pointerIn: false, previewTop: 0, layout: null, display: {}, fonts: null };
 
 // =================================================================== // Singleton for Images
 images = {
@@ -515,11 +541,13 @@ cList = {
 	enableExtraLine: window.GetProperty("SYSTEM.Enable Extra Line", true)
 };
 
-// Internal drag-to-reorder is removed. The object is kept so the many existing
-// references stay valid, but `enabled` is hard false and drag_in can never become true.
-// External drops from Windows Explorer / other panels are unaffected.
+// Internal drag-to-reorder. The drop slot is derived from the mouse position and
+// the row geometry p.list.draw lays out with - never computed inside paint - so a
+// move repaints only the marker strips it touches (see dragndrop_update), and the
+// drop is one plman.ReorderPlaylistItems permutation with one undo point.
 dragndrop = {
-	enabled: false,
+	enabled: true,
+	marker: null,
 	contigus_sel: null,
 	x: 0,
 	y: 0,
@@ -530,6 +558,135 @@ dragndrop = {
 	drag_out: false,
 	clicked: false,
 	moved: false
+};
+
+// Where the dragged selection would land for a pointer at (x, y), or null when it
+// cannot be dropped there. `before` is the playlist index the block is inserted
+// before; x/y/w is the marker line. Mirrors the item hover test in WSHplaylist.js.
+function dragndrop_target(x, y) {
+	if (!dragndrop.drag_in || properties.enableTouchControl || !p.list || p.list.count <= 0)
+		return null;
+	if (cPlaylistManager.hscroll_timer || !(p.playlistManager.woffset == 0 || cPlaylistManager.visible))
+		return null;
+	if (x >= (p.playlistManager.x - p.playlistManager.woffset) - 30)
+		return null;
+	if (x < p.list.x || x >= p.list.x + p.list.w || y < p.list.y || y >= p.list.y + p.list.h)
+		return null;
+	var width = (p.list.totalRows <= p.list.totalRowVisible || !properties.showscrollbar) ? p.list.w : p.list.w - cScrollBar.width;
+	var items = p.list.items;
+	// Start from where the rows were last painted, which includes a smooth-scroll glide.
+	var row_y = (items.length && typeof items[0].y == "number") ? items[0].y : p.list.y;
+	for (var i = 0; i < items.length; i++) {
+		var h = items[i].heightInRow * cTrack.height;
+		var delta = items[i].groupRowDelta * cTrack.height;
+		if (y >= row_y && y < row_y + h - delta)
+			return dragndrop_slot(items[i], p.list.x + 1, row_y, width - 2, h);
+		row_y += h - delta;
+	};
+	return null;
+};
+
+function dragndrop_slot(it, x, y, w, h) {
+	var id = it.track_index;
+	if (plman.IsPlaylistItemSelected(p.list.playlist, id))
+		return null;
+	if (it.type == 0) {
+		if (it.empty_row_index != 0 || id == dragndrop.drag_id)
+			return null;
+		if (id > dragndrop.drag_id)
+			return { before: id + 1, x: x + cover.w, y: y + h, w: w - cover.w, hidden: false };
+		return { before: id, x: x + cover.w, y: y, w: w - cover.w, hidden: false };
+	};
+	if (!it.obj)
+		return null;
+	var cw = (p.headerBar.columns[0].percent > 0 ? p.headerBar.columns[0].w : 0);
+	if (id <= dragndrop.drag_id)
+		return { before: id, x: x + cw, y: y, w: w - cw, hidden: it.groupRowDelta != 0 };
+	// Below the drag source: a collapsed group takes the drop after its last track,
+	// an expanded one before its first (the marker sits under the header).
+	return { before: it.obj.collapsed ? id + it.obj.count : id, x: x + cw, y: y + h, w: w - cw, hidden: false };
+};
+
+function dragndrop_marker_rect(m) {
+	var pad = 4 * cList.borderWidth + 2;
+	return { x: m.x - 2, y: m.y - pad, w: m.w + 4, h: pad * 2 };
+};
+
+function dragndrop_same(a, b) {
+	if (!a || !b)
+		return a === b;
+	return a.before == b.before && a.x == b.x && a.y == b.y && a.w == b.w && a.hidden == b.hidden;
+};
+
+// Repaints only when the drop slot actually changes, and only the old and new strips.
+function dragndrop_update(x, y) {
+	var next = dragndrop_target(x, y);
+	var prev = dragndrop.marker;
+	if (dragndrop_same(prev, next))
+		return;
+	dragndrop.marker = next;
+	var r;
+	if (prev && !prev.hidden) {
+		r = dragndrop_marker_rect(prev);
+		window.RepaintRect(r.x, r.y, r.w, r.h);
+	};
+	if (next && !next.hidden) {
+		r = dragndrop_marker_rect(next);
+		window.RepaintRect(r.x, r.y, r.w, r.h);
+	};
+};
+
+function dragndrop_clear_marker() {
+	var prev = dragndrop.marker;
+	dragndrop.marker = null;
+	if (prev && !prev.hidden) {
+		var r = dragndrop_marker_rect(prev);
+		window.RepaintRect(r.x, r.y, r.w, r.h);
+	};
+};
+
+// Recomputed at paint time from the live pointer, so a wheel scroll mid-drag
+// moves the marker with the rows instead of leaving it on the old slot.
+function dragndrop_draw(gr) {
+	if (!dragndrop.drag_in)
+		return;
+	var m = dragndrop_target(mouse_x, mouse_y);
+	dragndrop.marker = m;
+	if (!m || m.hidden)
+		return;
+	var bw = cList.borderWidth;
+	var ly = m.y - Math.floor(bw / 2);
+	gr.FillSolidRect(m.x, ly, m.w, bw, g_color_selected_bg);
+	gr.FillSolidRect(m.x, ly - 3 * bw, bw, 7 * bw, g_color_selected_bg);
+	gr.FillSolidRect(m.x + m.w - bw, ly - 3 * bw, bw, 7 * bw, g_color_selected_bg);
+};
+
+// Moves the selection as one block to sit before playlist index `before`.
+function dragndrop_drop(before) {
+	var pl = p.list.playlist;
+	var count = plman.PlaylistItemCount(pl);
+	var selected = [], rest = [], at = 0, i;
+	for (i = 0; i < count; i++) {
+		if (plman.IsPlaylistItemSelected(pl, i)) {
+			selected.push(i);
+		} else {
+			if (i < before)
+				at++;
+			rest.push(i);
+		};
+	};
+	if (!selected.length)
+		return;
+	var order = rest.slice(0, at).concat(selected, rest.slice(at));
+	for (i = 0; i < count && order[i] === i; i++) {};
+	if (i === count)
+		return; // dropped where it already was
+	plman.UndoBackup(pl);
+	try {
+		plman.ReorderPlaylistItems(pl, order);
+	} catch (e) {
+		console.log("RVG Playlist: reorder failed: " + e);
+	};
 };
 
 columns = {
@@ -576,9 +733,41 @@ function set_row_density(value) {
 	full_repaint();
 };
 
-//=================================================// Incremental search (jssp semantics)
-// Substring match over a precomputed lower-cased haystack, a cycling match list,
-// ESC to clear, BACKSPACE to delete, F3 for next match, 1600 ms idle reset.
+//=================================================// Quick search
+// Type to jump; words match in any order and ignore accents. Keys: README, Playlist entry.
+function qs_fold(s) {
+	return s.replace(/[\u00c0-\u024f]/g, function (c) {
+		var f = QS_FOLD.charAt(c.charCodeAt(0) - 0xC0);
+		return f == "_" ? c : f;
+	});
+};
+
+// null when lower-casing changes the length (offsets would no longer line up)
+function qs_fold_display(s) {
+	var l = s.toLowerCase();
+	return l.length == s.length ? qs_fold(l) : null;
+};
+
+function qs_tokens(text) {
+	var parts = qs_fold(text.toLowerCase()).split(/\s+/), out = [];
+	for (var i = 0; i < parts.length; i++)
+		if (parts[i].length) out.push(parts[i]);
+	return out;
+};
+
+function qs_join(row, fields) {
+	var s = "";
+	for (var k = 0; k < fields.length; k++)
+		s += (k ? QS_SEP : "") + (row[fields[k]] || "");
+	return s;
+};
+
+function qs_has_all(s, tokens) {
+	for (var k = 0; k < tokens.length; k++)
+		if (s.indexOf(tokens[k]) < 0) return false;
+	return true;
+};
+
 function rebuild_direct_search_values() {
 	g_direct_search_values = [];
 	if (!p.list || !p.list.handleList || !p.list.count)
@@ -587,76 +776,203 @@ function rebuild_direct_search_values() {
 		var arr = tf_direct_search.EvalWithMetadbs(p.list.handleList);
 		if (arr && typeof arr.toArray == "function")
 			arr = arr.toArray();
-		var fin = arr.length;
-		for (var i = 0; i < fin; i++) {
-			g_direct_search_values.push(String(arr[i]).toLowerCase());
-		};
+		for (var i = 0; i < arr.length; i++)
+			g_direct_search_values.push(qs_fold(String(arr[i])));
 	} catch (e) {
 		g_direct_search_values = [];
 	};
 };
 
-function set_incremental_search_timeout() {
-	g_incremental_search_timer && window.ClearTimeout(g_incremental_search_timer);
-	g_incremental_search_timer = window.SetTimeout(function () {
-			g_incremental_search = "";
-			g_incremental_search_indexes = [];
-			g_incremental_search_position = -1;
-			g_incremental_search_no_result = false;
-			g_incremental_search_timer = false;
-			full_repaint();
-		}, 1600);
-};
-
+// A group whose header fields match gets one entry; its tracks then only list on a title match.
 function rebuild_incremental_matches() {
-	g_incremental_search_indexes = [];
+	qs.entries = [];
+	qs.matchSet = {};
+	qs.display = {};
+	qs.previewTop = 0;
 	g_incremental_search_position = -1;
 	g_incremental_search_no_result = false;
-	if (!g_incremental_search.length)
+	qs.tokens = qs_tokens(g_incremental_search);
+	if (!qs.tokens.length || !p.list || !p.list.count)
 		return;
-
 	if (!g_direct_search_values.length)
 		rebuild_direct_search_values();
 
-	var needle = g_incremental_search.toLowerCase();
-	var fin = g_direct_search_values.length;
-	for (var i = 0; i < fin; i++) {
-		if (g_direct_search_values[i].indexOf(needle) != -1)
-			g_incremental_search_indexes.push(i);
+	var sc = QS_SCOPES[qs.scope], tokens = qs.tokens, rows = g_direct_search_values;
+	var byStart = null;
+	if (sc.group && properties.showgroupheaders && p.list.groups && p.list.groups.length) {
+		byStart = {};
+		for (var g = 0; g < p.list.groups.length; g++)
+			byStart[p.list.groups[g].start] = g;
 	};
-	g_incremental_search_no_result = !g_incremental_search_indexes.length;
+	var hasTitle = !sc.fields || sc.fields.indexOf(2) >= 0;
+	var gHit = false;
+	for (var i = 0; i < rows.length; i++) {
+		// fields are only split out for scoped searches and group starts
+		var parts = (sc.fields || byStart) ? rows[i].split(QS_SEP) : null;
+		if (byStart && byStart[i] !== undefined) {
+			gHit = qs_has_all(qs_join(parts, sc.group), tokens);
+			if (gHit)
+				qs.entries.push({ t: i, g: byStart[i] });
+		};
+		if (!qs_has_all(sc.fields ? qs_join(parts, sc.fields) : rows[i], tokens))
+			continue;
+		qs.matchSet[i] = true;
+		if (!gHit || (hasTitle && qs_has_all((parts || rows[i].split(QS_SEP))[2] || "", tokens)))
+			qs.entries.push({ t: i, g: -1 });
+	};
+	g_incremental_search_no_result = !qs.entries.length;
+};
+
+function qs_current() {
+	return g_incremental_search_position >= 0 ? qs.entries[g_incremental_search_position] || null : null;
+};
+
+function qs_row_is_match(track_index) {
+	return g_incremental_search.length > 0 && qs.matchSet[track_index] === true;
+};
+
+function qs_group_is_current(group_index) {
+	var e = qs_current();
+	return !!e && e.g == group_index && g_incremental_search.length > 0;
+};
+
+// keep the same entry if it survived, else the first one at or after track t
+function qs_index_from(t, prev) {
+	var e = qs.entries, i;
+	if (prev)
+		for (i = 0; i < e.length; i++)
+			if (e[i].t == prev.t && e[i].g == prev.g) return i;
+	for (i = 0; i < e.length; i++)
+		if (e[i].t >= t) return i;
+	return e.length ? 0 : -1;
+};
+
+// Moves focus only: the selection is left alone. Scrolls before focusing so
+// on_item_focus_change finds the row visible and does not re-centre.
+function qs_go(pos) {
+	var n = qs.entries.length;
+	if (!n || !p.list)
+		return;
+	g_incremental_search_position = ((pos % n) + n) % n;
+	var e = qs.entries[g_incremental_search_position];
+	var visible = p.list.isTrackVisible(e.t) &&
+		(e.g < 0 || p.list.getRowId(e.t) - cGroup.expanded_height >= p.list.offset);
+	if (!visible) {
+		var prevOffset = p.list.offset;
+		p.list.scrollToTrack(e.t);
+		set_scroll_delta(prevOffset);
+		p.scrollbar && p.scrollbar.setCursor(p.list.totalRowVisible, p.list.totalRows, p.list.offset);
+	};
+	p.list.focusedTrackId = e.t;
+	plman.SetPlaylistFocusItem(p.list.playlist, e.t);
+	full_repaint();
+};
+
+function qs_step(d) {
+	if (!qs.entries.length)
+		return;
+	qs_go(g_incremental_search_position < 0 ? 0 : g_incremental_search_position + d);
+	qs_touch();
+};
+
+function qs_refresh(prev) {
+	rebuild_incremental_matches();
+	var from = prev ? prev.t : (qs.origin && qs.origin.focus >= 0 ? qs.origin.focus : 0);
+	var pos = qs_index_from(from, prev);
+	if (pos >= 0)
+		qs_go(pos);
+	else
+		full_repaint();
+	qs_touch();
 };
 
 function focus_incremental_match(next) {
-	if (!g_incremental_search_indexes.length || !p.list)
+	if (next)
+		qs_step(1);
+	else
+		qs_go(qs_index_from(Math.max(0, p.list.focusedTrackId), qs_current()));
+};
+
+function qs_delay_ms() {
+	return clamp_int(properties.searchClearSeconds, 0, 30) * 1000;
+};
+
+function qs_touch() {
+	qs.remaining = qs_delay_ms();
+	qs.last = Date.now();
+	qs_start_clock();
+};
+
+function qs_start_clock() {
+	if (g_incremental_search_timer || !qs_delay_ms())
 		return;
+	g_incremental_search_timer = window.SetInterval(qs_tick, 33);
+};
 
-	var focus = p.list.focusedTrackId;
-	var selected = -1;
-	var i;
-
-	if (next && g_incremental_search_position >= 0) {
-		g_incremental_search_position = (g_incremental_search_position + 1) % g_incremental_search_indexes.length;
-		selected = g_incremental_search_indexes[g_incremental_search_position];
-	} else {
-		for (i = 0; i < g_incremental_search_indexes.length; i++) {
-			if (g_incremental_search_indexes[i] > focus) {
-				selected = g_incremental_search_indexes[i];
-				g_incremental_search_position = i;
-				break;
-			};
-		};
-		if (selected < 0) {
-			g_incremental_search_position = 0;
-			selected = g_incremental_search_indexes[0];
-		};
+// Time-based, so an irregular tick cadence cannot stretch the countdown.
+function qs_tick() {
+	var now = Date.now(), dt = now - qs.last;
+	qs.last = now;
+	var delay = qs_delay_ms();
+	if (!g_incremental_search.length || !delay) {
+		g_incremental_search_timer && window.ClearInterval(g_incremental_search_timer);
+		g_incremental_search_timer = false;
+		return;
 	};
+	if (qs.pointerIn)
+		return;
+	qs.remaining -= dt;
+	if (qs.remaining <= 0) {
+		clear_incremental_search();
+		full_repaint();
+		return;
+	};
+	var step = Math.ceil(qs.remaining / delay * 60);
+	var r = qs.layout && qs.layout.ring;
+	if (r && step != qs.ringStep && !(SKIP_WORK_WHEN_HIDDEN && !window.IsVisible)) {
+		qs.ringStep = step;
+		window.RepaintRect(r.x - 2, r.y - 2, r.w + 4, r.h + 4);
+	};
+};
 
-	p.list.focusedTrackId = selected;
-	plman.ClearPlaylistSelection(p.list.playlist);
-	plman.SetPlaylistSelectionSingle(p.list.playlist, selected, true);
-	plman.SetPlaylistFocusItem(p.list.playlist, selected);
-	p.list.showFocusedItem();
+function qs_run_default_action(index) {
+	var cmd = properties.defaultPlaylistItemAction;
+	if (cmd == "Play")
+		plman.ExecutePlaylistDefaultAction(p.list.playlist, index);
+	else
+		fb.RunContextCommandWithMetadb(cmd, p.list.handleList[index], 0);
+};
+
+function qs_commit() {
+	var e = qs_current();
+	clear_incremental_search();
+	full_repaint();
+	if (e)
+		qs_run_default_action(e.t);
+};
+
+// Esc: put focus and scroll position back where the search started.
+function qs_cancel() {
+	var o = qs.origin;
+	clear_incremental_search();
+	if (o && o.focus >= 0 && o.focus < p.list.count) {
+		var prevOffset = p.list.offset;
+		var maxOffset = Math.max(0, p.list.totalRows - p.list.totalRowVisible);
+		p.list.offset = Math.max(0, Math.min(o.offset, maxOffset));
+		p.list.setItems(false);
+		set_scroll_delta(prevOffset);
+		p.scrollbar && p.scrollbar.setCursor(p.list.totalRowVisible, p.list.totalRows, p.list.offset);
+		p.list.focusedTrackId = o.focus;
+		plman.SetPlaylistFocusItem(p.list.playlist, o.focus);
+	};
+	full_repaint();
+};
+
+function qs_cycle_scope(d) {
+	var n = QS_SCOPES.length;
+	var prev = qs_current();
+	qs.scope = (qs.scope + d + n) % n;
+	qs_refresh(prev);
 };
 
 function incremental_char(code) {
@@ -664,38 +980,56 @@ function incremental_char(code) {
 		return false;
 	if (code == 32 && !g_incremental_search.length)
 		return true; // never start a search with a space
+	var prev = null;
+	if (!g_incremental_search.length) {
+		qs.origin = { focus: p.list.focusedTrackId, offset: p.list.offset };
+		qs.scope = 0;
+	} else {
+		prev = qs_current();
+	};
 	g_incremental_search += String.fromCharCode(code);
-	rebuild_incremental_matches();
-	focus_incremental_match(false);
-	set_incremental_search_timeout();
-	full_repaint();
+	qs_refresh(prev);
 	return true;
 };
 
-function incremental_key(vkey) {
-	if (!properties.directSearchEnabled)
+function incremental_key(vkey, mask) {
+	if (!properties.directSearchEnabled || !g_incremental_search.length)
 		return false;
-	if (vkey == VK_ESCAPE && g_incremental_search.length) {
-		g_incremental_search = "";
-		rebuild_incremental_matches();
-		g_incremental_search_timer && window.ClearTimeout(g_incremental_search_timer);
-		g_incremental_search_timer = false;
-		full_repaint();
+	var none = mask == KMask.none;
+	if (!none && mask != KMask.shift)
+		return false;
+	switch (vkey) {
+	case VK_F3:
+		qs_step(none ? 1 : -1);
+		return true;
+	case VK_TAB:
+		qs_cycle_scope(none ? 1 : -1);
 		return true;
 	};
-	if (vkey == VK_BACK && g_incremental_search.length) {
+	if (!none)
+		return false;
+	switch (vkey) {
+	case VK_ESCAPE:
+		qs_cancel();
+		return true;
+	case VK_RETURN:
+		qs_commit();
+		return true;
+	case VK_UP:
+		qs_step(-1);
+		return true;
+	case VK_DOWN:
+		qs_step(1);
+		return true;
+	case VK_BACK:
+		var prev = qs_current();
 		g_incremental_search = g_incremental_search.substr(0, g_incremental_search.length - 1);
-		rebuild_incremental_matches();
-		if (g_incremental_search.length)
-			focus_incremental_match(false);
-		set_incremental_search_timeout();
-		full_repaint();
-		return true;
-	};
-	if (vkey == VK_F3 && g_incremental_search.length && g_incremental_search_indexes.length) {
-		focus_incremental_match(true);
-		set_incremental_search_timeout();
-		full_repaint();
+		if (!g_incremental_search.length) {
+			clear_incremental_search();
+			full_repaint();
+		} else {
+			qs_refresh(prev);
+		};
 		return true;
 	};
 	return false;
@@ -703,11 +1037,238 @@ function incremental_key(vkey) {
 
 function clear_incremental_search() {
 	g_incremental_search = "";
-	g_incremental_search_indexes = [];
 	g_incremental_search_position = -1;
 	g_incremental_search_no_result = false;
-	g_incremental_search_timer && window.ClearTimeout(g_incremental_search_timer);
+	qs.entries = [];
+	qs.matchSet = {};
+	qs.tokens = [];
+	qs.origin = null;
+	qs.hover = -1;
+	qs.pointerIn = false;
+	qs.display = {};
+	qs.layout = null;
+	qs.ringStep = -1;
+	g_incremental_search_timer && window.ClearInterval(g_incremental_search_timer);
 	g_incremental_search_timer = false;
+};
+
+// -2 outside, -1 on the bar, >= 0 the entry under a preview row
+function qs_hit(x, y) {
+	var L = qs.layout;
+	if (!L || x < L.x || x >= L.x + L.w || y < L.y || y >= L.y + L.h)
+		return -2;
+	var pv = L.preview;
+	if (pv && y >= pv.y) {
+		var k = Math.floor((y - pv.y) / pv.rh), idx = qs.previewTop + k;
+		return (k >= 0 && k < pv.rows && idx < qs.entries.length) ? idx : -1;
+	};
+	return -1;
+};
+
+// true = the event belonged to the search overlay and must not reach the list
+function qs_mouse(event, x, y, delta) {
+	if (!g_incremental_search.length)
+		return false;
+	var hit = qs_hit(x, y);
+	switch (event) {
+	case "move":
+		var inside = hit != -2, hv = hit >= 0 ? hit : -1;
+		if (hv != qs.hover || inside != qs.pointerIn) {
+			qs.hover = hv;
+			qs.pointerIn = inside;
+			qs.last = Date.now();
+			full_repaint();
+		};
+		return inside;
+	case "down":
+		if (hit == -2) {
+			clear_incremental_search(); // a click in the list ends the search where it is
+			full_repaint();
+			return false;
+		};
+		if (hit >= 0) {
+			qs_go(hit);
+			qs_touch();
+		};
+		return true;
+	case "dblclk":
+		if (hit == -2)
+			return false;
+		if (hit >= 0) {
+			qs_go(hit);
+			qs_commit();
+		};
+		return true;
+	case "wheel":
+		if (hit == -2)
+			return false;
+		qs_step(delta > 0 ? -1 : 1);
+		return true;
+	case "leave":
+		if (qs.pointerIn || qs.hover >= 0) {
+			qs.pointerIn = false;
+			qs.hover = -1;
+			qs.last = Date.now();
+			full_repaint();
+		};
+		return false;
+	};
+	return false;
+};
+
+function qs_fonts() {
+	var key = g_fname + "|" + g_fsize;
+	if (!qs.fonts || qs.fonts.key != key)
+		qs.fonts = { key: key, bar: gdi_font(g_fname, g_fsize + 2, 1), row: gdi_font(g_fname, g_fsize, 0),
+			rowBold: gdi_font(g_fname, g_fsize, 1), small: gdi_font(g_fname, g_fsize - 1, 0), chip: gdi_font(g_fname, g_fsize - 1, 1) };
+	return qs.fonts;
+};
+
+function qs_display(e) {
+	var key = e.t + ":" + e.g;
+	var d = qs.display[key];
+	if (d)
+		return d;
+	var f = [];
+	try {
+		f = tf_qs_display.EvalWithMetadb(p.list.handleList[e.t]).split(QS_SEP);
+	} catch (err) {};
+	if (e.g >= 0) {
+		var grp = p.list.groups[e.g], n = grp ? grp.count : 0;
+		d = { left: f[3] || "?", right: (f[2] || "") + (f[4] ? " \u00b7 " + f[4].substr(0, 4) : "") + " \u00b7 " + n + (n == 1 ? " track" : " tracks"), group: true };
+	} else {
+		d = { left: f[1] || "?", right: f[0] || "", group: false };
+	};
+	return (qs.display[key] = d);
+};
+
+// Accent wash behind every token occurrence; skipped for $rgb()-coloured text.
+function qs_highlight(gr, text, font, x, y, w, h, align) {
+	if (!qs.tokens.length || !text || w <= 0 || text.indexOf(String.fromCharCode(3)) >= 0)
+		return;
+	var low = qs_fold_display(text);
+	if (low === null)
+		return;
+	var ranges = [];
+	for (var k = 0; k < qs.tokens.length; k++) {
+		var t = qs.tokens[k], s = 0, at;
+		while ((at = low.indexOf(t, s)) >= 0) {
+			ranges.push([at, at + t.length]);
+			s = at + t.length;
+		};
+	};
+	if (!ranges.length)
+		return;
+	var vis = Math.min(gr.CalcTextWidth(text, font), w);
+	var base = align == DT_CENTER ? x + (w - vis) / 2 : (align == DT_RIGHT ? x + w - vis : x);
+	var fh = Math.min(h, font.Height), hy = y + Math.round((h - fh) / 2), right = x + w;
+	var colour = accent_colour(85);
+	// square on purpose: a one-letter match is narrower than a rounded rect's corners allow
+	for (var r = 0; r < ranges.length; r++) {
+		var x0 = Math.round(base + gr.CalcTextWidth(text.substring(0, ranges[r][0]), font));
+		var x1 = Math.round(Math.min(right, base + gr.CalcTextWidth(text.substring(0, ranges[r][1]), font)));
+		if (x0 < right && x1 > x0)
+			gr.FillSolidRect(x0 - 1, hy, x1 - x0 + 2, fh, colour);
+	};
+};
+
+// Remaining-time ring: a faint track plus a clockwise arc from 12 o'clock.
+function qs_draw_ring(gr, x, y, d, frac) {
+	var lw = Math.max(2, zoom(2, g_dpi));
+	var r = (d - lw) / 2, cx = x + d / 2, cy = y + d / 2;
+	gr.SetSmoothingMode(2);
+	gr.DrawEllipse(cx - r, cy - r, r * 2, r * 2, lw, g_color_normal_txt & 0x22ffffff);
+	if (frac > 0) {
+		var seg = Math.max(2, Math.ceil(48 * frac)), a0 = -Math.PI / 2, sweep = Math.PI * 2 * frac;
+		var px = cx, py = cy - r, colour = accent_colour(230);
+		for (var i = 1; i <= seg; i++) {
+			var a = a0 + sweep * i / seg, nx = cx + r * Math.cos(a), ny = cy + r * Math.sin(a);
+			gr.DrawLine(px, py, nx, ny, lw, colour);
+			px = nx;
+			py = ny;
+		};
+	};
+	gr.SetSmoothingMode(0);
+};
+
+function qs_paint(gr) {
+	qs.layout = null;
+	if (!g_incremental_search.length || !p.list)
+		return;
+	var f = qs_fonts();
+	var z = function (v) { return zoom(v, g_dpi); };
+	var none = g_incremental_search_no_result;
+	var w = Math.max(Math.min(z(200), p.list.w), Math.min(p.list.w - z(30), z(520)));
+	var h = z(38), pad = z(12), stripe = z(4), rh = z(26);
+	var x = p.list.x + Math.round((p.list.w - w) / 2), y = p.list.y + z(20);
+	var rows = none ? 0 : Math.min(qs.entries.length, clamp_int(properties.searchPreviewRows, 0, 12));
+	var total_h = h + (rows ? rows * rh + z(10) : 0);
+	var txt = g_color_normal_txt, dim = fade_text(txt, 150);
+	var accent = none ? RGB(210, 60, 60) : accent_colour(255);
+	qs.layout = { x: x, y: y, w: w, h: total_h, ring: null, preview: null };
+
+	gr.FillSolidRect(x, y, w, total_h, blendColors(g_color_normal_bg, txt, 0.08) & RGBA(255, 255, 255, 245));
+	gr.FillSolidRect(x, y, stripe, h, accent);
+	gr.DrawRect(x, y, w - 1, total_h - 1, 1.0, txt & 0x2dffffff);
+
+	var label = QS_SCOPES[qs.scope].label;
+	var chip_w = gr.CalcTextWidth(label, f.chip) + z(14), chip_h = z(20);
+	var chip_x = x + stripe + pad, chip_y = y + Math.round((h - chip_h) / 2);
+	gr.SetSmoothingMode(2);
+	gr.FillRoundRect(chip_x, chip_y, chip_w, chip_h, z(5), z(5), qs.scope ? accent_colour(80) : (txt & 0x18ffffff));
+	gr.SetSmoothingMode(0);
+	gr.GdiDrawText(label, f.chip, txt, chip_x, chip_y, chip_w, chip_h, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+	var right = x + w - pad;
+	var delay = qs_delay_ms();
+	if (delay) {
+		var d = z(16), ring_x = right - d, ring_y = y + Math.round((h - d) / 2);
+		qs_draw_ring(gr, ring_x, ring_y, d, Math.max(0, Math.min(1, qs.remaining / delay)));
+		qs.layout.ring = { x: ring_x, y: ring_y, w: d, h: d };
+		right = ring_x - z(10);
+	};
+	var counter = none ? "" : (g_incremental_search_position + 1) + " / " + qs.entries.length;
+	var cnt_w = counter ? gr.CalcTextWidth(counter, f.small) : 0;
+	if (counter)
+		gr.GdiDrawText(counter, f.small, dim, right - cnt_w, y, cnt_w, h, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+	var tx = chip_x + chip_w + z(10), tw = Math.max(0, right - cnt_w - z(10) - tx);
+	gr.GdiDrawText(none ? "No results for \"" + g_incremental_search + "\"" : g_incremental_search, f.bar,
+		none ? RGB(255, 130, 130) : txt, tx, y, tw, h, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+	if (!rows)
+		return;
+	var pos = g_incremental_search_position;
+	if (pos < qs.previewTop)
+		qs.previewTop = pos;
+	else if (pos >= qs.previewTop + rows)
+		qs.previewTop = pos - rows + 1;
+	qs.previewTop = Math.max(0, Math.min(qs.previewTop, qs.entries.length - rows));
+	var py = y + h + z(5), rx = x + z(6), rw = w - z(12), inner = z(10);
+	gr.FillSolidRect(x + 1, y + h, w - 2, 1, txt & 0x14ffffff);
+	qs.layout.preview = { y: py, rh: rh, rows: rows };
+	for (var k = 0; k < rows; k++) {
+		var idx = qs.previewTop + k, e = qs.entries[idx];
+		if (!e)
+			break;
+		var ry = py + k * rh, cur = idx == pos;
+		if (cur || idx == qs.hover) {
+			gr.SetSmoothingMode(2);
+			gr.FillRoundRect(rx, ry + 1, rw, rh - 2, z(5), z(5), cur ? accent_colour(60) : (txt & 0x10ffffff));
+			if (cur)
+				gr.FillRoundRect(rx + z(3), ry + z(7), z(3), rh - z(14), 1, 1, accent_colour(230));
+			gr.SetSmoothingMode(0);
+		};
+		var dv = qs_display(e);
+		var right_w = Math.min(gr.CalcTextWidth(dv.right, f.small), Math.floor((rw - inner * 2) * 0.45));
+		var left_x = rx + inner + z(4), left_w = Math.max(0, rw - inner * 2 - z(4) - right_w - z(12));
+		var lf = dv.group ? f.rowBold : f.row;
+		qs_highlight(gr, dv.left, lf, left_x, ry, left_w, rh, DT_LEFT);
+		gr.GdiDrawText(dv.left, lf, txt, left_x, ry, left_w, rh, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+		if (right_w > 0) {
+			qs_highlight(gr, dv.right, f.small, rx + rw - inner - right_w, ry, right_w, rh, DT_RIGHT);
+			gr.GdiDrawText(dv.right, f.small, dim, rx + rw - inner - right_w, ry, right_w, rh, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+		};
+	};
 };
 
 //=================================================// Column title-format helpers
@@ -908,27 +1469,95 @@ function draw_uwp_row_highlight(gr, x, y, w, h, selected, focused, playing) {
 	};
 };
 
-//=================================================// Smoother scrolling in playlist
-function set_scroll_delta() {
-	var maxOffset = (p.list.totalRows > p.list.totalRowVisible ? p.list.totalRows - p.list.totalRowVisible : 0);
-	if (p.list.offset > 0 && p.list.offset < maxOffset) {
-		if (!cList.scroll_timer) {
-			cList.scroll_delta = cTrack.height;
-			if (!(cList.scroll_direction > 0 && p.list.offset == 0) && !(cList.scroll_direction < 0 && p.list.offset >= p.list.totalRows - p.list.totalRowVisible)) {
-				cList.scroll_timer = window.SetInterval(function () {
-						cList.scroll_step = Math.round(cList.scroll_delta / cList.scroll_div);
-						cList.scroll_delta -= cList.scroll_step;
-						if (cList.scroll_delta <= 1) {
-							window.ClearTimeout(cList.scroll_timer);
-							cList.scroll_timer = false;
-							cList.scroll_delta = 0;
-						};
-						full_repaint();
-					}, 30);
+//=================================================// Smooth scrolling in playlist
+// p.list.offset is always the logical row. While smooth_scroll is active the list
+// paints from a fractional row easing toward it. The position is a pure function
+// of time, evaluated at paint time (p.list.draw); the timer only invalidates, so
+// timer jitter never shows as uneven motion. Wheel notches that arrive mid-glide
+// retarget from the current position instead of restarting.
+
+function trace_now() {
+	return (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+};
+
+// One high-quality downscale per cover and size, instead of one per row per paint:
+// collapsed headers and a narrow cover column used to call Resize on every frame.
+function resized_cover(img, w, h) {
+	if (!img || w <= 0 || h <= 0)
+		return img;
+	if (!resized_cover.cache)
+		resized_cover.cache = new WeakMap();
+	var hit = resized_cover.cache.get(img);
+	if (hit && hit.w === w && hit.h === h)
+		return hit.bmp;
+	var bmp = img.Resize(w, h, 2);
+	resized_cover.cache.set(img, { w: w, h: h, bmp: bmp });
+	return bmp;
+};
+
+function smooth_scroll_pos(now) {
+	if (!smooth_scroll.active)
+		return p.list.offset;
+	var k = Math.exp(-(now - smooth_scroll.start) / SMOOTH_SCROLL_TAU_MS);
+	return smooth_scroll.target + (smooth_scroll.from - smooth_scroll.target) * k;
+};
+
+function smooth_scroll_stop() {
+	if (SMOOTH_SCROLL_TRACE && smooth_scroll.frames > 0) {
+		var f = smooth_scroll.frames;
+		console.log("RVG Playlist smooth scroll: " + f + " frames in " + (Date.now() - smooth_scroll.start) +
+			" ms, paint avg " + (smooth_scroll.paint_ms / f).toFixed(1) + " ms (rows " + (smooth_scroll.list_ms / f).toFixed(1) +
+			": headers " + (smooth_scroll.header_ms / f).toFixed(1) + ", tracks " + (smooth_scroll.track_ms / f).toFixed(1) + ")");
+	};
+	smooth_scroll.frames = 0;
+	smooth_scroll.paint_ms = 0;
+	smooth_scroll.list_ms = 0;
+	smooth_scroll.header_ms = 0;
+	smooth_scroll.track_ms = 0;
+	smooth_scroll.active = false;
+	if (smooth_scroll.timer) {
+		window.ClearInterval(smooth_scroll.timer);
+		smooth_scroll.timer = false;
+	};
+};
+
+// Call after p.list.offset has changed. prevOffset defaults to the row last painted
+// (smooth_scroll.shown), so a scrollbar button at the end of the list glides nowhere.
+function set_scroll_delta(prevOffset) {
+	if (!properties.smoothscrolling || properties.enableTouchControl) {
+		smooth_scroll_stop();
+		return;
+	};
+	if (typeof prevOffset != "number")
+		prevOffset = (typeof smooth_scroll.shown == "number") ? smooth_scroll.shown : p.list.offset;
+	var now = Date.now();
+	var from = smooth_scroll.active ? smooth_scroll_pos(now) : prevOffset;
+	var target = p.list.offset;
+	if (Math.abs(from - target) * cTrack.height < 0.5) {
+		smooth_scroll_stop();
+		return;
+	};
+	// A long jump glides over at most one screen.
+	var span = Math.max(1, p.list.totalRowVisible);
+	if (from > target + span)
+		from = target + span;
+	else if (from < target - span)
+		from = target - span;
+	smooth_scroll.from = from;
+	smooth_scroll.target = target;
+	smooth_scroll.start = now;
+	smooth_scroll.active = true;
+	if (!smooth_scroll.timer) {
+		smooth_scroll.timer = window.SetInterval(function () {
+			// Paint ends the glide; a hidden panel never paints, so time it out here too.
+			if (!smooth_scroll.active || Date.now() - smooth_scroll.start > 1500 ||
+				(SKIP_WORK_WHEN_HIDDEN && !window.IsVisible)) {
+				smooth_scroll_stop();
+				return;
 			};
-		} else {
-			cList.scroll_delta = cTrack.height;
-		};
+			// Only the rows move: the top bar and column header stay out of the frame.
+			window.RepaintRect(p.list.x, p.list.y, p.list.w, p.list.h);
+		}, 8);
 	};
 };
 
@@ -1179,8 +1808,11 @@ function round_cover_corners(img) {
 	};
 }
 
+// Covers are kept for the most recent IMAGE_CACHE_MAX albums only; older ones reload on demand.
+var IMAGE_CACHE_MAX = 150;
 image_cache = function () {
 	this._cachelist = {};
+	this._order = [];
 	this._placeholder = null;
 	// "no cover" has to be rounded too, or albums without art show a square tile in a
 	// rounded layout. It is a shared global, so mask a copy, never the original.
@@ -1238,6 +1870,11 @@ image_cache = function () {
 			}
 		}
 		var d = (properties.showgroupheaders ? metadb.Path : fb.TitleFormat("$replace(%path%,%filename_ext%,)").EvalWithMetadb(metadb));
+		if (!(d in this._cachelist)) {
+			this._order.push(d);
+			if (this._order.length > IMAGE_CACHE_MAX)
+				delete this._cachelist[this._order.shift()];
+		};
 		this._cachelist[d] = img;
 		return img;
 	}
@@ -1545,11 +2182,39 @@ function on_size() {
 };
 
 //=================================================// OnPaint
-function on_paint(gr) {
+// JSplitter 4.2 passes the invalidated rect. A partial paint (drag marker strip,
+// now-playing row) skips the rows and bars outside it; older builds pass none.
+function on_paint(gr, x, y, width, height) {
+	var area = RivageUI.paintArea(x, y, width, height, ww, wh);
+	if (!area) {
+		if (!SMOOTH_SCROLL_TRACE || !smooth_scroll.active)
+			return paint_panel(gr, null);
+		var t0 = trace_now();
+		var r = paint_panel(gr, null);
+		smooth_scroll.frames++;
+		smooth_scroll.paint_ms += trace_now() - t0;
+		return r;
+	};
+	var counted = SMOOTH_SCROLL_TRACE && smooth_scroll.active;
+	var t1 = counted ? trace_now() : 0;
+	gr.PushClip(area.x, area.y, area.w, area.h);
+	try {
+		return paint_panel(gr, area);
+	} finally {
+		gr.PopClip();
+		if (counted) {
+			smooth_scroll.frames++;
+			smooth_scroll.paint_ms += trace_now() - t1;
+		};
+	};
+};
 
-	// Any actual host paint satisfies a queued full_repaint request. This avoids
-	// a redundant timer-triggered paint when foobar repaints us for another reason.
-	need_repaint = false;
+function paint_panel(gr, area) {
+
+	// Any full host paint satisfies a queued full_repaint request. A partial one
+	// must not, or the pending full repaint would be dropped.
+	if (!area)
+		need_repaint = false;
 
 	if (!ww)
 		return true;
@@ -1584,7 +2249,8 @@ function on_paint(gr) {
 			};
 
 			// draw rows of the playlist
-			p.list && p.list.draw(gr);
+			p.list && p.list.draw(gr, area);
+			dragndrop_draw(gr);
 
 			// draw flashing beam if scroll max reached on mouse wheel! (android like effect)
 			if (p.list.beam > 0) {
@@ -1640,13 +2306,17 @@ function on_paint(gr) {
 		};
 	};
 
+	var above_list = !area || area.y < p.list.y;
+
 	// TopBar
-	if (cTopBar.visible) {
+	if (cTopBar.visible && above_list) {
 		p.topBar && p.topBar.draw(gr);
 	}
 
 	// HeaderBar
-	if (p.headerBar.visible) {
+	if (p.headerBar.visible && !above_list) {
+		// strip entirely inside the list: the header is outside the clip
+	} else if (p.headerBar.visible) {
 		p.headerBar && p.headerBar.drawColumns(gr);
 		if (p.headerBar.borderDragged && p.headerBar.borderDraggedId >= 0) {
 			// all borders
@@ -1684,39 +2354,8 @@ function on_paint(gr) {
 	// PlaylistManager
 	p.playlistManager && p.playlistManager.draw(gr);
 
-	// Incremental Search Display (jssp style: floating bar at the top with an accent stripe)
-	if (g_incremental_search.length > 0) {
-		gr.SetSmoothingMode(2);
-		var is_font = gdi_font(g_fname, g_fsize + 2, 1);
-		var is_text = g_incremental_search_no_result
-			 ? "No results for \"" + g_incremental_search + "\"."
-			 : g_incremental_search + (g_incremental_search_indexes.length > 1
-				 ? "   (" + (g_incremental_search_position + 1) + " / " + g_incremental_search_indexes.length + ")"
-				 : "");
-		var is_h = zoom(38, g_dpi);
-		var is_pad = zoom(14, g_dpi);
-		var is_stripe = zoom(4, g_dpi);
-		var is_tw = 0;
-		try {
-			is_tw = gr.CalcTextWidth(is_text, is_font);
-		} catch (e) {};
-		var is_w = Math.min(p.list.w - zoom(30, g_dpi), Math.max(zoom(180, g_dpi), is_tw + is_pad * 3));
-		var is_x = p.list.x + Math.round((p.list.w - is_w) / 2);
-		var is_y = p.list.y + zoom(20, g_dpi);
-		var is_bg = blendColors(g_color_normal_bg, g_color_normal_txt, 0.08);
-		var is_accent = g_incremental_search_no_result ? RGB(210, 60, 60) : accent_colour(255);
-
-		gr.FillSolidRect(is_x, is_y, is_w, is_h, is_bg & RGBA(255, 255, 255, 245));
-		gr.FillSolidRect(is_x, is_y, is_stripe, is_h, is_accent);
-		gr.DrawRect(is_x, is_y, is_w - 1, is_h - 1, 1.0, g_color_normal_txt & 0x2dffffff);
-		try {
-			gr.GdiDrawText(is_text, is_font,
-				g_incremental_search_no_result ? RGB(255, 130, 130) : g_color_normal_txt,
-				is_x + is_stripe + is_pad, is_y, is_w - is_stripe - is_pad * 2, is_h,
-				DT_LEFT | DT_VCENTER | DT_CALCRECT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS);
-		} catch (e) {};
-	};
-
+	// Quick search bar and preview, drawn over everything in the list area
+	qs_paint(gr);
 
 	if (properties.showDPI) {
 		gr.FillSolidRect(ww - 33, 5, 30, 15, g_color_normal_bg);
@@ -1770,6 +2409,9 @@ function on_paint(gr) {
 
 //=================================================// Mouse Callbacks
 function on_mouse_lbtn_down(x, y) {
+
+	if (qs_mouse("down", x, y))
+		return;
 
 	if (properties.enableTouchControl) {
 		cTouch.up_id = -1;
@@ -1850,6 +2492,9 @@ function on_mouse_lbtn_down(x, y) {
 
 function on_mouse_lbtn_dblclk(x, y, mask) {
 
+	if (qs_mouse("dblclk", x, y))
+		return;
+
 	g_left_click_hold = true;
 
 
@@ -1910,49 +2555,11 @@ function on_mouse_lbtn_up(x, y) {
 	};
 
 	// Drop items after a drag'n drop INSIDE the playlist
-	if (!properties.enableTouchControl) {
-		if (p.list.ishover && dragndrop.drag_in) {
-			if (dragndrop.drag_id >= 0 && dragndrop.drop_id >= 0) {
-				var save_focus_handle = fb.GetFocusItem();
-				var drop_handle = p.list.handleList[dragndrop.drop_id];
-				var nb_selected_items = p.list.metadblist_selection.Count;
-
-				if (dragndrop.contigus_sel && nb_selected_items > 0) {
-					if (dragndrop.drop_id > dragndrop.drag_id) {
-						// on pointe sur le dernier item de la selection si on move vers le bas
-						var new_drag_pos = p.list.handleList.Find(p.list.metadblist_selection[nb_selected_items - 1]);
-						var move_delta = dragndrop.drop_id - new_drag_pos;
-					} else {
-						// on pointe sur le 1er item de la selection si on move vers le haut
-						var new_drag_pos = p.list.handleList.Find(p.list.metadblist_selection[0]);
-						var move_delta = dragndrop.drop_id - new_drag_pos;
-					};
-
-					plman.UndoBackup(p.list.playlist);
-					plman.MovePlaylistSelection(p.list.playlist, move_delta);
-
-				} else {
-
-					// 1st: move selected item at the full end of the playlist to make then contigus
-					g_avoid_on_item_focus_change = true;
-					g_avoid_on_playlist_items_reordered = true;
-					plman.UndoBackup(p.list.playlist);
-					plman.MovePlaylistSelection(p.list.playlist, plman.PlaylistItemCount(p.list.playlist));
-					// 2nd: move bottom selection to new drop_id place (to redefine first...)
-					plman.SetPlaylistFocusItemByHandle(p.list.playlist, drop_handle);
-					var drop_id_new = plman.GetPlaylistFocusItemIndex(p.list.playlist);
-					plman.SetPlaylistFocusItemByHandle(p.list.playlist, save_focus_handle);
-					if (dragndrop.drag_id > drop_id_new) {
-						var mdelta = p.list.count - nb_selected_items - drop_id_new;
-					} else {
-						var mdelta = p.list.count - nb_selected_items - drop_id_new - 1;
-					};
-					plman.MovePlaylistSelection(p.list.playlist, mdelta * -1);
-					g_avoid_on_playlist_items_reordered = false;
-					g_avoid_on_item_focus_change = false;
-				};
-			};
-		};
+	if (dragndrop.drag_in) {
+		var drop_target = dragndrop_target(x, y);
+		dragndrop_clear_marker();
+		if (drop_target)
+			dragndrop_drop(drop_target.before);
 	};
 
 	dragndrop.drag_id = -1;
@@ -2009,6 +2616,12 @@ function on_mouse_move(x, y) {
 	if (x == mouse_x && y == mouse_y)
 		return true;
 
+	if (qs_mouse("move", x, y)) {
+		mouse_x = x;
+		mouse_y = y;
+		return true;
+	};
+
 	if (x >= 0 && x < ww && y >= 0 && y < wh)
 		g_leave = false;
 
@@ -2038,6 +2651,14 @@ function on_mouse_move(x, y) {
 			if (!cPlaylistManager.blink_timer) {
 				p.playlistManager.check("move", x, y);
 			};
+		};
+
+		// A drag starts as soon as the pointer travels, not only after the 250 ms hold.
+		if (dragndrop.enabled && dragndrop.clicked && !dragndrop.drag_in && dragndrop.drag_id >= 0 &&
+			Math.abs(x - dragndrop.x) + Math.abs(y - dragndrop.y) > zoom(4, g_dpi)) {
+			dragndrop.timerID && window.ClearTimeout(dragndrop.timerID);
+			dragndrop.timerID = false;
+			dragndrop.drag_in = true;
 		};
 
 		// check list
@@ -2111,7 +2732,7 @@ function on_mouse_move(x, y) {
 
 		// if Dragging Track on playlist, scroll playlist if required
 	if (dragndrop.drag_in) {
-		// Dragn Drop
+		dragndrop_update(x, y);
 		if (p.playlistManager.woffset == 0 || (cPlaylistManager.visible && x < p.playlistManager.x - p.playlistManager.woffset)) {
 			if (y < p.list.y) {
 				if (!p.list.buttonclicked) {
@@ -2145,13 +2766,6 @@ function on_mouse_move(x, y) {
 				cScrollBar.timerID1 && window.ClearInterval(cScrollBar.timerID1);
 				cScrollBar.timerID1 = false;
 				p.list.buttonclicked = false;
-				if (!dragndrop.timerID) {
-					dragndrop.timerID = window.SetTimeout(function () {
-							full_repaint();
-							dragndrop.timerID && window.ClearTimeout(dragndrop.timerID);
-							dragndrop.timerID = false;
-						}, 75);
-				};
 			};
 		} else {
 			cScrollBar.timerID1 && window.ClearInterval(cScrollBar.timerID1);
@@ -2168,6 +2782,9 @@ mouse_y = y;
 function on_mouse_wheel(delta) {
 
 if (g_middle_clicked)
+	return;
+
+if (qs_mouse("wheel", mouse_x, mouse_y, delta))
 	return;
 
 if (utils.IsKeyPressed(VK_CONTROL)) {
@@ -2277,6 +2894,13 @@ if (utils.IsKeyPressed(VK_CONTROL)) {
 				} else {
 					scroll_speed_ms = 20;
 				};
+			};
+			// Plain wheel over the list scrolls at once; the debounce below would drop
+			// notches of a fast spin. Drag and auto-scroll keep their paced timer.
+			if (!g_dragndrop_status && !cScrollBar.timerID1 && !cList.repaint_timer && !dragndrop.drag_in &&
+				mouse_y >= p.list.y && mouse_y <= p.list.y + p.list.h) {
+				p.list.scrollItems(delta, properties.enableTouchControl ? cList.touchstep : cList.scrollstep);
+				return;
 			};
 			//
 			g_mouse_wheel_timer = window.SetTimeout(function () {
@@ -2394,6 +3018,7 @@ g_middle_click_timer = window.SetTimeout(function () {
 
 function on_mouse_leave() {
 g_leave = true;
+qs_mouse("leave", 0, 0);
 
 p.list.check("leave", 0, 0);
 
@@ -2446,6 +3071,7 @@ if (!g_avoid_on_playlists_changed) {
 			dragndrop.timerID = false;
 		};
 		dragndrop.drag_in = false;
+		dragndrop_clear_marker();
 		dragndrop.moved = false;
 		dragndrop.x = 0;
 		dragndrop.y = 0;
@@ -2595,8 +3221,16 @@ var mask = GetKeyboardMask();
 var act_pls = plman.ActivePlaylist;
 
 
-	if (dragndrop.drag_in)
+	if (dragndrop.drag_in) {
+		// Esc cancels the drag; the button-up then drops nothing.
+		if (vkey == VK_ESCAPE) {
+			dragndrop.drag_in = false;
+			dragndrop.drag_id = -1;
+			dragndrop_clear_marker();
+			window.SetCursor(IDC_ARROW);
+		};
 		return true;
+	};
 
 	if (p.playlistManager.inputboxID >= 0) {
 		if (mask == KMask.none) {
@@ -2613,9 +3247,8 @@ var act_pls = plman.ActivePlaylist;
 			p.playlistManager.inputbox.on_key_down(vkey);
 		};
 	} else {
-		// Incremental search keys (ESC clear / BACKSPACE delete / F3 next match)
-		// are handled before anything else, exactly like jssp.
-		if (mask == KMask.none && incremental_key(vkey))
+		// Quick search keys go first while the bar is open (arrows, F3, Tab, Enter, Esc, Backspace).
+		if (incremental_key(vkey, mask))
 			return true;
 
 		if (mask == KMask.none) {
@@ -3744,7 +4377,7 @@ function on_script_unload() {
 		g_focus_bg_timer = false;
 	} catch (e) {};
 	try {
-		g_incremental_search_timer && window.ClearTimeout(g_incremental_search_timer);
+		g_incremental_search_timer && window.ClearInterval(g_incremental_search_timer);
 		g_incremental_search_timer = false;
 	} catch (e) {};
 	try {

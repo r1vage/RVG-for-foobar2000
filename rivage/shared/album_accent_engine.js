@@ -54,7 +54,7 @@ var reportAlbumAccentFailure = (function () {
 	};
 })();
 
-var ALBUM_ACCENT_ENGINE_VERSION = "2.0.2";
+var ALBUM_ACCENT_ENGINE_VERSION = "2.1.0";
 
 // Re-entry guard, matching design_system.js and seekbar_widget.js: a second include()
 // would otherwise reset every memo and force a full re-decode of the current album.
@@ -450,10 +450,8 @@ var AlbumAccentEngine = (typeof AlbumAccentEngine !== "undefined" && AlbumAccent
 	// let the engine load and dispose its own copy.
 	extractThemeFromImage: function (image, metadb) {
 		var key = this.key_for(metadb);
-		if (key !== null && this.theme_memo[key] !== undefined) {
-			this.theme = this.theme_memo[key];
-			return this.theme;
-		}
+		var memoised = this.lookupTheme(key);
+		if (memoised) return memoised;
 
 		var ownedImage = null;
 		var art = image;
@@ -468,19 +466,28 @@ var AlbumAccentEngine = (typeof AlbumAccentEngine !== "undefined" && AlbumAccent
 			try { ownedImage.Dispose(); } catch (e3) { }
 		}
 
-		// Only memoise a payload built from real artwork. Caching an artless one would
-		// pin this album to the fallback theme for the rest of the session - artwork that
-		// was briefly unreadable (slow/network storage, a file retagged mid-session) could
-		// never be picked up, since the memo short-circuits the check above.
-		if (key !== null && hasArtwork) {
-			if (this.theme_memo[key] === undefined) {
-				this.theme_memo_keys.push(key);
-				if (this.theme_memo_keys.length > this.memo_limit)
-					delete this.theme_memo[this.theme_memo_keys.shift()];
-			}
-			this.theme_memo[key] = payload;
-		}
+		if (key !== null) this.rememberTheme(key, payload);
 		return payload;
+	},
+
+	// Memo access for a producer whose extraction ran elsewhere (the artwork Worker).
+	lookupTheme: function (key) {
+		if (key === null || key === undefined || this.theme_memo[key] === undefined) return null;
+		this.theme = this.theme_memo[key];
+		return this.theme;
+	},
+
+	// Only a payload built from real artwork is kept: an artless one would pin the album
+	// to the fallback theme for the session, so briefly unreadable art could never recover.
+	rememberTheme: function (key, payload) {
+		if (key === null || key === undefined || !payload || !payload.hasArtwork) return;
+		if (this.theme_memo[key] === undefined) {
+			this.theme_memo_keys.push(key);
+			if (this.theme_memo_keys.length > this.memo_limit)
+				delete this.theme_memo[this.theme_memo_keys.shift()];
+		}
+		this.theme_memo[key] = payload;
+		this.theme = payload;
 	},
 
 	extractThemeFromMetadb: function (metadb) {

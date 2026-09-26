@@ -2,7 +2,8 @@
 
 window.DrawMode = 0;
 
-// LEFT SIDE root: dynamic content slots plus the full-area SETTINGS overlay.
+// LEFT SIDE root: dynamic content slots plus the full-area SETTINGS overlay,
+// and the QUEUE PEEK child that can temporarily stand in for one slot.
 // PanelObject wrappers stay callback-local and are never retained between passes.
 
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
@@ -16,10 +17,11 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\panel_host_kit.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\resizing_mode_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\divider_highlight.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\queue_peek_protocol.js');
 
 window.DefineScript('RVG Settings Host', {
     author: 'RivaGe',
-    version: '2.7.1',
+    version: '2.8.2',
     features: { drag_n_drop: false, grab_focus: false }
 });
 
@@ -39,9 +41,15 @@ function reportFailure(what, err) {
 }
 
 var BACKGROUND = 0xff18181a;
+var hostTheme = RivageUI.createTheme({ mode: 'host' });
 
 function refreshThemeBackground() {
-    BACKGROUND = RivageUI.createTheme({ mode: 'host' }).background;
+    hostTheme = RivageUI.createTheme({ mode: 'host' });
+    BACKGROUND = hostTheme.background;
+}
+
+function scale(value) {
+    return Math.max(0, Math.round(Number(value) * (RivageScale.dpi() || 96) / 96));
 }
 
 var TARGET_CAPTION = 'SETTINGS';
@@ -52,6 +60,23 @@ var EMPTY_CONTENT_ID = '__empty__';
 // RIVAGE.CUSTOM_BUTTONS.MEASURE.V1 for the leftside-rail slot.
 var RAIL_CAPTION = 'BUTTONS RAIL';
 var RAIL_SIDE_PROPERTY = 'RIVAGE.LeftSide.RailSide';
+
+// QUEUE PEEK is a reserved hidden child. A QueuePeekProtocol.open() from the
+// panel in one slot swaps it in there, under a back strip this host paints.
+// Runtime only: a restart always comes back with the slot's own panel.
+var QUEUE_PEEK_CAPTION = 'QUEUE PEEK';
+var QUEUE_PEEK_HEADER_HEIGHT = 30;
+var QUEUE_PEEK_SIZE_SLACK = 3;
+var BACK_GLYPH = '\uE72B';
+var IDC_ARROW = 32512;
+var IDC_HAND = 32649;
+
+var queuePeekPanelIndex = -1;
+var queuePeekSlot = '';
+var queuePeekHeaderRect = null;
+var queuePeekHeaderHover = false;
+var queuePeekHeaderPressed = false;
+var slotRects = { top: null, bottom: null };
 
 var CUSTOM_BUTTONS_MEASURE = 'RIVAGE.CUSTOM_BUTTONS.MEASURE.V1';
 var CUSTOM_BUTTONS_MEASURE_REQUEST = 'RIVAGE.CUSTOM_BUTTONS.MEASURE_REQUEST.V1';
@@ -242,6 +267,7 @@ function scanChildPanels(force) {
         var overlayIndex = -1;
         var overlayNearMiss = '';
         var railIndex = -1;
+        var peekIndex = -1;
         var previousRailIndex = railPanelIndex;
         var stable = true;
         var i;
@@ -279,6 +305,10 @@ function scanChildPanels(force) {
                     if (railIndex < 0) railIndex = i;
                     continue;
                 }
+                if (caption.toLowerCase() === QUEUE_PEEK_CAPTION.toLowerCase()) {
+                    if (peekIndex < 0) peekIndex = i;
+                    continue;
+                }
 
                 contentCaptions.push(caption);
                 var baseId = contentIdBase(caption);
@@ -310,13 +340,16 @@ function scanChildPanels(force) {
         for (i = 0; i < found.length; i++) found[i].id = ids[i];
         rememberPanelIdOwners(contentCaptions, ids);
 
-        var signature = makePanelSignature(found, overlayIndex, count) + '\u001erail=' + railIndex;
+        var signature = makePanelSignature(found, overlayIndex, count) + '\u001erail=' + railIndex +
+            '\u001epeek=' + peekIndex;
         var changed = !panelsInitialised || signature !== detectedPanelSignature;
 
         CONTENT_OPTIONS = found;
         rebuildContentOptionIndex();
         settingsPanelIndex = overlayIndex;
         railPanelIndex = railIndex;
+        queuePeekPanelIndex = peekIndex;
+        if (peekIndex < 0) queuePeekSlot = '';
         detectedPanelCount = count;
         detectedPanelSignature = signature;
         detectedPanelFingerprint = makePanelFingerprint(allCaptions, count);
@@ -477,8 +510,9 @@ var topSelection = topSelectionWasStored ? String(rawTopSelection) : 'albumart';
 var bottomSelection = bottomSelectionWasStored ? String(rawBottomSelection) : 'controls';
 var selectionsInitialised = false;
 
-var splitRatio = Number(window.GetProperty(SPLIT_RATIO_PROPERTY, 0.5));
-if (!(splitRatio > 0) || !(splitRatio < 1)) splitRatio = 0.5;
+var DEFAULT_SPLIT_RATIO = 0.569;
+var splitRatio = Number(window.GetProperty(SPLIT_RATIO_PROPERTY, DEFAULT_SPLIT_RATIO));
+if (!(splitRatio > 0) || !(splitRatio < 1)) splitRatio = DEFAULT_SPLIT_RATIO;
 
 var CONTENT_PADDING_CHOICES = [0, 4, 8, 12];
 var contentHalfPadding = Math.round(Number(window.GetProperty(CONTENT_PADDING_PROPERTY, 0)) || 0);
@@ -490,7 +524,6 @@ var MIN_CONTENT_WIDTH = 120;
 
 var MIN_SPLIT_RATIO = 0.10;
 var MAX_SPLIT_RATIO = 0.90;
-var DEFAULT_SPLIT_RATIO = 0.5;
 var DIVIDER_SIZE = 6;
 
 var resizingModeEnabled = true;
@@ -874,9 +907,10 @@ function applyContentLayoutTransaction(panels, topOption, bottomOption, contentX
     var states = snapshotContentPanels(panels);
     if (!states) return false;
 
+    var peekSlot = queuePeekSlot;
     var selectedIndexes = Object.create(null);
-    if (topOption) selectedIndexes[topOption.index] = true;
-    if (bottomOption) selectedIndexes[bottomOption.index] = true;
+    if (topOption && peekSlot !== 'top') selectedIndexes[topOption.index] = true;
+    if (bottomOption && peekSlot !== 'bottom') selectedIndexes[bottomOption.index] = true;
 
     var i;
     for (i = 0; i < CONTENT_OPTIONS.length; i++) {
@@ -891,14 +925,18 @@ function applyContentLayoutTransaction(panels, topOption, bottomOption, contentX
     var bottomY = bothPopulated ? splitY + dividerGap : 0;
     var bottomH = bothPopulated ? Math.max(1, availableSplitHeight - splitY) : h;
 
-    function stage(option, y, height) {
+    function stage(option, y, height, which) {
+        slotRects[which] = null;
         if (!option) return true;
-        var panel = panels[option.index];
         var rect = insetPanelRect(contentX, y, contentW, height);
+        slotRects[which] = rect;
+        if (which === peekSlot) return stageQueuePeek(panels[queuePeekPanelIndex], rect);
+        var panel = panels[option.index];
         return safeMovePanel(panel, rect.x, rect.y, rect.w, rect.h) && safeShowPanel(panel, true);
     }
 
-    if (!stage(topOption, 0, topH) || !stage(bottomOption, bottomY, bottomH)) {
+    queuePeekHeaderRect = null;
+    if (!stage(topOption, 0, topH, 'top') || !stage(bottomOption, bottomY, bottomH, 'bottom')) {
         restoreContentPanels(panels, states);
         return false;
     }
@@ -911,6 +949,143 @@ function applyContentLayoutTransaction(panels, topOption, bottomOption, contentX
         }
     }
     return true;
+}
+
+// The strip is the slot's top edge, where the sender's own "Next" line sat,
+// so clicking the same spot again goes back.
+function stageQueuePeek(panel, rect) {
+    var headerH = Math.min(scale(QUEUE_PEEK_HEADER_HEIGHT), Math.max(0, rect.h - 1));
+    if (!panel || !safeConfigureContentPanel(panel)) return false;
+    queuePeekHeaderRect = { x: rect.x, y: rect.y, w: rect.w, h: headerH };
+    return safeMovePanel(panel, rect.x, rect.y + headerH, rect.w, Math.max(1, rect.h - headerH)) &&
+        safeShowPanel(panel, true);
+}
+
+function compactIdentity(value) {
+    return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function identitiesRelated(a, b) {
+    a = compactIdentity(a);
+    b = compactIdentity(b);
+    if (!a || !b) return false;
+    if (a === b) return true;
+    return a.length >= 4 && b.length >= 4 && (a.indexOf(b) >= 0 || b.indexOf(a) >= 0);
+}
+
+// Size first (the sender is exactly its slot's rect), name to break a tie, and
+// the default layout's controls slot (bottom) if the names say nothing. A sender
+// matching no slot's size is not in this host, and is ignored.
+function queuePeekSlotFor(request) {
+    var options = currentSplitOptions();
+    var names = ['top', 'bottom'];
+    var sized = [];
+    var named = [];
+    var i;
+
+    for (i = 0; i < names.length; i++) {
+        var option = options[names[i]];
+        var rect = slotRects[names[i]];
+        if (!option || !rect) continue;
+        var sizeMatches = Math.abs(rect.w - request.w) <= QUEUE_PEEK_SIZE_SLACK &&
+            Math.abs(rect.h - request.h) <= QUEUE_PEEK_SIZE_SLACK;
+        var nameMatches = identitiesRelated(request.name, option.caption);
+        if (sizeMatches) sized.push(names[i]);
+        if (sizeMatches && nameMatches) named.push(names[i]);
+    }
+    if (sized.length === 1) return sized[0];
+    if (named.length === 1) return named[0];
+    return sized.length ? 'bottom' : '';
+}
+
+// Open/close touches only the two panels that change. The full layout pass
+// force-Show()s every slot, and that made the untouched one (the artwork) blink.
+function swapQueuePeekNow(slot, open) {
+    if (!hostIsVisible() || !panelsInitialised || workBusy) return false;
+    var panels = acquirePanelSnapshot();
+    if (!panels) return false;
+    try {
+        var option = currentSplitOptions()[slot];
+        var rect = slotRects[slot];
+        var queuePanel = panels[queuePeekPanelIndex];
+        var slotPanel = option ? panels[option.index] : null;
+        if (!rect || !queuePanel || !slotPanel) return false;
+        if (open) {
+            return stageQueuePeek(queuePanel, rect) && PanelHostKit.safeShowPanel(slotPanel, false);
+        }
+        return PanelHostKit.safeShowPanel(slotPanel, true) && PanelHostKit.safeShowPanel(queuePanel, false);
+    } catch (e) {
+        return false;
+    } finally {
+        panels = null;
+    }
+}
+
+function openQueuePeek(info) {
+    var request = QueuePeekProtocol.parseOpen(info);
+    if (!request || queuePeekSlot || queuePeekPanelIndex < 0) return;
+    var slot = queuePeekSlotFor(request);
+    if (!slot) return;
+    queuePeekSlot = slot;
+    queuePeekHeaderHover = false;
+    queuePeekHeaderPressed = false;
+    if (!swapQueuePeekNow(slot, true)) requestWork(false, false);
+    repaintQueuePeekHeader();
+}
+
+function closeQueuePeek() {
+    if (!queuePeekSlot) return;
+    var slot = queuePeekSlot;
+    queuePeekSlot = '';
+    queuePeekHeaderHover = false;
+    queuePeekHeaderPressed = false;
+    queuePeekHeaderRect = null;
+    try { window.SetCursor(IDC_ARROW); } catch (e) { }
+    // The slot's own panel covers the strip again, so no host repaint is needed.
+    if (!swapQueuePeekNow(slot, false)) requestWork(false, false);
+}
+
+function queueCountLabel() {
+    var count = 0;
+    try { count = plman.GetPlaybackQueueHandles().Count; } catch (e) { count = 0; }
+    return count === 1 ? '1 track' : count + ' tracks';
+}
+
+function drawQueuePeekHeader(gr) {
+    var rect = queuePeekHeaderRect;
+    if (!queuePeekSlot || !rect || rect.h <= 0) return;
+
+    var pad = scale(10);
+    var glyphW = scale(16);
+    var fontPx = Math.max(scale(11), Math.round(rect.h * 0.42));
+    var labelFont = RivageUI.font(RivageUI.hostFontFamily(), fontPx, 0);
+    var glyphFont = RivageUI.font(RivageUI.iconFontFamily(), Math.max(8, fontPx - scale(1)), 0);
+    var strong = queuePeekHeaderHover ? hostTheme.textPrimary : hostTheme.textSecondary;
+    var fill = hostTheme.mica === true
+        ? RivageUI.withAlpha(hostTheme.textPrimary, queuePeekHeaderHover ? 22 : 12)
+        : (queuePeekHeaderHover ? hostTheme.rowHover : hostTheme.header);
+    var countLabel = queueCountLabel();
+    var countW = Math.ceil(RivageUI.measureText(countLabel, labelFont, true)) + scale(2);
+
+    gr.FillSolidRect(rect.x, rect.y, rect.w, rect.h, fill);
+    gr.FillSolidRect(rect.x, rect.y + rect.h - 1, rect.w, 1, hostTheme.stroke);
+    gr.GdiDrawText(BACK_GLYPH, glyphFont, strong, rect.x + pad, rect.y, glyphW, rect.h,
+        RivageUI.textFlags.leftCentered);
+    gr.GdiDrawText('Queue', labelFont, strong, rect.x + pad + glyphW + scale(4), rect.y,
+        Math.max(0, rect.w - pad * 2 - glyphW - countW - scale(8)), rect.h,
+        RivageUI.textFlags.leftCenteredEllipsis);
+    gr.GdiDrawText(countLabel, labelFont, hostTheme.textMuted, rect.x + rect.w - pad - countW, rect.y,
+        countW, rect.h, RivageUI.textFlags.right);
+}
+
+function repaintQueuePeekHeader() {
+    var rect = queuePeekHeaderRect;
+    if (!queuePeekSlot || !rect) return;
+    try { window.RepaintRect(rect.x, rect.y, rect.w, rect.h); } catch (e) { try { window.Repaint(); } catch (e2) { } }
+}
+
+function isOverQueuePeekHeader(x, y) {
+    return !!(queuePeekSlot && queuePeekHeaderRect && RivageUI.pointInRect(x, y, queuePeekHeaderRect));
 }
 
 function applyLayoutNow() {
@@ -947,8 +1122,18 @@ function applyLayoutNow() {
         var topOption = topSelection === EMPTY_CONTENT_ID ? null : contentOptionById(topSelection);
         var bottomOption = bottomSelection === EMPTY_CONTENT_ID ? null : contentOptionById(bottomSelection);
 
+        // A layout change that empties the peeked slot ends the peek.
+        if ((queuePeekSlot === 'top' && !topOption) || (queuePeekSlot === 'bottom' && !bottomOption) ||
+            queuePeekPanelIndex < 0 || queuePeekPanelIndex >= panels.length) {
+            queuePeekSlot = '';
+        }
+
         if (!applyContentLayoutTransaction(panels, topOption, bottomOption, contentX, contentW, h)) {
             operationFailed = true;
+        }
+
+        if (!queuePeekSlot && queuePeekPanelIndex >= 0 && queuePeekPanelIndex < panels.length) {
+            if (!safeShowPanel(panels[queuePeekPanelIndex], false)) operationFailed = true;
         }
 
         if (railPanelIndex >= 0 && railPanelIndex < panels.length) {
@@ -1089,9 +1274,21 @@ function on_paint(gr) {
         var rect = contentColumnRect();
         dividerHighlight.draw(gr, rect.x, getDividerY(), rect.w, dividerHeight);
     }
+    drawQueuePeekHeader(gr);
+}
+
+function setQueuePeekHeaderHover(hover) {
+    if (hover === queuePeekHeaderHover) return;
+    queuePeekHeaderHover = hover;
+    try { window.SetCursor(hover ? IDC_HAND : IDC_ARROW); } catch (e) { }
+    repaintQueuePeekHeader();
 }
 
 function on_mouse_lbtn_down(x, y) {
+    if (isOverQueuePeekHeader(x, y)) {
+        queuePeekHeaderPressed = true;
+        return;
+    }
     if (isOverDivider(y) && isOverContentColumn(x)) {
         draggingDivider = true;
         dividerHighlight.dragging(true);
@@ -1100,6 +1297,8 @@ function on_mouse_lbtn_down(x, y) {
 
 function on_mouse_move(x, y) {
     if (!draggingDivider) {
+        setQueuePeekHeaderHover(isOverQueuePeekHeader(x, y));
+        if (queuePeekHeaderHover) try { window.SetCursor(IDC_HAND); } catch (e) { }
         dividerHighlight.hover(isOverDivider(y) && isOverContentColumn(x));
         return;
     }
@@ -1116,6 +1315,11 @@ function on_mouse_move(x, y) {
 }
 
 function on_mouse_lbtn_up(x, y) {
+    if (queuePeekHeaderPressed) {
+        queuePeekHeaderPressed = false;
+        if (isOverQueuePeekHeader(x, y)) closeQueuePeek();
+        return;
+    }
     dividerHighlight.dragging(false);
     dividerHighlight.hover(isOverDivider(y) && isOverContentColumn(x));
 
@@ -1126,6 +1330,8 @@ function on_mouse_lbtn_up(x, y) {
 }
 
 function on_mouse_leave() {
+    queuePeekHeaderPressed = false;
+    setQueuePeekHeaderHover(false);
     dividerHighlight.dragging(false);
     dividerHighlight.hover(false);
 
@@ -1152,6 +1358,14 @@ function on_notify_data(name, info) {
         return;
     }
     if (consumeRailMeasure(name, info)) return;
+    if (name === QueuePeekProtocol.OPEN) {
+        openQueuePeek(info);
+        return;
+    }
+    if (name === QueuePeekProtocol.CLOSE) {
+        closeQueuePeek();
+        return;
+    }
     if (dividerHighlight.onNotifyData(name, info)) return;
     if (ResizingModeProtocol.consume(name, info, setResizingModeEnabled)) return;
     if (SettingsRegistry.provide(name, info, SETTINGS_PANEL_ID, SETTINGS_PANEL_LABEL, getMySettings)) return;
@@ -1192,6 +1406,10 @@ try {
     }, CHILD_WATCH_INTERVAL);
 } catch (e2) {
     childWatchTimer = null;
+}
+
+function on_playback_queue_changed() {
+    repaintQueuePeekHeader();
 }
 
 function on_script_unload() {

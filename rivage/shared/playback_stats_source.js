@@ -34,6 +34,17 @@ if (typeof PlaybackStatsSource === 'undefined') {
 
         var playcount2003Available = detectPlaycount2003();
 
+        // Titleformat fields per backend, so no panel hard-codes them.
+        var FIELDS = {};
+        FIELDS[SOURCE_FOO_PLAYCOUNT] = {
+            plays: '%play_count%', first: '%first_played%', last: '%last_played%',
+            added: '%added%', rating: '%rating%'
+        };
+        FIELDS[SOURCE_PLAYCOUNT_2003] = {
+            plays: '%2003_playcount%', first: '%2003_first_played%', last: '%2003_last_played%',
+            added: '%2003_added%', rating: '%2003_rating%'
+        };
+
         function isUsableSource(value) {
             return value === SOURCE_FOO_PLAYCOUNT ||
                 (value === SOURCE_PLAYCOUNT_2003 && playcount2003Available);
@@ -117,6 +128,23 @@ if (typeof PlaybackStatsSource === 'undefined') {
         return {
             isPlaycount2003: function () {
                 return dataSource === SOURCE_PLAYCOUNT_2003;
+            },
+            // { plays, first, last, added, rating } titleformat strings for the active
+            // backend. A copy, so callers may keep it; compare it to spot a switch.
+            // history: the other places a play can be recorded, for "smart" views
+            // that take the highest count and the latest date (as the Playback
+            // statistics panel's Smart play history does). Enhanced Playback
+            // Statistics' own last-played is left out under Playcount 2003.
+            fields: function () {
+                var f = FIELDS[dataSource] || FIELDS[SOURCE_FOO_PLAYCOUNT];
+                return {
+                    source: dataSource, plays: f.plays, first: f.first, last: f.last, added: f.added, rating: f.rating,
+                    history: {
+                        plays: '$if2(%lastfm_play_count%,$if2(%lastfm_playcount%,$if2(%scrobbled%,%last.fm scrobbled%)))',
+                        last: '$if2(%lastfm_last_played%,$if2(%last_scrobble%,%last.fm last scrobble%))',
+                        enhancedLast: dataSource === SOURCE_PLAYCOUNT_2003 ? '' : '%last_played_enhanced%'
+                    }
+                };
             },
             onChange: function (fn) {
                 if (typeof fn === 'function') changeListeners.push(fn);

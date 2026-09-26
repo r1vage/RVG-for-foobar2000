@@ -5,6 +5,7 @@ window.DrawMode = 0;
 // Design 1 and Design 2 differ only in layout() and on_paint()'s text branch.
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\ui_scale.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\design_system.js");
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\power_mode.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\dynamic_theme_protocol.js");
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
@@ -18,7 +19,7 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\miniplayer_protocol.js");
 
 window.DefineScript(RivageUI.copy.popupTitle("Mini Player"), {
     author: "RivaGe",
-    version: "2.4.1",
+    version: "2.5.0",
     features: { drag_n_drop: false, grab_focus: false }
 });
 
@@ -596,18 +597,18 @@ function drawTrackInfo(gr, rect) {
     }
 }
 
-function drawCoverText(gr) {
+function drawCoverText(gr, area, pad) {
     var titleRect = layoutRects.title;
     var artistRect = layoutRects.artist;
 
-    if (titleRect && titleRect.visible) {
+    if (titleRect && titleRect.visible && RivageUI.areaHits(area, titleRect, pad)) {
         if (!titleMarquee.draw(gr, titleRect)) {
             gr.GdiDrawText(cache.title, fonts.title, theme.text,
                 titleRect.x, titleRect.y, titleRect.w, titleRect.h,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
     }
-    if (artistRect && artistRect.visible && cache.artist) {
+    if (artistRect && artistRect.visible && cache.artist && RivageUI.areaHits(area, artistRect, pad)) {
         if (!artistMarquee.draw(gr, artistRect)) {
             gr.GdiDrawText(cache.artist, fonts.artist, theme.textTertiary,
                 artistRect.x, artistRect.y, artistRect.w, artistRect.h,
@@ -1177,8 +1178,11 @@ function layoutClassic() {
 
 // Painting
 
-function on_paint(gr) {
-    var i, btn, smoothingChanged = false;
+// Unscaled slack for ink past a section's rect (seekbar thumb, hover fill).
+var PAINT_AREA_PAD = 12;
+
+function on_paint(gr, x, y, width, height) {
+    var relaid = false, area, pad;
     // A queued repaint can arrive after Show(false); don't let it wake us.
     if (!panelIsVisible()) return;
 
@@ -1187,11 +1191,30 @@ function on_paint(gr) {
     if (layoutWidth !== window.Width || layoutHeight !== window.Height) {
         updateDpiFromHeight();
         layout();
+        relaid = true;
     }
-    if (!marqueePrepared) prepareMarquee();
+    if (!marqueePrepared) {
+        prepareMarquee();
+        relaid = true;
+    }
     startPendingArtRefresh();
     startSeekTickTimer();
     startMarqueeTimer();
+
+    // Marquee, seekbar and artwork updates invalidate one section; skip the others.
+    area = relaid ? null : RivageUI.paintArea(x, y, width, height, layoutWidth, layoutHeight);
+    pad = _scale(PAINT_AREA_PAD);
+    if (area) gr.PushClip(area.x, area.y, area.w, area.h);
+    try {
+        paintSections(gr, area, pad);
+    } finally {
+        if (area) gr.PopClip();
+    }
+}
+
+function paintSections(gr, area, pad) {
+    var i, btn, smoothingChanged = false;
+    var hits = RivageUI.areaHits;
 
     // Rectangular backdrop before anti-aliasing: GDI+ shape smoothing filters the
     // DrawImage destination edge into a visible seam on the left and top rows.
@@ -1206,15 +1229,15 @@ function on_paint(gr) {
         }
     }
 
-    if (layoutRects.art && layoutRects.art.visible) drawArt(gr, layoutRects.art);
-    if (isCoverLayout()) drawCoverText(gr);
-    else if (layoutRects.info && layoutRects.info.visible) drawTrackInfo(gr, layoutRects.info);
-    if (layoutRects.seek && layoutRects.seek.visible) seekbar.draw(gr, layoutRects.seek, currentAccent());
-    drawRating(gr);
+    if (layoutRects.art && layoutRects.art.visible && hits(area, layoutRects.art, pad)) drawArt(gr, layoutRects.art);
+    if (isCoverLayout()) drawCoverText(gr, area, pad);
+    else if (layoutRects.info && layoutRects.info.visible && hits(area, layoutRects.info, pad)) drawTrackInfo(gr, layoutRects.info);
+    if (layoutRects.seek && layoutRects.seek.visible && hits(area, layoutRects.seek, pad)) seekbar.draw(gr, layoutRects.seek, currentAccent());
+    if (hits(area, layoutRects.rating, pad)) drawRating(gr);
 
     for (i = 0; i < allButtons.length; i++) {
         btn = allButtons[i];
-        if (btn.w > 0) drawIconButton(gr, btn);
+        if (btn.w > 0 && hits(area, btn, pad)) drawIconButton(gr, btn);
     }
 
     if (smoothingChanged) {
@@ -1495,6 +1518,8 @@ function on_script_unload() {
 }
 
 function on_notify_data(name, info) {
+    // Scrolling titles stop or resume on the next paint.
+    if (RivagePowerMode.consume(name, info)) { window.Repaint(); return; }
     var provided = false;
     if (SharedThemeProtocol.consume(name, info)) return;
 

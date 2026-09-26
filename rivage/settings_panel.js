@@ -6,14 +6,18 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\album_accent_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\settings_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\design_system.js");
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\cache_protocol.js");
 
 window.DefineScript("RVG Settings", {
     author: "RivaGe",
-    version: "1.6.2",
+    version: "1.9.0",
     features: { drag_n_drop: false, grab_focus: false }
 });
 
 var MF_STRING = 0x00000000;
+var MB_YESNO = 0x00000004;
+var MB_ICONWARNING = 0x00000030;
+var IDYES = 6;
 var IDC_ARROW = 32512;
 var IDC_HAND = 32649;
 
@@ -210,6 +214,22 @@ var ICON_BUTTON_MARGIN_PT = 9;
 
 var SETTINGS_PANEL_CAPTION = "SETTINGS";
 
+// Another panel can ask for a panel's section to be shown (Health on first run).
+// Kept until the schemas that contain it arrive, since this script only starts
+// when the Settings panel is first shown.
+var OPEN_SECTION = "RIVAGE.SETTINGS.OPEN_SECTION.V1";
+var OPEN_SECTION_ACK = "RIVAGE.SETTINGS.OPEN_SECTION_ACK.V1";
+var pendingOpenSection = null;
+
+function applyPendingOpenSection() {
+    if (!pendingOpenSection || !findPanel(pendingOpenSection.panelId)) return false;
+    activePanelId = pendingOpenSection.panelId;
+    if (pendingOpenSection.section) activeSubTabByPanel[activePanelId] = pendingOpenSection.section;
+    pendingOpenSection = null;
+    scrollOffset = 0;
+    return true;
+}
+
 // Local-only Backup & Restore rows: not sourced from SettingsRegistry. They
 // are always merged into whichever panel identifies as Global settings, as
 // its own sub-tab, so Export/Import are available even before any provider
@@ -220,6 +240,20 @@ var GLOBAL_SETTINGS_FALLBACK_PANEL_LABEL = "Global settings";
 var BACKUP_PANEL_LABEL = "Backup & Restore";
 var BACKUP_EXPORT_SETTING_ID = "rvgBackupExport";
 var BACKUP_IMPORT_SETTING_ID = "rvgBackupImport";
+
+// Local-only Storage rows, merged next to Backup & Restore. Sizes come from
+// utils.GetFolderSizeAsync (JSplitter 4.2+) and are re-measured at most every
+// STORAGE_MEASURE_MS while the screen is refreshing; clears go through CacheProtocol.
+var STORAGE_PANEL_LABEL = "Storage";
+var STORAGE_CLEAR_PREFIX = "rvgCacheClear.";
+var STORAGE_MEASURE_MS = 15000;
+var STORAGE_OWNER_WAIT_MS = 1500;
+var cacheSizes = {};
+var cacheSizeTasks = {};
+var cacheSizeTasksPending = 0;
+var cacheMeasuredAt = 0;
+var cacheClearPending = {};
+var cacheClearToken = 0;
 
 function rowGeometry() {
     var controlW = _scale(CONTROL_W_PT);
@@ -360,6 +394,7 @@ function installPanels(nextPanels) {
     var previousActive = activePanelId;
     panels = nextPanels;
     pruneSubTabState();
+    applyPendingOpenSection();
 
     if (!activePanelId || !findPanel(activePanelId)) {
         activePanelId = panels.length ? panels[0].panelId : null;
@@ -379,6 +414,7 @@ function refreshSchemas(force) {
     if (!scriptActive) return;
     requestGeneration = ++schemaRequestGeneration;
     requestEditGeneration = editGeneration;
+    measureCacheSizes(false);
 
     SettingsRegistry.requestSchemas(300, function (list) {
         var ordered, json, globalPanel, i;
@@ -391,12 +427,12 @@ function refreshSchemas(force) {
             if (isGlobalSettingsPanel(list[i])) { globalPanel = list[i]; break; }
         }
         if (globalPanel) {
-            globalPanel.settings = (globalPanel.settings || []).concat(backupPanelSettings());
+            globalPanel.settings = (globalPanel.settings || []).concat(backupPanelSettings(), storagePanelSettings());
         } else {
             list = list.concat([{
                 panelId: GLOBAL_SETTINGS_FALLBACK_PANEL_ID,
                 panelLabel: GLOBAL_SETTINGS_FALLBACK_PANEL_LABEL,
-                settings: backupPanelSettings()
+                settings: backupPanelSettings().concat(storagePanelSettings())
             }]);
         }
         ordered = orderPanels(list);
@@ -428,6 +464,10 @@ function on_script_unload() {
     scriptActive = false;
     schemaRequestGeneration++;
     if (refreshTimer) { window.ClearInterval(refreshTimer); refreshTimer = null; }
+    for (var id in cacheClearPending) {
+        if (cacheClearPending[id].timer) window.ClearTimeout(cacheClearPending[id].timer);
+    }
+    cacheClearPending = {};
 }
 
 function layout() {
@@ -672,7 +712,8 @@ function drawSubTab(gr, tab, hovered) {
 
 function drawSubTabScrollButton(gr, hitbox, glyph, hovered, enabled) {
     var colour = enabled ? (hovered ? sharedAccentOrDefault() : theme.textMuted) : theme.stroke;
-    gr.FillSolidRect(hitbox.x, hitbox.y, hitbox.w, hitbox.h, theme.background);
+    // No background fill: the tabs are clipped to subTabViewport, which stops
+    // short of these buttons, and an opaque fill would cover the Mica backdrop.
     if (hovered && enabled) {
         gr.FillSolidRect(hitbox.x, hitbox.y, hitbox.w, hitbox.h, theme.rowHover);
     }
@@ -961,6 +1002,8 @@ function activateRow(row) {
 
     if (s.id === BACKUP_EXPORT_SETTING_ID) { doExportSettings(); return; }
     if (s.id === BACKUP_IMPORT_SETTING_ID) { doImportSettings(); return; }
+    if (s.id === "rvgMemoryReport") { logMemoryReport(); return; }
+    if (s.id.indexOf(STORAGE_CLEAR_PREFIX) === 0) { confirmClearCache(s.id.substring(STORAGE_CLEAR_PREFIX.length)); return; }
 
     if (s.type === "bool") {
         applyLocalValue(row, !s.value);
@@ -1109,6 +1152,130 @@ function backupPanelSettings() {
         },
         { id: BACKUP_IMPORT_SETTING_ID, type: "action", label: "Import settings\u2026", actionLabel: "Import", section: BACKUP_PANEL_LABEL }
     ];
+}
+
+function formatBytes(bytes) {
+    if (!(bytes > 0)) return "Empty";
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " KB";
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+}
+
+function cacheSizeText(id) {
+    var entry = cacheSizes[id];
+    if (cacheClearPending[id]) return "Clearing\u2026";
+    if (typeof utils.GetFolderSizeAsync !== "function") return "Size needs JSplitter 4.2 or newer";
+    if (!entry) return "Measuring\u2026";
+    if (entry.bytes === null) return "Size unavailable";
+    return formatBytes(entry.bytes);
+}
+
+function storagePanelSettings() {
+    var rows = [{
+        id: "rvgStorageInfo", type: "info", label: "Disk caches", section: STORAGE_PANEL_LABEL,
+        value: "Web responses the panels keep on disk so they open instantly and stay within each " +
+            "service's rate limits. Clearing one is safe: the panel downloads what it needs again the " +
+            "next time it is used. A panel that is not loaded has its folder moved to the Recycle Bin."
+    }];
+    rows.push({
+        id: "rvgMemoryReport", type: "action", label: "Memory use", actionLabel: "Log to console",
+        hint: "Shared script heap, then each loaded panel's images and other native memory",
+        section: STORAGE_PANEL_LABEL, disabled: !window.JsMemoryStats
+    });
+    var i, c, entry;
+    for (i = 0; i < CacheProtocol.CACHES.length; i++) {
+        c = CacheProtocol.CACHES[i];
+        entry = cacheSizes[c.id];
+        rows.push({
+            id: STORAGE_CLEAR_PREFIX + c.id, type: "action", label: c.label, actionLabel: "Clear",
+            hint: cacheSizeText(c.id) + " \u00b7 " + c.hint, section: STORAGE_PANEL_LABEL,
+            disabled: !!cacheClearPending[c.id] || !!(entry && entry.bytes === 0)
+        });
+    }
+    return rows;
+}
+
+function logMemoryReport() {
+    var m = window.JsMemoryStats;
+    if (!m) return;
+    console.log("[RVG memory] shared script heap (all panels): " + (m.MainThreadHeapUsage / 1048576).toFixed(1) +
+        " MB of " + (m.MainThreadHeapLimit / 1048576).toFixed(0) + " MB");
+    rivageLogPanelMemory();
+    try { window.NotifyOthers(RIVAGE_MEMORY_REPORT, 0); } catch (e) { console.log("[RVG memory] broadcast failed: " + e); }
+    fb.ShowConsole();
+}
+
+function measureCacheSizes(force) {
+    var i, c, task;
+    if (typeof utils.GetFolderSizeAsync !== "function") return;
+    if (cacheSizeTasksPending > 0) return;
+    if (!force && Date.now() - cacheMeasuredAt < STORAGE_MEASURE_MS) return;
+    cacheMeasuredAt = Date.now();
+    for (i = 0; i < CacheProtocol.CACHES.length; i++) {
+        c = CacheProtocol.CACHES[i];
+        try {
+            if (!utils.IsDirectory(c.dir)) { cacheSizes[c.id] = { bytes: 0 }; continue; }
+            task = utils.GetFolderSizeAsync(c.dir);
+            cacheSizeTasks[task] = c.id;
+            cacheSizeTasksPending++;
+        } catch (e) {
+            cacheSizes[c.id] = { bytes: null };
+        }
+    }
+    if (!cacheSizeTasksPending) refreshSchemas(true);
+}
+
+function on_get_folder_size_done(task_id, success, size) {
+    var id = cacheSizeTasks[task_id];
+    if (id === undefined) return;
+    delete cacheSizeTasks[task_id];
+    cacheSizeTasksPending = Math.max(0, cacheSizeTasksPending - 1);
+    cacheSizes[id] = { bytes: success ? Math.max(0, Number(size) || 0) : null };
+    if (!cacheSizeTasksPending && scriptActive) refreshSchemas(true);
+}
+
+function confirmClearCache(id) {
+    var c = CacheProtocol.find(id);
+    var result, token;
+    if (!c || cacheClearPending[id]) return;
+    try {
+        result = utils.MessageBox(window.ID,
+            "Clear the " + c.label + " cache (" + cacheSizeText(id) + ")?\n\n" +
+            "Nothing in your library is touched. The panel downloads what it needs again the next time it is used.",
+            "RVG Settings", MB_YESNO | MB_ICONWARNING);
+    } catch (e) {
+        return;
+    }
+    if (result !== IDYES) return;
+
+    token = ++cacheClearToken;
+    cacheClearPending[id] = {
+        token: token,
+        // No owner answered: nothing holds the cache in memory, so recycling the folder is safe.
+        timer: window.SetTimeout(function () {
+            if (!cacheClearPending[id] || cacheClearPending[id].token !== token) return;
+            cacheClearPending[id].timer = null;
+            try {
+                if (utils.IsDirectory(c.dir)) utils.RecyclePath(c.dir);
+            } catch (e) {
+                console.log("RVG Settings: could not recycle " + c.dir + ": " + e);
+            }
+            finishClearCache(id);
+        }, STORAGE_OWNER_WAIT_MS)
+    };
+    CacheProtocol.requestClear(id, token);
+    refreshSchemas(true);
+}
+
+function finishClearCache(id) {
+    var pending = cacheClearPending[id];
+    if (pending && pending.timer) window.ClearTimeout(pending.timer);
+    delete cacheClearPending[id];
+    delete cacheSizes[id];
+    cacheMeasuredAt = 0;  // if a measurement is still in flight, the next refresh tick re-measures
+    measureCacheSizes(true);
+    refreshSchemas(true);
 }
 
 function pad2(n) {
@@ -1478,6 +1645,25 @@ function on_notify_data(name, info) {
     }
     if (SharedThemeProtocol.consume(name, info)) return;
     if (SettingsRegistry.collect(name, info)) return;
+
+    if (name === OPEN_SECTION && info && typeof info.panelId === "string") {
+        pendingOpenSection = { panelId: info.panelId, section: typeof info.section === "string" ? info.section : "" };
+        try { window.NotifyOthers(OPEN_SECTION_ACK, 0); } catch (eAck) { }
+        if (applyPendingOpenSection()) {
+            layout();
+            window.Repaint(true);
+        }
+        refreshSchemas(true);
+        return;
+    }
+
+    var cleared = CacheProtocol.parseCleared(name, info);
+    if (cleared) {
+        if (cacheClearPending[cleared.id] && cacheClearPending[cleared.id].token === cleared.token) {
+            finishClearCache(cleared.id);
+        }
+        return;
+    }
 
     if (name === SHARED_ALBUM_ACCENT_UPDATE && SharedAccentProtocol.isColour(info)) {
         var nextAccent = SharedAccentProtocol.opaque(info);

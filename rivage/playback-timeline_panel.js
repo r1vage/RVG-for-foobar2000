@@ -2,6 +2,7 @@
 
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\settings_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\power_mode.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\track_context.js');
@@ -1848,6 +1849,8 @@ function applyGlobalSetting(settingId, value) {
 }
 
 function on_notify_data(name, info) {
+    // Scrolling titles stop or resume on the next paint.
+    if (RivagePowerMode.consume(name, info)) { window.Repaint(); return; }
     if (SharedThemeProtocol.consume(name, info, function () {
         refreshVisualResources(false);
         window.Repaint();

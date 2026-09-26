@@ -12,8 +12,10 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\library_resolver_v2.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\library_actions_v2.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\visible_paint_work.js");
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\cache_protocol.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\musicbrainz_gate.js');
 
-const PANEL_VERSION = '3.1.2';
+const PANEL_VERSION = '3.5.0';
 
 window.DefineScript(RivageUI.copy.popupTitle('Discography'), {
     author: 'RivaGe',
@@ -51,6 +53,7 @@ const CALENDAR_CACHE_VERSION = 3;
 
 const PAGE_SIZE = 100;
 const REQUEST_INTERVAL_MS = 1250;
+const REQUEST_TIMEOUT_MS = 45000;
 const MAX_TRANSIENT_RETRIES = 5;
 const RETRY_BASE_503_MS = 3000;
 const RETRY_BASE_OTHER_MS = 2000;
@@ -62,10 +65,12 @@ const MAX_RELEASE_GROUPS = 1000;
 // Per-bucket safety cap (10 pages). Artist-scoped queries return tens of rows;
 // this only bounds a name-fallback group that matched something very common.
 const MAX_CALENDAR_SEARCH_RESULTS = 1000;
-// The calendar query span is anchored to the first of the current month and
-// always covers the widest selectable horizon, so the cache key turns over
-// monthly instead of daily and a horizon change never touches the network.
+// The calendar query span runs from the first of the month CALENDAR_LOOKBACK_MONTHS
+// back to CALENDAR_QUERY_MONTHS past the current month's first, covering every
+// selectable look-back and horizon: the cache key turns over monthly and either
+// setting is a local re-filter.
 const CALENDAR_QUERY_MONTHS = 25;
+const CALENDAR_LOOKBACK_MONTHS = 3;
 // Per-bucket budget measured on the PERCENT-ENCODED query, not the raw text:
 // a non-ASCII artist name costs up to 9 bytes per character once encoded, so a
 // raw-character budget would produce URLs several times over the server limit.
@@ -156,10 +161,25 @@ if (!window.GetProperty(PROP + 'Cache days v3 default applied', false)) {
 let cacheDays = Math.max(1, Math.min(30, storedCacheDays > 0 ? Math.round(storedCacheDays) : DEFAULT_CACHE_DAYS));
 window.SetProperty(PROP + 'Cache days', cacheDays);
 let calendarHorizonDays = normalizeHorizon(Number(window.GetProperty(PROP + 'Calendar horizon days', 365)) || 365);
+let calendarLookbackMonths = normalizeLookback(Number(window.GetProperty(PROP + 'Calendar look-back months', CALENDAR_LOOKBACK_MONTHS)));
 let calendarIncludeUntaggedArtists = !!window.GetProperty(PROP + 'Calendar name fallback', true);
 let viewMode = normalizeViewMode(window.GetProperty(PROP + 'View mode', 'artist'));
 let accentMode = normalizeAccentMode(window.GetProperty(PROP + 'Accent mode', 'shared'));
 let compactRows = !!window.GetProperty(PROP + 'Compact rows', false);
+
+// Up to three user-defined release searches for the row context menu; none by
+// default. URL placeholders: %artist%, %album%, %query% (artist and album). A
+// template without any gets the encoded query appended. http(s) only, because
+// utils.Run would otherwise launch whatever the field names.
+const SEARCH_LINK_COUNT = 3;
+const SEARCH_LINK_MENU_BASE = 30;
+const searchLinks = [];
+for (let i = 0; i < SEARCH_LINK_COUNT; i++) {
+    searchLinks.push({
+        name: String(window.GetProperty(PROP + 'Search link ' + (i + 1) + ' name', '') || '').trim(),
+        url: String(window.GetProperty(PROP + 'Search link ' + (i + 1) + ' URL', '') || '').trim()
+    });
+}
 let sharedAlbumAccent = DEFAULT_UWP_ACCENT;
 let hostAccent = DEFAULT_UWP_ACCENT;
 
@@ -203,6 +223,7 @@ let calendarRawReleaseGroups = [];
 let calendarItems = [];
 let calendarStats = {
     total: 0,
+    released: 0,
     present: 0,
     missing: 0,
     matchedArtists: 0,
@@ -218,6 +239,10 @@ let statusText = 'Choose or play a track.';
 let statusIsError = false;
 
 let scrollY = 0;
+// Calendar opens on the current month and stays there while rows keep arriving,
+// until the user scrolls.
+let calendarAnchorPending = true;
+let calendarAnchorRow = null;
 let contentHeight = 0;
 let hoverRow = -1;
 let hoverModeTab = '';
@@ -253,6 +278,7 @@ let requestQueue = [];
 let requestTimer = 0;
 let lastRequestAt = 0;
 let mbBlockedUntil = 0;
+let requestWatchdog = 0;
 let consecutiveTransientErrors = 0;
 let retryAttempt = 0;
 let retryAt = 0;
@@ -273,14 +299,14 @@ let calendarCacheDebug = {
     state: 'not checked', path: CALENDAR_CACHE_FILE, checkedAt: 0, savedAt: 0,
     buckets: 0, staleBuckets: 0, failedBuckets: 0, releaseGroups: 0, error: ''
 };
+// Filter-stage counts from the last build; "Why this result?" reads them to
+// explain an empty list.
 let artistPipelineDebug = {
-    raw: 0, invalid: 0, duplicate: 0, typeRejected: 0,
-    displayed: 0, filtersApplied: true
+    raw: 0, invalid: 0, duplicate: 0, typeRejected: 0, filtersApplied: true
 };
 let calendarPipelineDebug = {
     raw: 0, invalid: 0, duplicate: 0, typeRejected: 0, dateRejected: 0,
-    artistRejected: 0, variousArtistsRejected: 0,
-    matchedByMbid: 0, matchedByName: 0, displayed: 0
+    artistRejected: 0, variousArtistsRejected: 0
 };
 let lastNetworkDebug = {
     state: 'idle', kind: '', at: 0, httpStatus: 0, detail: ''
@@ -315,15 +341,7 @@ function persistObjectEntry(name, source, key, value) {
 function resetArtistPipelineDebug(filtersApplied) {
     artistPipelineDebug = {
         raw: 0, invalid: 0, duplicate: 0, typeRejected: 0,
-        displayed: 0, filtersApplied: filtersApplied !== false
-    };
-}
-
-function resetCalendarPipelineDebug() {
-    calendarPipelineDebug = {
-        raw: 0, invalid: 0, duplicate: 0, typeRejected: 0, dateRejected: 0,
-        artistRejected: 0, variousArtistsRejected: 0,
-        matchedByMbid: 0, matchedByName: 0, displayed: 0
+        filtersApplied: filtersApplied !== false
     };
 }
 
@@ -449,6 +467,10 @@ function isArtistLikeMode(mode) {
 
 function scaleUi(value) {
     return Math.max(1, Math.round(Number(value || 0) * uiScale));
+}
+
+function normalizeLookback(value) {
+    return value > 0 ? CALENDAR_LOOKBACK_MONTHS : 0;
 }
 
 function normalizeHorizon(value) {
@@ -1097,6 +1119,7 @@ function reflowDisplayRows() {
         displayRows[i].height = displayRowHeight(displayRows[i]);
     }
     resetDisplayRows(displayRows);
+    applyCalendarAnchor();
 }
 
 function addSectionTo(rows, label, items, kind) {
@@ -1131,7 +1154,6 @@ function buildReleaseItems(applyTypeFilters) {
         invalid: 0,
         duplicate: 0,
         typeRejected: 0,
-        displayed: 0,
         filtersApplied: useTypeFilters
     };
 
@@ -1166,7 +1188,6 @@ function buildReleaseItems(applyTypeFilters) {
         });
     }
 
-    debug.displayed = items.length;
     artistPipelineDebug = debug;
 
     return items;
@@ -1371,9 +1392,14 @@ function calendarDateWindow() {
     const today = startOfToday();
     const end = addDays(today, calendarHorizonDays);
     return {
+        start: calendarLookbackMonths > 0 ? addMonths(startOfMonth(), -calendarLookbackMonths) : today,
         today: today,
         end: new Date(end.getFullYear(), end.getMonth(), end.getDate(), 23, 59, 59, 999)
     };
+}
+
+function calendarNoun() {
+    return calendarLookbackMonths > 0 ? 'recent or upcoming' : 'upcoming';
 }
 
 function calendarDateInfo(value, windowBounds) {
@@ -1382,9 +1408,11 @@ function calendarDateInfo(value, windowBounds) {
 
     const dateWindow = windowBounds || calendarDateWindow();
     const today = dateWindow.today;
-    if (bounds.max < today || bounds.min > dateWindow.end) return null;
+    if (bounds.max < dateWindow.start || bounds.min > dateWindow.end) return null;
 
-    const sortTime = Math.max(bounds.min.getTime(), today.getTime());
+    // Released = the whole date range is behind us. Anything still open sorts at today.
+    const released = bounds.max < today;
+    const sortTime = released ? bounds.min.getTime() : Math.max(bounds.min.getTime(), today.getTime());
     let sectionKey = '';
     let sectionLabel = '';
 
@@ -1398,11 +1426,18 @@ function calendarDateInfo(value, windowBounds) {
 
     return {
         bounds: bounds,
+        released: released,
         sortTime: sortTime,
         sectionKey: sectionKey,
         sectionLabel: sectionLabel,
         displayDate: String(value || '')
     };
+}
+
+function applyCalendarAnchor() {
+    if (viewMode !== 'calendar' || !calendarAnchorPending || !calendarAnchorRow) return;
+    scrollY = clamp(calendarAnchorRow.top, 0, maxScroll());
+    syncHoverFromPointer(false);
 }
 
 function processCalendarReleaseGroups() {
@@ -1419,10 +1454,7 @@ function processCalendarReleaseGroups() {
         typeRejected: 0,
         dateRejected: 0,
         artistRejected: 0,
-        variousArtistsRejected: 0,
-        matchedByMbid: 0,
-        matchedByName: 0,
-        displayed: 0
+        variousArtistsRejected: 0
     };
 
     for (let i = 0; i < calendarRawReleaseGroups.length; i++) {
@@ -1457,8 +1489,6 @@ function processCalendarReleaseGroups() {
 
         seen.add(id);
         matchedArtistTokens.add(artistMatch.token);
-        if (artistMatch.method === 'artist MBID') debug.matchedByMbid++;
-        else if (artistMatch.method === 'artist name') debug.matchedByName++;
 
         const owned = findOwnedMatch(rg, artistMatch.credit.names.concat([artistMatch.libraryName]));
         items.push({
@@ -1477,7 +1507,6 @@ function processCalendarReleaseGroups() {
         });
     }
 
-    debug.displayed = items.length;
     calendarPipelineDebug = debug;
 
     items.sort(function (a, b) {
@@ -1489,6 +1518,7 @@ function processCalendarReleaseGroups() {
 
     calendarItems = items;
     calendarStats.total = items.length;
+    calendarStats.released = items.filter(function (item) { return item.dateInfo.released; }).length;
     calendarStats.present = items.filter(function (item) { return item.owned; }).length;
     calendarStats.missing = calendarStats.total - calendarStats.present;
     calendarStats.matchedArtists = matchedArtistTokens.size;
@@ -1517,10 +1547,15 @@ function processCalendarReleaseGroups() {
     });
 
     const rows = [];
+    const monthStart = startOfMonth().getTime();
+    let anchorIndex = -1;
     for (let i = 0; i < groupList.length; i++) {
+        if (anchorIndex < 0 && groupList[i].sortTime >= monthStart) anchorIndex = rows.length;
         addSectionTo(rows, groupList[i].label, groupList[i].items, 'calendar');
     }
+    calendarAnchorRow = anchorIndex >= 0 ? rows[anchorIndex] : null;
     resetDisplayRows(rows);
+    applyCalendarAnchor();
 
     const artistCount = libraryArtistNameKeys.size;
     const mbidCount = libraryArtistMbids.size;
@@ -1535,10 +1570,10 @@ function processCalendarReleaseGroups() {
             '; ' + plural(mbidCount, 'artist', 'artists') + ' have MusicBrainz IDs.';
         statusIsError = false;
     } else if (calendarRawReleaseGroups.length) {
-        statusText = 'No upcoming MusicBrainz releases of the selected types matched your library artists.';
+        statusText = 'No ' + calendarNoun() + ' MusicBrainz releases of the selected types matched your library artists.';
         statusIsError = false;
     } else {
-        statusText = 'No upcoming MusicBrainz releases of the selected types were found in the selected horizon.';
+        statusText = 'No ' + calendarNoun() + ' MusicBrainz releases of the selected types were found in the selected range.';
         statusIsError = false;
     }
 
@@ -1620,13 +1655,12 @@ function cacheFresh(cache) {
     return cache && Number(cache.savedAt) > 0 && (Date.now() - Number(cache.savedAt)) < cacheDays * 24 * 60 * 60 * 1000;
 }
 
-// The queried span is anchored to the first of the current month and always
-// covers CALENDAR_QUERY_MONTHS, so it is a stable superset of every selectable
-// horizon: the cache key turns over monthly, not at every midnight, and the
-// displayed window is narrowed locally by calendarDateWindow().
+// Fixed superset of every look-back and horizon (see CALENDAR_QUERY_MONTHS);
+// calendarDateWindow() narrows it locally.
 function calendarQuerySpan() {
-    const start = startOfMonth();
-    const end = addDays(addMonths(start, CALENDAR_QUERY_MONTHS), -1);
+    const month = startOfMonth();
+    const start = addMonths(month, -CALENDAR_LOOKBACK_MONTHS);
+    const end = addDays(addMonths(month, CALENDAR_QUERY_MONTHS), -1);
     return { start: dateToIsoLocal(start), end: dateToIsoLocal(end) };
 }
 
@@ -1766,6 +1800,18 @@ function slimReleaseGroup(rg) {
 
 function emptyCalendarCache() {
     return { version: CALENDAR_CACHE_VERSION, savedAt: 0, buckets: {} };
+}
+
+// Storage > Clear. Artist files are read per lookup, so recycling the folder
+// is enough for them; the calendar is held in memory and must be reset too.
+function clearDiskCache() {
+    calendarCache = emptyCalendarCache();
+    calendarCacheDirty = false;
+    try {
+        if (utils.IsDirectory(CACHE_DIR)) utils.RecyclePath(CACHE_DIR);
+        utils.CreateFolder(CACHE_DIR);
+    } catch (e) { reportFailure('the cache folder could not be cleared', e); }
+    refreshCalendarCacheDebug('empty', '');
 }
 
 function loadCalendarCacheFile() {
@@ -1982,25 +2028,6 @@ function describeCalendarCacheDebug() {
         '; lifetime ' + cacheDays + ' d; cached span ' + span.start + ' to ' + span.end + '.';
 }
 
-function describeArtistPipelineDebug() {
-    const debug = artistPipelineDebug;
-    return debug.raw + ' raw; ' + debug.displayed + ' displayed; ' +
-        debug.typeRejected + ' rejected by release-type filters; ' +
-        debug.invalid + ' invalid; ' + debug.duplicate + ' duplicate; filters ' +
-        (debug.filtersApplied ? 'applied (Catch Up)' : 'ignored (Releases)') + '.';
-}
-
-function describeCalendarPipelineDebug() {
-    const debug = calendarPipelineDebug;
-    return debug.raw + ' raw search rows; ' + debug.displayed + ' displayed; ' +
-        debug.typeRejected + ' rejected by release-type filters; ' +
-        debug.dateRejected + ' rejected by date/horizon; ' +
-        debug.artistRejected + ' did not match a library artist; ' +
-        debug.variousArtistsRejected + ' Various Artists; ' +
-        debug.invalid + ' invalid; ' + debug.duplicate + ' duplicate; artist matches: ' +
-        debug.matchedByMbid + ' by MBID, ' + debug.matchedByName + ' by name.';
-}
-
 function diagnoseCurrentState() {
     if (statusIsError) return 'Panel error/status: ' + statusText;
 
@@ -2012,13 +2039,13 @@ function diagnoseCurrentState() {
         }
         if (!libraryArtistNameKeys.size && !libraryArtistMbids.size) return 'The library index contains no usable artist names or MusicBrainz artist IDs.';
         if (calendarRun) return 'A MusicBrainz calendar refresh is in progress; each query group batches many artists into one request, and already-cached rows stay displayed while it runs.';
-        if (calendarItems.length) return 'Calendar has displayable results. The pipeline row below shows any releases filtered out along the way.';
+        if (calendarItems.length) return 'Calendar has displayable results.';
 
         const debug = calendarPipelineDebug;
         if (!debug.raw) {
             if (!calendarBuckets.length) return 'No query groups were built, so nothing has been requested. Check that the library index found artist MBIDs or names.';
             if (!calendarCacheDebug.staleBuckets) {
-                return 'Every query group is cached and fresh, and MusicBrainz reported no upcoming releases for any of the artists in them. Use Refresh release calendar to re-query before the cache lifetime expires.';
+                return 'Every query group is cached and fresh, and MusicBrainz reported no releases in the queried span for any of the artists in them. Use Refresh release calendar to re-query before the cache lifetime expires.';
             }
             return 'No cached rows yet for the current query groups. Calendar cache below shows how many still need a refresh; Network shows whether requests are running or failing.';
         }
@@ -2026,18 +2053,18 @@ function diagnoseCurrentState() {
             return 'MusicBrainz returned rows, but none survive the configured primary/secondary release-type filters.';
         }
         if (debug.dateRejected && debug.typeRejected + debug.dateRejected + debug.invalid + debug.duplicate >= debug.raw) {
-            return 'MusicBrainz returned rows, but none have a usable release date inside the current calendar horizon.';
+            return 'MusicBrainz returned rows, but none have a usable release date inside the current calendar range.';
         }
         if (debug.artistRejected || debug.variousArtistsRejected) {
-            return 'MusicBrainz returned upcoming releases, but none matched artists in the local library after MBID/name matching (Various Artists is intentionally ignored).';
+            return 'MusicBrainz returned releases, but none matched artists in the local library after MBID/name matching (Various Artists is intentionally ignored).';
         }
-        return 'No calendar rows remain after validation/filtering. See the Calendar pipeline counts below for the exact stage losses.';
+        return 'No calendar rows remain after validation and filtering.';
     }
 
     if (!sourceArtist) return statusText;
     if (!artistMbid) return 'The source artist has not resolved to a usable MusicBrainz artist ID yet. ' + statusText;
     if (activeFetch) return 'A MusicBrainz discography refresh is in progress; cached rows may be displayed until it completes.';
-    if (albumItems.length) return 'Artist data has displayable release groups. The pipeline row below shows any groups filtered out.';
+    if (albumItems.length) return 'Artist data has displayable release groups.';
 
     const debug = artistPipelineDebug;
     if (!debug.raw) {
@@ -2050,7 +2077,7 @@ function diagnoseCurrentState() {
     if (debug.filtersApplied && debug.typeRejected && debug.typeRejected + debug.invalid + debug.duplicate >= debug.raw) {
         return 'MusicBrainz returned release groups, but the current Catch Up release-type filters exclude all of them. The Releases view ignores these filters.';
     }
-    return 'MusicBrainz returned release groups, but none became usable display rows; inspect the Artist pipeline counts below.';
+    return 'MusicBrainz returned release groups, but none became usable display rows.';
 }
 
 function describeArtistIdentityDebug() {
@@ -2065,33 +2092,6 @@ function describeArtistIdentityDebug() {
     return 'Source: ' + sourceArtist + '; resolved: ' + (resolvedArtistName || '(none)') +
         (resolvedArtistComment ? ' (' + resolvedArtistComment + ')' : '') +
         '; MBID: ' + (artistMbid || '(none)') + '; resolution: ' + resolution + '.';
-}
-
-function describeCalendarScopeDebug() {
-    const span = calendarQuerySpan();
-    const bounds = calendarDateWindow();
-    const primary = selectedPrimaryTypeValues();
-    const secondary = selectedSecondaryTypeValues();
-    let mbidGroups = 0;
-    let nameGroups = 0;
-    let mbidArtists = 0;
-    let nameArtists = 0;
-    for (let i = 0; i < calendarBuckets.length; i++) {
-        if (calendarBuckets[i].kind === 'name') {
-            nameGroups++;
-            nameArtists += calendarBuckets[i].members.length;
-        } else {
-            mbidGroups++;
-            mbidArtists += calendarBuckets[i].members.length;
-        }
-    }
-    return 'Queried span: ' + span.start + ' to ' + span.end + ' (' + CALENDAR_QUERY_MONTHS + ' months, shared by every horizon); displayed: ' +
-        dateToIsoLocal(bounds.today) + ' to ' + dateToIsoLocal(bounds.end) + ' (' + calendarHorizonDays + ' d); ' +
-        plural(mbidGroups, 'batched MBID query group') + ' covering ' + plural(mbidArtists, 'artist') + '; ' +
-        plural(nameGroups, 'batched name query group') + ' covering ' + plural(nameArtists, 'artist') +
-        (calendarIncludeUntaggedArtists ? '' : ' (name fallback disabled)') +
-        '; primary types filtered locally: ' + (primary.join(', ') || '(none)') +
-        '; allowed secondary: ' + (secondary.join(', ') || '(none)') + '.';
 }
 
 function describeLibraryDebug() {
@@ -2196,7 +2196,7 @@ function pumpRequestQueue() {
     const now = Date.now();
     const rateWait = Math.max(0, REQUEST_INTERVAL_MS - (now - lastRequestAt));
     const cooldownWait = Math.max(0, mbBlockedUntil - now);
-    const wait = Math.max(rateWait, cooldownWait);
+    const wait = Math.max(rateWait, cooldownWait, MusicBrainzGate.wait(REQUEST_INTERVAL_MS, now));
     if (wait > 0) {
         requestTimer = window.SetTimeout(pumpRequestQueue, wait);
         return;
@@ -2212,6 +2212,8 @@ function pumpRequestQueue() {
         const taskId = utils.HTTPRequestAsync(0, context.url, requestHeaders());
         lastRequestAt = Date.now();
         requestContexts.set(taskId, context);
+        armRequestWatchdog(taskId);
+        MusicBrainzGate.announce(mbBlockedUntil);
     } catch (e) {
         handleRequestFailure(context, 0, String(e));
     }
@@ -2236,6 +2238,7 @@ function retryRequest(context, status) {
 
     const now = Date.now();
     mbBlockedUntil = Math.max(mbBlockedUntil, now + delay);
+    MusicBrainzGate.announce(mbBlockedUntil);
 
     if (retries >= MAX_TRANSIENT_RETRIES) {
         retryAttempt = 0;
@@ -2250,6 +2253,24 @@ function retryRequest(context, status) {
     retryAt = mbBlockedUntil;
     pumpRequestQueue();
     return { scheduled: true, delay: Math.max(0, mbBlockedUntil - now), attempt: attempt, max: MAX_TRANSIENT_RETRIES };
+}
+
+// A request the host never settles would hold the serial queue forever, so
+// give up on it and treat it like a dropped connection.
+function armRequestWatchdog(taskId) {
+    clearTimer(requestWatchdog);
+    requestWatchdog = window.SetTimeout(function () {
+        requestWatchdog = 0;
+        if (!scriptActive) return;
+        const context = requestContexts.get(taskId);
+        if (!context) return;
+        requestContexts.delete(taskId);
+        if (context.generation !== generation) {
+            pumpRequestQueue();
+            return;
+        }
+        handleRequestFailure(context, 0, 'No response after ' + Math.round(REQUEST_TIMEOUT_MS / 1000) + ' s');
+    }, REQUEST_TIMEOUT_MS);
 }
 
 function handleRequestFailure(context, status, detail) {
@@ -2478,6 +2499,8 @@ function on_http_request_done(taskId, success, responseText, status) {
     const context = requestContexts.get(taskId);
     if (!context) return;
     requestContexts.delete(taskId);
+    clearTimer(requestWatchdog);
+    requestWatchdog = 0;
 
     if (context.generation !== generation) {
         // The stale request was the serial queue's active request. Once it is
@@ -2796,6 +2819,7 @@ function activateCalendarMode(forceNetwork) {
         cancelNetworkWork();
         viewMode = 'calendar';
         scrollY = 0;
+        calendarAnchorPending = true;
         resetDisplayRows([]);
     } else if (forceNetwork) {
         cancelNetworkWork();
@@ -2818,6 +2842,16 @@ function setCalendarHorizon(days) {
     if (viewMode === 'calendar') processCalendarReleaseGroups();
 }
 
+function setCalendarLookback(months) {
+    const next = normalizeLookback(months);
+    if (next === calendarLookbackMonths) return;
+    window.SetProperty(PROP + 'Calendar look-back months', next);
+    calendarLookbackMonths = next;
+    calendarAnchorPending = true;
+    if (viewMode === 'calendar') processCalendarReleaseGroups();
+    window.Repaint();
+}
+
 // -----------------------------------------------------------------------------
 // Painting and hit testing
 // -----------------------------------------------------------------------------
@@ -2825,8 +2859,11 @@ function setCalendarHorizon(days) {
 function summaryLine() {
     if (viewMode === 'calendar') {
         if (!calendarStats.total) return statusText;
-        return plural(calendarStats.total, 'upcoming release') +
-            SUMMARY_SEPARATOR + plural(calendarStats.matchedArtists, 'artist');
+        const upcoming = calendarStats.total - calendarStats.released;
+        const counts = calendarLookbackMonths > 0
+            ? calendarStats.released + ' released' + SUMMARY_SEPARATOR + upcoming + ' upcoming'
+            : plural(upcoming, 'upcoming release');
+        return counts + SUMMARY_SEPARATOR + plural(calendarStats.matchedArtists, 'artist');
     }
 
     if (!artistStats.total) return statusText;
@@ -2841,6 +2878,7 @@ function on_size() {
     ww = window.Width;
     wh = window.Height;
     scrollY = clamp(scrollY, 0, maxScroll());
+    applyCalendarAnchor();
     syncHoverFromPointer(false);
 }
 
@@ -2973,13 +3011,14 @@ function paintItemRow(gr, row, index, y) {
     const titleW = Math.max(scaleUi(30), cardW - dateW - badgeW - scaleUi(48));
     const ownedColour = item.owned ? colours.present : colours.missing;
     const ownedSoft = item.owned ? colours.presentSoft : colours.missingSoft;
-    const markerColour = row.kind === 'calendar' || item.bucket === 'upcoming' ? colours.upcoming : ownedColour;
+    const upcoming = row.kind === 'calendar' ? !item.dateInfo.released : item.bucket === 'upcoming';
+    const markerColour = upcoming ? colours.upcoming : ownedColour;
 
     fillRoundRect(gr, cardX, cardY, cardW, cardH, scaleUi(7), index === hoverRow ? colours.cardHover : colours.card);
     fillRoundRect(gr, cardX, cardY, scaleUi(4), cardH, scaleUi(2), markerColour);
 
     drawText(gr, item.date || '-', fonts.smallBold,
-        row.kind === 'calendar' || item.bucket === 'upcoming' ? colours.upcoming : colours.muted,
+        upcoming ? colours.upcoming : colours.muted,
         cardX + scaleUi(14), cardY, dateW - scaleUi(10), cardH,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
@@ -3017,7 +3056,9 @@ function paintHeader(gr) {
 
     const insetX = PAD;
     const button = modeButtonRect();
-    const title = viewMode === 'calendar' ? 'Upcoming releases' : (sourceArtist || 'Discography');
+    const title = viewMode === 'calendar'
+        ? (calendarLookbackMonths > 0 ? 'Recent & upcoming releases' : 'Upcoming releases')
+        : (sourceArtist || 'Discography');
     const titleLeft = card.x + insetX;
     const titleRight = Math.max(titleLeft, button.x - scaleUi(12));
     drawText(gr, title, fonts.title, colours.accent, titleLeft, card.y + scaleUi(6),
@@ -3140,6 +3181,7 @@ function on_mouse_leave() {
 
 function on_mouse_wheel(step) {
     if (!maxScroll()) return;
+    calendarAnchorPending = false;
     const wheelDistance = viewMode === 'discography' ? RELEASE_ITEM_H * 4 : ITEM_H * 2;
     scrollY = clamp(scrollY - step * wheelDistance, 0, maxScroll());
     syncHoverFromPointer(false);
@@ -3242,6 +3284,16 @@ function getDiscographySettings() {
                 { value: 730, label: 'Next 2 years' }
             ]
         },
+        {
+            id: 'calendarLookback', label: 'Calendar look-back', type: 'choice', value: calendarLookbackMonths,
+            section: 'Options',
+            choiceValueType: 'number',
+            hint: 'Also list releases from the last three months, in date order above the upcoming ones.',
+            choices: [
+                { value: 0, label: 'Off' },
+                { value: CALENDAR_LOOKBACK_MONTHS, label: 'Last 3 months' }
+            ]
+        },
         { id: 'cacheDays', label: 'MusicBrainz cache duration (days)', type: 'number', value: cacheDays, min: 1, max: 30, step: 1, hint: 'How long MusicBrainz responses are kept before they are refreshed. Default 30 days.', section: 'Options' },
         {
             id: 'calendarNameFallback', label: 'Calendar: also query artists without MusicBrainz IDs',
@@ -3249,6 +3301,27 @@ function getDiscographySettings() {
             hint: 'Adds a name-based query for library artists whose tags carry no MusicBrainz artist ID. More complete, but more requests the first time.'
         }
     ];
+
+    settings.push({
+        id: 'searchLinksInfo', label: 'How search links work', type: 'info', section: 'Search links',
+        value: 'Each link with a URL adds "Search on <name>" to a release\'s right-click menu. ' +
+            'In the URL, %artist%, %album% and %query% (artist and album) are replaced; ' +
+            'without any of them the query is added to the end. Only http(s) links are opened.'
+    });
+    for (let i = 0; i < SEARCH_LINK_COUNT; i++) {
+        settings.push(
+            {
+                id: 'searchLinkName_' + i, label: 'Link ' + (i + 1) + ' name', type: 'string',
+                value: searchLinks[i].name, section: 'Search links',
+                hint: 'Shown as "Search on <name>". Blank uses the site address.'
+            },
+            {
+                id: 'searchLinkUrl_' + i, label: 'Link ' + (i + 1) + ' URL', type: 'string',
+                value: searchLinks[i].url, section: 'Search links',
+                hint: 'e.g. https://www.discogs.com/search/?q=%query%&type=release'
+            }
+        );
+    }
 
     for (let i = 0; i < PRIMARY_TYPE_DEFS.length; i++) {
         const def = PRIMARY_TYPE_DEFS[i];
@@ -3291,20 +3364,8 @@ function getDiscographySettings() {
             value: describeArtistCacheDebug(), section: 'Diagnostics'
         },
         {
-            id: 'debugArtistPipeline', label: 'Artist release pipeline', type: 'info',
-            value: describeArtistPipelineDebug(), section: 'Diagnostics'
-        },
-        {
-            id: 'debugCalendarScope', label: 'Calendar query scope', type: 'info',
-            value: describeCalendarScopeDebug(), section: 'Diagnostics'
-        },
-        {
             id: 'debugCalendarCache', label: 'Calendar cache', type: 'info',
             value: describeCalendarCacheDebug(), section: 'Diagnostics'
-        },
-        {
-            id: 'debugCalendarPipeline', label: 'Calendar release pipeline', type: 'info',
-            value: describeCalendarPipelineDebug(), section: 'Diagnostics'
         },
         {
             id: 'debugLibrary', label: 'Library index', type: 'info',
@@ -3360,6 +3421,9 @@ function applyDiscographySetting(settingId, value) {
         case 'calendarHorizon':
             setCalendarHorizon(Number(value));
             return;
+        case 'calendarLookback':
+            setCalendarLookback(Number(value));
+            return;
         case 'cacheDays':
             next = clamp(Math.round(Number(value) || 1), 1, 30);
             if (next === cacheDays) return;
@@ -3373,6 +3437,13 @@ function applyDiscographySetting(settingId, value) {
             calendarIncludeUntaggedArtists = next;
             calendarLibraryChanged();
             return;
+    }
+
+    if (settingId === 'searchLinksInfo') return;
+    let linkMatch = /^searchLink(Name|Url)_(\d)$/.exec(settingId);
+    if (linkMatch) {
+        setSearchLinkField(Number(linkMatch[2]), linkMatch[1] === 'Url' ? 'url' : 'name', value);
+        return;
     }
 
     def = findTypeDefBySettingId('primary_', settingId, PRIMARY_TYPE_DEFS);
@@ -3489,15 +3560,10 @@ function handleMainMenuCommand(id, clickedItem) {
         case 4:
             if (clickedItem) utils.Run(clickedItem.url);
             break;
-        case 7:
-            if (clickedItem) {
-                utils.Run('https://redacted.sh/torrents.php?action=advanced&groupname=' + encodeURIComponent(releaseSearchQuery(clickedItem)));
-            }
-            break;
-        case 8:
-            if (clickedItem) {
-                utils.Run('https://orpheus.network/torrents.php?searchstr=' + encodeURIComponent(releaseSearchQuery(clickedItem)));
-            }
+        case SEARCH_LINK_MENU_BASE:
+        case SEARCH_LINK_MENU_BASE + 1:
+        case SEARCH_LINK_MENU_BASE + 2:
+            if (clickedItem) openSearchLink(id - SEARCH_LINK_MENU_BASE, clickedItem);
             break;
         case 5:
             activateCalendarMode(true);
@@ -3533,13 +3599,51 @@ function handleMainMenuCommand(id, clickedItem) {
     }
 }
 
-// Shared by the Redacted/Orpheus context-menu searches: reuses
-// libraryDescriptorForReleaseItem()'s artist resolution, joined with the
-// release title so the query is "artist album", not just the album title alone.
+// The search links' %query%: "artist album", not the album title alone.
 function releaseSearchQuery(item) {
     const descriptor = libraryDescriptorForReleaseItem(item);
     if (!descriptor) return '';
     return (descriptor.artist + ' ' + descriptor.album).replace(/\s+/g, ' ').trim();
+}
+
+function searchLinkUsable(link) {
+    return !!(link && /^https?:\/\/\S+$/i.test(link.url));
+}
+
+function searchLinkLabel(link) {
+    if (link.name) return link.name;
+    const host = /^https?:\/\/([^\/?#]+)/i.exec(link.url);
+    return host ? host[1].replace(/^www\./i, '') : 'link';
+}
+
+function buildSearchLinkUrl(template, item) {
+    const descriptor = libraryDescriptorForReleaseItem(item);
+    if (!descriptor) return '';
+    const values = {
+        '%artist%': encodeURIComponent(descriptor.artist || ''),
+        '%album%': encodeURIComponent(descriptor.album || ''),
+        '%query%': encodeURIComponent(releaseSearchQuery(item))
+    };
+    if (!/%(artist|album|query)%/i.test(template)) return template + values['%query%'];
+    return template.replace(/%(artist|album|query)%/gi, function (token) {
+        return values[token.toLowerCase()];
+    });
+}
+
+function openSearchLink(index, item) {
+    const link = searchLinks[index];
+    if (!searchLinkUsable(link)) return;
+    const url = buildSearchLinkUrl(link.url, item);
+    if (url) utils.Run(url);
+}
+
+function setSearchLinkField(index, field, value) {
+    const link = searchLinks[index];
+    if (!link) return;
+    const next = String(value == null ? '' : value).trim().slice(0, field === 'url' ? 1000 : 40);
+    if (next === link[field]) return;
+    window.SetProperty(PROP + 'Search link ' + (index + 1) + (field === 'url' ? ' URL' : ' name'), next);
+    link[field] = next;
 }
 
 function libraryDescriptorForReleaseItem(item) {
@@ -3580,8 +3684,11 @@ function on_mouse_rbtn_up(x, y) {
         menu.AppendMenuItem(isArtistLikeMode(viewMode) && artistMbid ? MF_STRING : MF_GRAYED, 3, 'Open artist on MusicBrainz');
         menu.AppendMenuItem(clickedItem ? MF_STRING : MF_GRAYED, 4, 'Open this release group');
         if (clickedItem) {
-            menu.AppendMenuItem(MF_STRING, 7, 'Search on Redacted');
-            menu.AppendMenuItem(MF_STRING, 8, 'Search on Orpheus');
+            for (let i = 0; i < searchLinks.length; i++) {
+                if (searchLinkUsable(searchLinks[i])) {
+                    menu.AppendMenuItem(MF_STRING, SEARCH_LINK_MENU_BASE + i, 'Search on ' + searchLinkLabel(searchLinks[i]));
+                }
+            }
         }
         menu.AppendMenuSeparator();
 
@@ -3603,6 +3710,8 @@ function on_mouse_rbtn_up(x, y) {
 // -----------------------------------------------------------------------------
 
 function on_notify_data(name, info) {
+    if (CacheProtocol.consumeClear(name, info, 'discography', clearDiskCache)) return;
+    if (MusicBrainzGate.consume(name, info)) return;
     if (SharedThemeProtocol.consume(name, info, function () {
         updateTheme();
         SharedThemeProtocol.requestRepaint();

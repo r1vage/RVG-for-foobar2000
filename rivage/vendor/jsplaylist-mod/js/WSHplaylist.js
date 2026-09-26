@@ -146,6 +146,7 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 		tf1,
 		tf2;
 		var is_playing_row = !!this.is_playing_row;
+		var qs_hit = qs_row_is_match(this.track_index);
 		if (cList.enableExtraLine) {
 			// (2.4) configurable gap between the two lines of a row: line 1 moves up by
 			// half the gap, line 2 moves down by half, keeping the pair vertically centred.
@@ -357,6 +358,8 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 						tf1 = "";
 					};
 					if (tf1) {
+						if (qs_hit)
+							qs_highlight(gr, tf1, g_font, cx, tf1_y, cw, tf1_h, p.headerBar.columns[j].DT_align);
 						DrawColoredText(gr, tf1, g_font, this.text_colour, cx, tf1_y, cw, tf1_h,
 							p.headerBar.columns[j].DT_align, !this.normalTextColor);
 					};
@@ -375,6 +378,8 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 							tf2 = "";
 						};
 						if (tf2) {
+							if (qs_hit)
+								qs_highlight(gr, tf2, g_font_small, cx, tf2_y, cw, tf2_h, p.headerBar.columns[j].DT_align);
 							DrawColoredText(gr, tf2, g_font_small, fade_text(this.text_colour, 175), cx, tf2_y, cw, tf2_h,
 								p.headerBar.columns[j].DT_align, !this.normalTextColor);
 						};
@@ -607,7 +612,7 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 							};
 							gr.SetSmoothingMode(0);
 							if (p.headerBar.columns[0].w < cover.max_w) {
-								gr.DrawImage(this.cover_img.Resize(cv_w, cv_h, 2), cv_x, cv_y, cv_w, cv_h, 0, 0, cv_w, cv_h);
+								gr.DrawImage(resized_cover(this.cover_img, cv_w, cv_h), cv_x, cv_y, cv_w, cv_h, 0, 0, cv_w, cv_h);
 							} else {
 								gr.DrawImage(this.cover_img, cv_x, cv_y, cv_w, cv_h, 0, 0, this.cover_img.Width, this.cover_img.Height);
 							};
@@ -627,32 +632,7 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 				};
 			};
 
-			// if dragging items, draw line at top of the hover items to show where dragged items will be inserted on mouse button up
-			if (!properties.enableTouchControl) {
-				if (!cPlaylistManager.hscroll_timer && mouse_x < (p.playlistManager.x - p.playlistManager.woffset) - 30) {
-					if (this.empty_row_index == 0) {
-						if (dragndrop.drag_in && this.ishover && p.list.ishover) {
-							if (p.playlistManager.woffset == 0 || cPlaylistManager.visible) {
-								if (!plman.IsPlaylistItemSelected(p.list.playlist, this.track_index)) {
-									if (this.track_index > dragndrop.drag_id) {
-										gr.FillSolidRect(this.x + cover.w, this.y + this.h - Math.floor(cList.borderWidth / 2), this.w - cover.w, cList.borderWidth, g_color_selected_bg);
-										gr.FillSolidRect(this.x + cover.w, this.y + this.h - Math.floor(cList.borderWidth / 2) - 3 * cList.borderWidth, cList.borderWidth, 7 * cList.borderWidth, g_color_selected_bg);
-										gr.FillSolidRect(this.x + this.w - cList.borderWidth, this.y + this.h - Math.floor(cList.borderWidth / 2) - 3 * cList.borderWidth, cList.borderWidth, 7 * cList.borderWidth, g_color_selected_bg);
-										dragndrop.drop_id = this.track_index;
-									} else if (this.track_index < dragndrop.drag_id) {
-										gr.FillSolidRect(this.x + cover.w, this.y - Math.floor(cList.borderWidth / 2), this.w - cover.w, cList.borderWidth, g_color_selected_bg);
-										gr.FillSolidRect(this.x + cover.w, this.y - Math.floor(cList.borderWidth / 2) - 3 * cList.borderWidth, cList.borderWidth, 7 * cList.borderWidth, g_color_selected_bg);
-										gr.FillSolidRect(this.x + this.w - cList.borderWidth, this.y - Math.floor(cList.borderWidth / 2) - 3 * cList.borderWidth, cList.borderWidth, 7 * cList.borderWidth, g_color_selected_bg);
-										dragndrop.drop_id = this.track_index;
-									};
-								} else {
-									dragndrop.drop_id = -1;
-								};
-							};
-						};
-					};
-				};
-			};
+			// The internal drag-reorder marker is drawn once by dragndrop_draw() in main.js.
 
 			if (this.ishover && g_dragndrop_status && g_dragndrop_rowId > -1) {
 				if (this.row_index == g_dragndrop_rowId) {
@@ -754,6 +734,16 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 				if (this.obj && this.obj.collapsed) {
 					gr.FillSolidRect(gh_card_x, gh_card_y + gh_radius, gh_bar_w, Math.max(1, gh_card_h - gh_radius * 2), gh_bar_colour);
 				};
+			};
+
+			// quick search: outline the header the current search entry points at
+			if (qs_group_is_current(this.group_index)) {
+				gr.SetSmoothingMode(2);
+				if (gh_style == 1)
+					gr.DrawRoundRect(gh_card_x + 1, gh_card_y + 1, gh_card_w - 3, gh_card_h - 3, gh_radius, gh_radius, 2.0, accent_colour(230));
+				else
+					gr.DrawRect(this.x + 1, gh_top + 1, this.w - 3, this.h - 3, 2.0, accent_colour(230));
+				gr.SetSmoothingMode(0);
 			};
 
 			// draw group text infos
@@ -911,7 +901,7 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 								};
 								gr.SetSmoothingMode(0);
 								if (this.obj.collapsed) {
-									gr.DrawImage(this.cover_img.Resize(cv_w, cv_h, 2), cv_x, cv_y, cv_w, cv_h, 0, 0, cv_w, cv_h);
+									gr.DrawImage(resized_cover(this.cover_img, cv_w, cv_h), cv_x, cv_y, cv_w, cv_h, 0, 0, cv_w, cv_h);
 								} else {
 									gr.DrawImage(this.cover_img, cv_x, cv_y, cv_w, cv_h, 0, 0, this.cover_img.Width, this.cover_img.Height);
 								};
@@ -932,46 +922,7 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 				};
 			};
 
-			// if dragging items, draw line at top of the hover items to show where dragged items will be inserted on mouse button up
-			if (this.obj) {
-				if (!properties.enableTouchControl) {
-					if (!cPlaylistManager.hscroll_timer && mouse_x < (p.playlistManager.x - p.playlistManager.woffset) - 30) {
-						if (dragndrop.drag_in && this.ishover && p.list.ishover) {
-							if (p.playlistManager.woffset == 0 || cPlaylistManager.visible) {
-								if (!plman.IsPlaylistItemSelected(plman.ActivePlaylist, this.track_index)) {
-									var cover_w = (p.headerBar.columns[0].percent > 0 ? p.headerBar.columns[0].w : 0);
-									if (this.track_index <= dragndrop.drag_id) {
-										if (this.groupRowDelta == 0) {
-											gr.FillSolidRect(this.x + cover_w, this.y - Math.floor(cList.borderWidth / 2), this.w - cover_w, cList.borderWidth, g_color_selected_bg);
-											gr.FillSolidRect(this.x + cover_w, this.y - Math.floor(cList.borderWidth / 2) - 3 * cList.borderWidth, cList.borderWidth, 7 * cList.borderWidth, g_color_selected_bg);
-											gr.FillSolidRect(this.x + this.w - cList.borderWidth, this.y - Math.floor(cList.borderWidth / 2) - 3 * cList.borderWidth, cList.borderWidth, 7 * cList.borderWidth, g_color_selected_bg);
-										}
-										if (this.obj.collapsed) {
-											dragndrop.drop_id = this.track_index;
-										} else {
-											dragndrop.drop_id = this.track_index;
-										};
-									} else {
-										if (this.obj.collapsed) {
-											gr.FillSolidRect(this.x + cover_w, this.y + this.h - Math.floor(cList.borderWidth / 2), this.w - cover_w, cList.borderWidth, g_color_selected_bg);
-											gr.FillSolidRect(this.x + cover_w, this.y + this.h - Math.floor(cList.borderWidth / 2) - 3 * cList.borderWidth, cList.borderWidth, 7 * cList.borderWidth, g_color_selected_bg);
-											gr.FillSolidRect(this.x + this.w - cList.borderWidth, this.y + this.h - Math.floor(cList.borderWidth / 2) - 3 * cList.borderWidth, cList.borderWidth, 7 * cList.borderWidth, g_color_selected_bg);
-											dragndrop.drop_id = this.track_index + this.obj.count - 1;
-										} else {
-											gr.FillSolidRect(this.x + cover_w, this.y + this.h - Math.floor(cList.borderWidth / 2), this.w - cover_w, cList.borderWidth, g_color_selected_bg);
-											gr.FillSolidRect(this.x + cover_w, this.y + this.h - Math.floor(cList.borderWidth / 2) - 3 * cList.borderWidth, cList.borderWidth, 7 * cList.borderWidth, g_color_selected_bg);
-											gr.FillSolidRect(this.x + this.w - cList.borderWidth, this.y + this.h - Math.floor(cList.borderWidth / 2) - 3 * cList.borderWidth, cList.borderWidth, 7 * cList.borderWidth, g_color_selected_bg);
-											dragndrop.drop_id = this.track_index - 1;
-										};
-									};
-								} else {
-									dragndrop.drop_id = -1;
-								};
-							};
-						};
-					};
-				};
-			};
+			// The internal drag-reorder marker is drawn once by dragndrop_draw() in main.js.
 
 			if (this.ishover && g_dragndrop_status && g_dragndrop_rowId > -1) {
 				if (this.row_index == g_dragndrop_rowId) {
@@ -1044,7 +995,7 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 								dragndrop.y = y;
 								dragndrop.drag_id = this.track_index;
 								dragndrop.timerID = window.SetTimeout(function () {
-									dragndrop.drag_in = dragndrop.enabled; // internal reorder removed
+									dragndrop.drag_in = dragndrop.enabled;
 									dragndrop.timerID && window.ClearTimeout(dragndrop.timerID);
 									dragndrop.timerID = false;
 								}, 250);
@@ -1083,7 +1034,7 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 										dragndrop.contigus_sel = true;
 										dragndrop.drag_id = this.track_index;
 										dragndrop.timerID = window.SetTimeout(function () {
-											dragndrop.drag_in = dragndrop.enabled; // internal reorder removed
+											dragndrop.drag_in = dragndrop.enabled;
 											dragndrop.timerID && window.ClearTimeout(dragndrop.timerID);
 											dragndrop.timerID = false;
 										}, 250);
@@ -1091,7 +1042,7 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 										dragndrop.contigus_sel = false;
 										dragndrop.drag_id = this.track_index;
 										dragndrop.timerID = window.SetTimeout(function () {
-											dragndrop.drag_in = dragndrop.enabled; // internal reorder removed
+											dragndrop.drag_in = dragndrop.enabled;
 											dragndrop.timerID && window.ClearTimeout(dragndrop.timerID);
 											dragndrop.timerID = false;
 										}, 250);
@@ -2334,6 +2285,7 @@ oList = function (object_name, playlist) {
 	};
 
 	this.scrollItems = function (delta, scrollstep) {
+		var prev_offset = this.offset;
 		cList.scroll_direction = (delta < 0 ? -1 : 1);
 		if (delta > 0) { // scroll up
 			this.offset -= scrollstep;
@@ -2351,13 +2303,19 @@ oList = function (object_name, playlist) {
 		p.scrollbar.setCursor(p.list.totalRowVisible, p.list.totalRows, p.list.offset);
 
 		if (properties.smoothscrolling)
-			set_scroll_delta();
+			set_scroll_delta(prev_offset);
 
 		if (!p.list.drawRectSel)
 			full_repaint();
 	};
 
 	this.setItems = function (forceFocus) {
+		this.setItemsAt(forceFocus);
+		// p.list.draw rebuilds when it needs a different base row (smooth scroll).
+		this.items_offset = this.totalRows > this.totalRowVisible ? this.offset : 0;
+	};
+
+	this.setItemsAt = function (forceFocus) {
 		var track_index_in_group = 0;
 		var row_index = 0;
 		var m,
@@ -2489,14 +2447,34 @@ oList = function (object_name, playlist) {
 		return false;
 	};
 
-	this.draw = function (gr) {
+	// `area` (optional): the partial-paint rect. Rows outside it only get their
+	// geometry updated - hover and drag tests read item x/y/w/h.
+	this.draw = function (gr, area) {
 		var item_h = 0;
 
-		if (cList.scroll_timer) {
-			var row_top_y = this.y - (cList.scroll_delta * cList.scroll_direction);
-		} else {
-			var row_top_y = this.y;
+		// Smooth scroll: draw from the eased fractional row (see set_scroll_delta).
+		var pos = this.offset;
+		if (smooth_scroll.active) {
+			if (smooth_scroll.target !== this.offset) {
+				smooth_scroll_stop(); // offset moved by something else (scrollbar drag, keys, focus)
+			} else {
+				pos = smooth_scroll_pos(Date.now());
+				if (Math.abs(pos - this.offset) * cTrack.height < 0.5) {
+					smooth_scroll_stop();
+					pos = this.offset;
+				};
+			};
 		};
+		smooth_scroll.shown = pos;
+		var base_row = Math.floor(pos + 1e-9);
+		if (this.items_offset !== base_row) {
+			var logical_offset = this.offset;
+			this.offset = base_row;
+			this.setItems(false);
+			this.offset = logical_offset;
+		};
+		var row_top_y = this.y - Math.max(0, pos - base_row) * cTrack.height;
+		var clip_rows = !area && row_top_y < this.y;
 		var width = 0;
 
 		if (fb.IsPlaying) {
@@ -2529,11 +2507,34 @@ oList = function (object_name, playlist) {
 			? this.w
 			: this.w - cScrollBar.width;
 		var fin = this.items.length;
+		var it;
+		var trace = SMOOTH_SCROLL_TRACE && smooth_scroll.active;
+		var t_list = trace ? trace_now() : 0;
+		// Rows gliding past the top edge must not paint over the header bar.
+		if (clip_rows)
+			gr.PushClip(this.x, this.y, this.w, this.h);
 		for (var i = 0; i < fin; i++) {
-			item_h = this.items[i].heightInRow * cTrack.height;
-			this.items[i].draw(gr, this.x, row_top_y, width, item_h);
-			row_top_y += item_h - (this.items[i].groupRowDelta * cTrack.height);
+			it = this.items[i];
+			item_h = it.heightInRow * cTrack.height;
+			if (area && (row_top_y >= area.y + area.h || row_top_y + item_h <= area.y)) {
+				it.x = this.x + 1;
+				it.y = row_top_y;
+				it.w = width - 2;
+				it.h = item_h;
+			} else if (trace) {
+				var ti = trace_now();
+				it.draw(gr, this.x, row_top_y, width, item_h);
+				if (it.type == 1) smooth_scroll.header_ms += trace_now() - ti;
+				else smooth_scroll.track_ms += trace_now() - ti;
+			} else {
+				it.draw(gr, this.x, row_top_y, width, item_h);
+			};
+			row_top_y += item_h - (it.groupRowDelta * cTrack.height);
 		};
+		if (clip_rows)
+			gr.PopClip();
+		if (trace)
+			smooth_scroll.list_ms += trace_now() - t_list;
 
 		if (g_dragndrop_status && g_dragndrop_bottom) {
 			var rowId = fin - 1;
@@ -2804,7 +2805,7 @@ oList = function (object_name, playlist) {
 		};
 	};
 
-	// Incremental search is now handled centrally in main.js with jssp semantics
+	// Quick search lives in main.js (qs_* functions)
 	// (substring match over a precomputed haystack, cycling match list, F3 for next).
 	// This shim keeps the old call site name working.
 	this.incrementalSearch = function () {

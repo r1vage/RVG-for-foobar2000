@@ -6,6 +6,8 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js')
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\library_resolver_v2.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\library_actions_v2.js');
 
 window.EraseOnRepaint = false;
 
@@ -15,7 +17,7 @@ window.EraseOnRepaint = false;
 
 window.DefineScript(RivageUI.copy.popupTitle('Playback history'), {
     author: 'RivaGe',
-    version: '6.5.0',
+    version: '6.7.0',
     features: {
         drag_n_drop: false,
         grab_focus: false
@@ -30,10 +32,14 @@ window.DefineScript(RivageUI.copy.popupTitle('Playback history'), {
 var PLAYLIST_NAME = '> History';
 var MAX_DISPLAY_ITEMS = 200;
 
-// An immediately rejected foo_skip item normally changes tracks before the
-// first one-second playback-time sample. Requiring a small amount of observed
-// progress keeps those items out of this panel's visual history.
-var MINIMUM_CONFIRMED_PLAYBACK_SECONDS = 10;
+// A track is logged after a minute of actual listening, or, if it is shorter
+// than that, once it has been heard to the end. Seeking forward adds nothing,
+// so jumping to the end of a short track does not count, and an item foo_skip
+// rejects at once never gets near either threshold.
+var MINIMUM_CONFIRMED_PLAYBACK_SECONDS = 60;
+// on_playback_time samples once a second, so a track heard in full can still
+// come up short of its exact length.
+var TRACK_END_SLACK_SECONDS = 2;
 
 // on_playback_time is documented as a one-second callback. A much larger
 // positive jump is treated as an unreported seek/discontinuity rather than
@@ -689,6 +695,15 @@ function repaintListeningCards(force) {
     }
 }
 
+// Unknown lengths (streams, some formats report 0) need the full minute.
+function requiredPlaybackSeconds(handle) {
+    var length = 0;
+    try { length = Number(handle.Length); } catch (e) { length = 0; }
+    if (!isFinite(length) || length <= 0) return MINIMUM_CONFIRMED_PLAYBACK_SECONDS;
+    return Math.min(MINIMUM_CONFIRMED_PLAYBACK_SECONDS,
+        Math.max(1, length - TRACK_END_SLACK_SECONDS));
+}
+
 function beginActiveTrack(handle) {
     var location;
 
@@ -704,6 +719,7 @@ function beginActiveTrack(handle) {
         timestamp: makeTimestamp(new Date()),
         text: evaluateTrackText(handle),
         playedSeconds: 0,
+        requiredSeconds: requiredPlaybackSeconds(handle),
         lastPosition: currentPlaybackPosition(),
         sourcePlaylistIndex: location.playlistIndex,
         sourcePlaylistItemIndex: location.playlistItemIndex,
@@ -784,7 +800,7 @@ function finaliseActiveTrack(shouldRepaint) {
     activeTrack = null;
 
     if (!completedTrack) return false;
-    if (completedTrack.playedSeconds < MINIMUM_CONFIRMED_PLAYBACK_SECONDS) {
+    if (completedTrack.playedSeconds < completedTrack.requiredSeconds) {
         return false;
     }
 
@@ -1992,10 +2008,26 @@ function showConfigure() {
     }
 }
 
+function historyEntryHandles(historyIndex) {
+    var entry = historyIndex >= 0 ? historyEntries[historyIndex] : null;
+    return entry && entry.handle ? new FbMetadbHandleList([entry.handle]) : null;
+}
+
+function on_mouse_mbtn_up(x, y) {
+    var handles = historyEntryHandles(historyIndexAt(x, y));
+    if (handles) RivageLibraryActions.queue(handles);
+}
+
 function on_mouse_rbtn_up(x, y) {
     var menu = window.CreatePopupMenu();
+    var handles = historyEntryHandles(historyIndexAt(x, y));
+    var libraryState = null;
     var id;
 
+    if (handles) {
+        libraryState = RivageLibraryActions.appendHandles(menu, handles, { separator: false, label: 'track' });
+        menu.AppendMenuSeparator();
+    }
     menu.AppendMenuItem(MF_STRING, MENU_ID.compactMode, 'Use compact layout');
     menu.CheckMenuItem(MENU_ID.compactMode, settings.compactMode);
 
@@ -2016,6 +2048,7 @@ function on_mouse_rbtn_up(x, y) {
     menu.AppendMenuItem(MF_STRING, MENU_ID.configure, RivageUI.copy.labels.panelConfiguration);
 
     id = menu.TrackPopupMenu(x, y);
+    if (RivageLibraryActions.handle(libraryState, id)) return true;
 
     switch (id) {
     case MENU_ID.compactMode:

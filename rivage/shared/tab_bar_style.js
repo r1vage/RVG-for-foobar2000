@@ -177,7 +177,7 @@ var TabBarStyle = (typeof TabBarStyle !== 'undefined') ? TabBarStyle : (function
         try {
             info = resolvedFontInfo();
             current = gdi.Font(info.fontFamily, Math.max(1, info.fontSize), info.fontStyle || 0);
-            chosen = utils.FontPicker(current);
+            chosen = utils.FontPicker(current, window.ID);
         } catch (e) {
             return;
         }

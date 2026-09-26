@@ -18,13 +18,14 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\seekbar_widget.js");
 // Volume bar reuses SeekbarWidget appearance settings; keep this include after seekbar_widget.js.
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\volume_bar_widget.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\design_system.js");
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\power_mode.js");
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 // Shared scrolling-text engine, used by the track-info marquee below.
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\marquee_widget.js");
 
 window.DefineScript("RVG Top Bar", {
     author: "RivaGe (based on a SMP/JScript sample)",
-    version: "3.8.0",
+    version: "3.9.1",
     features: { drag_n_drop: false, grab_focus: false }
 });
 
@@ -172,7 +173,7 @@ function chooseTopbarFont() {
     try {
         // The picker chooses only the face; bar height/DPI still owns text size.
         current = gdi.Font(seedName, Math.max(1, _scale(13)), 0);
-        chosen = utils.FontPicker(current);
+        chosen = utils.FontPicker(current, window.ID);
     } catch (e) {
         return;
     }
@@ -893,9 +894,25 @@ function layoutBar() {
 
 // Painting
 
-function on_paint(gr) {
-    var i, btn, smoothingChanged = false;
+// Unscaled slack for ink past a section's rect (seekbar thumb, hover fill).
+var PAINT_AREA_PAD = 12;
+
+function on_paint(gr, x, y, width, height) {
+    // Marquee, seekbar and artwork updates invalidate one section; skip the others.
+    var area = RivageUI.paintArea(x, y, width, height, ww, wh);
+    var pad = _scale(PAINT_AREA_PAD);
     startMarqueeTimer();
+    if (area) gr.PushClip(area.x, area.y, area.w, area.h);
+    try {
+        paintSections(gr, area, pad);
+    } finally {
+        if (area) gr.PopClip();
+    }
+}
+
+function paintSections(gr, area, pad) {
+    var i, btn, smoothingChanged = false;
+    var hits = RivageUI.areaHits;
 
     // Paint the rectangular Mica/background first. Shape anti-aliasing is only
     // needed by the rounded controls below; enabling it before DrawImage can
@@ -912,14 +929,14 @@ function on_paint(gr) {
         }
     }
 
-    if (layoutRects.art && layoutRects.art.visible) drawArt(gr, layoutRects.art);
-    if (layoutRects.info && layoutRects.info.visible) drawTrackInfo(gr, layoutRects.info);
-    if (layoutRects.seek && layoutRects.seek.visible) seekbar.draw(gr, layoutRects.seek, currentAccent());
-    if (layoutRects.volume && layoutRects.volume.visible) volumeBar.draw(gr, layoutRects.volume, currentAccent());
+    if (layoutRects.art && layoutRects.art.visible && hits(area, layoutRects.art, pad)) drawArt(gr, layoutRects.art);
+    if (layoutRects.info && layoutRects.info.visible && hits(area, layoutRects.info, pad)) drawTrackInfo(gr, layoutRects.info);
+    if (layoutRects.seek && layoutRects.seek.visible && hits(area, layoutRects.seek, pad)) seekbar.draw(gr, layoutRects.seek, currentAccent());
+    if (layoutRects.volume && layoutRects.volume.visible && hits(area, layoutRects.volume, pad)) volumeBar.draw(gr, layoutRects.volume, currentAccent());
 
     for (i = 0; i < allButtons.length; i++) {
         btn = allButtons[i];
-        if (btn.w > 0) drawIconButton(gr, btn);
+        if (btn.w > 0 && hits(area, btn, pad)) drawIconButton(gr, btn);
     }
 
     if (smoothingChanged) {
@@ -1327,6 +1344,8 @@ function on_script_unload() {
 }
 
 function on_notify_data(name, info) {
+    // Scrolling titles stop or resume on the next paint.
+    if (RivagePowerMode.consume(name, info)) { window.Repaint(); return; }
     if (SharedThemeProtocol.consume(name, info)) return;
     // Schema requests are broadcasts, so both provider calls must run before returning.
     var provided = false;

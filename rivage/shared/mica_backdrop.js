@@ -10,13 +10,9 @@
 if (typeof RivageBackdrop === 'undefined') {
     var RivageBackdrop = (function () {
         var CACHE_DIRECTORY = fb.ProfilePath + 'jsplitter\\rivage\\cache\\mica\\';
-        // Radius values are authored against BLUR_REFERENCE_EDGE and rescaled to the
-        // derivative actually produced, so a smaller derivative costs less to blur,
-        // encode and write without changing how blurred the result looks.
-        var BLUR_REFERENCE_EDGE = 640;
         var DEFAULT_MAX_EDGE = 384;
-        var DEFAULT_BLUR_RADIUS = 60;
-        var DEFAULT_TINT_ALPHA = 184;
+        var DEFAULT_BLUR_RADIUS = 70;
+        var DEFAULT_TINT_ALPHA = 158; // 62%, the Global settings default tint strength
         var CURRENT_FILE_CLEANUP_DELAY = 1500;
         var CURRENT_FILE_CLEANUP_RETRY_DELAY = 900;
         var CURRENT_FILE_CLEANUP_MAX_ATTEMPTS = 20;
@@ -196,7 +192,9 @@ if (typeof RivageBackdrop === 'undefined') {
         // The mapped slice is the expensive part of a Mica paint - 21-40 ms per
         // full-window splitter upscaling the blurred source in GDI+ - so it is cached
         // and blitted 1:1, and kept UNTINTED so the cache is independent of the
-        // caller's semantic colour and can be rebuilt at commit time. GDI only.
+        // caller's semantic colour and can be rebuilt at commit time. Direct2D panels
+        // cache one too, in a d2d bitmap: their upscale is cheap on the GPU, but the
+        // cache is where the acrylic grain is baked, so both renderers match exactly.
         var sliceImage = null;
         var sliceKey = '';
         var sliceWidth = 0;
@@ -214,26 +212,164 @@ if (typeof RivageBackdrop === 'undefined') {
             sliceHeight = 0;
         }
 
-        function sliceCacheKey(path, frame, x, y, width, height) {
-            return path + '|' + frame.x + ',' + frame.y + '|' +
+        function sliceCacheKey(drawMode, path, frame, x, y, width, height, noiseAlpha) {
+            return drawMode + '|' + path + '|' + frame.x + ',' + frame.y + '|' +
                 frame.rootWidth + 'x' + frame.rootHeight + '|' +
-                x + ',' + y + '|' + width + 'x' + height;
+                x + ',' + y + '|' + width + 'x' + height + '|n' + noiseAlpha;
         }
 
-        function ensureSlice(image, path, frame, x, y, width, height) {
-            if (currentDrawMode() !== 0 || !image || !frame || !path) return null;
+        // Acrylic grain, baked into the cached slice at 1:1 so it costs nothing per
+        // paint. Never into the derivative, which is upscaled and would turn it into
+        // blotches. It sits under the tint: mid-grey grain lifts whatever it lands on,
+        // and drawn over the darker tinted surface it came out visibly brighter.
+        var MAX_NOISE_PERCENT = 20;
+        var NOISE_TILE_SIZE = 64;
+        // Repeats the same 64 px pattern, so a slice rebuild needs fewer draw calls.
+        var D2D_NOISE_TILE_SIZE = 256;
+        // Nearest neighbour: at 1:1 it copies pixels exactly, where the default
+        // bicubic mode leaves a faint edge on every tile, drawing a grid.
+        var NOISE_INTERPOLATION = 5;
+        // The Direct2D default, restored afterwards; the D2D panels never set their own.
+        var D2D_DEFAULT_INTERPOLATION = 0;
+        // The slice is tinted after it is blitted, which would dim the grain by
+        // (1 - tint); it is drawn stronger to compensate, capped for very high tints.
+        var MAX_NOISE_SLICE_ALPHA = 153;
+        // Indexed by draw mode: a GDI bitmap cannot be drawn by Direct2D, or back.
+        // A panel's draw mode is fixed by its first script line, so only one is built.
+        var noiseTiles = [null, null];
+        var noiseTileFailed = [false, false];
+
+        function noisePercent(descriptor) {
+            return descriptor ? integer(descriptor.noise, 0, MAX_NOISE_PERCENT, 0) : 0;
+        }
+
+        function noiseSliceAlpha(descriptor) {
+            var strength = noisePercent(descriptor) / 100;
+            var untinted = 1 - integer(descriptor && descriptor.tintAlpha, 0, 255, DEFAULT_TINT_ALPHA) / 255;
+            if (strength <= 0 || untinted <= 0) return 0;
+            return integer(255 * strength / untinted, 0, MAX_NOISE_SLICE_ALPHA, 0);
+        }
+
+        function createBitmap(drawMode, width, height) {
+            if (drawMode === 1) {
+                if (typeof d2d === 'undefined' || !d2d || typeof d2d.CreateImage !== 'function') {
+                    throw new Error('Direct2D bitmaps are unavailable');
+                }
+                return d2d.CreateImage(width, height);
+            }
+            return gdi.CreateImage(width, height);
+        }
+
+        // Same seed in every panel and renderer, and tiles are anchored to root
+        // coordinates, so the grain runs continuously across panel boundaries.
+        function fillNoise(graphics) {
+            var state = 0x2f6b9d31;
+            var random = function () {
+                // mulberry32
+                state = (state + 0x6d2b79f5) | 0;
+                var t = multiply32(state ^ (state >>> 15), 1 | state);
+                t = (t + multiply32(t ^ (t >>> 7), 61 | t)) ^ t;
+                return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+            };
+            for (var py = 0; py < NOISE_TILE_SIZE; py++) {
+                for (var px = 0; px < NOISE_TILE_SIZE; px++) {
+                    // Mean of three uniforms: grey grain around mid-tone, few extremes.
+                    var grey = Math.round(255 * (random() + random() + random()) / 3);
+                    graphics.FillSolidRect(px, py, 1, 1,
+                        (0xff000000 | (grey << 16) | (grey << 8) | grey) >>> 0);
+                }
+            }
+        }
+
+        // Repeats `tile` over [x, y, width, height], phased so tile origins fall on
+        // multiples of its size in root coordinates.
+        function tileNoise(graphics, tile, x, y, width, height, rootX, rootY, alpha) {
+            var size = tile.Width;
+            var startX = x - (((rootX % size) + size) % size);
+            var startY = y - (((rootY % size) + size) % size);
+            for (var ty = startY; ty < y + height; ty += size) {
+                for (var tx = startX; tx < x + width; tx += size) {
+                    graphics.DrawImage(tile, tx, ty, size, size, 0, 0, size, size, 0, alpha);
+                }
+            }
+        }
+
+        function ensureNoiseTile(drawMode) {
+            if (noiseTiles[drawMode] || noiseTileFailed[drawMode]) return noiseTiles[drawMode];
+            var base = null;
+            var tile = null;
+            var owner = null;
+            var graphics = null;
+            try {
+                base = createBitmap(drawMode, NOISE_TILE_SIZE, NOISE_TILE_SIZE);
+                owner = base;
+                graphics = base.GetGraphics();
+                fillNoise(graphics);
+                base.ReleaseGraphics(graphics);
+                graphics = null;
+
+                if (drawMode === 1) {
+                    tile = createBitmap(1, D2D_NOISE_TILE_SIZE, D2D_NOISE_TILE_SIZE);
+                    owner = tile;
+                    graphics = tile.GetGraphics();
+                    if (typeof graphics.SetInterpolationMode === 'function') {
+                        graphics.SetInterpolationMode(NOISE_INTERPOLATION);
+                    }
+                    tileNoise(graphics, base, 0, 0, D2D_NOISE_TILE_SIZE, D2D_NOISE_TILE_SIZE, 0, 0, 255);
+                    tile.ReleaseGraphics(graphics);
+                    graphics = null;
+                    disposeBitmap(base);
+                } else {
+                    tile = base;
+                }
+                base = null;
+                noiseTiles[drawMode] = tile;
+            } catch (e) {
+                if (owner && graphics) { try { owner.ReleaseGraphics(graphics); } catch (e2) { } }
+                if (tile && tile !== base) disposeBitmap(tile);
+                disposeBitmap(base);
+                noiseTileFailed[drawMode] = true;
+                reportFailure('the acrylic noise tile could not be generated', e);
+            }
+            return noiseTiles[drawMode];
+        }
+
+        function paintNoise(graphics, drawMode, x, y, width, height, rootX, rootY, alpha) {
+            if (alpha <= 0) return;
+            var tile = ensureNoiseTile(drawMode);
+            if (!tile) return;
+            var canSetInterpolation = typeof graphics.SetInterpolationMode === 'function';
+            try {
+                if (canSetInterpolation) graphics.SetInterpolationMode(NOISE_INTERPOLATION);
+                tileNoise(graphics, tile, x, y, width, height, rootX, rootY, alpha);
+            } catch (e) {
+                reportFailure('the acrylic noise could not be painted', e);
+            } finally {
+                if (canSetInterpolation) {
+                    try {
+                        graphics.SetInterpolationMode(drawMode === 1
+                            ? D2D_DEFAULT_INTERPOLATION : POST_MICA_INTERPOLATION);
+                    } catch (e2) { }
+                }
+            }
+        }
+
+        function ensureSlice(image, path, frame, x, y, width, height, descriptor) {
+            if (!image || !frame || !path) return null;
+            var drawMode = currentDrawMode();
             width = Math.ceil(Number(width) || 0);
             height = Math.ceil(Number(height) || 0);
             if (width <= 0 || height <= 0 || width * height > SLICE_CACHE_MAX_PIXELS) return null;
 
-            var key = sliceCacheKey(path, frame, x, y, width, height);
+            var noiseAlpha = noiseSliceAlpha(descriptor);
+            var key = sliceCacheKey(drawMode, path, frame, x, y, width, height, noiseAlpha);
             if (sliceImage && sliceKey === key) return sliceImage;
 
             var surface = null;
             var graphics = null;
             var drawn = false;
             try {
-                surface = gdi.CreateImage(width, height);
+                surface = createBitmap(drawMode, width, height);
                 if (!surface) return null;
                 graphics = surface.GetGraphics();
                 if (!graphics) { disposeBitmap(surface); return null; }
@@ -244,6 +380,9 @@ if (typeof RivageBackdrop === 'undefined') {
                     canvasHeight: frame.rootHeight,
                     alpha: 255
                 });
+                if (drawn && noiseAlpha > 0) {
+                    paintNoise(graphics, drawMode, 0, 0, width, height, frame.x + x, frame.y + y, noiseAlpha);
+                }
                 surface.ReleaseGraphics(graphics);
                 graphics = null;
             } catch (e) {
@@ -265,7 +404,7 @@ if (typeof RivageBackdrop === 'undefined') {
         // Rebuild inside the COMMIT turn, before any panel repaints, so every upscale
         // happens in one dispatch instead of sweeping the layout panel by panel.
         function rebuildSliceAfterCommit(descriptor) {
-            if (currentDrawMode() !== 0 || !sliceRect || !safeOwnVisible()) return false;
+            if (!sliceRect || !safeOwnVisible()) return false;
             if (!descriptor || !descriptor.enabled || !descriptor.path) return false;
 
             var frame = frameForPaint();
@@ -281,7 +420,7 @@ if (typeof RivageBackdrop === 'undefined') {
             if (!image) return false;
 
             return !!ensureSlice(image, descriptor.path, frame,
-                sliceRect.x, sliceRect.y, sliceRect.width, sliceRect.height);
+                sliceRect.x, sliceRect.y, sliceRect.width, sliceRect.height, descriptor);
         }
 
         function releaseSolidSurface() {
@@ -323,7 +462,8 @@ if (typeof RivageBackdrop === 'undefined') {
                 key: String(key == null ? '' : key),
                 path: '',
                 blurRadius: DEFAULT_BLUR_RADIUS,
-                tintAlpha: integer(tintAlpha, 0, 255, DEFAULT_TINT_ALPHA)
+                tintAlpha: integer(tintAlpha, 0, 255, DEFAULT_TINT_ALPHA),
+                noise: 0
             };
         }
 
@@ -338,7 +478,8 @@ if (typeof RivageBackdrop === 'undefined') {
                 key: descriptor.key,
                 path: descriptor.path,
                 blurRadius: integer(descriptor.blurRadius, 2, 254, DEFAULT_BLUR_RADIUS),
-                tintAlpha: integer(descriptor.tintAlpha, 0, 255, DEFAULT_TINT_ALPHA)
+                tintAlpha: integer(descriptor.tintAlpha, 0, 255, DEFAULT_TINT_ALPHA),
+                noise: integer(descriptor.noise, 0, MAX_NOISE_PERCENT, 0)
             };
             if (copy.enabled && (!copy.path || !isOwnedCachePath(copy.path))) return null;
             if (!copy.enabled) copy.path = '';
@@ -441,80 +582,96 @@ if (typeof RivageBackdrop === 'undefined') {
             producerPrepared = false;
         }
 
-        function buildDescriptor(image, key, options) {
+        // Producer side is split so the render can run elsewhere (artwork Worker):
+        // planDescriptor() either answers at once ({ descriptor }) or reserves a
+        // fresh path ({ job }); completeDescriptor() or discardDescriptorJob() closes it.
+        function planDescriptor(key, options) {
             options = options || {};
             var blurRadius = integer(options.blurRadius, 2, 254, DEFAULT_BLUR_RADIUS);
             var tintAlpha = integer(options.tintAlpha, 0, 255, DEFAULT_TINT_ALPHA);
             var maxEdge = integer(options.maxEdge, 160, 1280, DEFAULT_MAX_EDGE);
             var descriptorKey = String(key == null ? '' : key);
 
-            if (!image || !image.Width || !image.Height) {
-                releaseProducerCache();
-                return disabledDescriptor(descriptorKey, tintAlpha);
-            }
             if (!prepareProducerCache()) {
-                return disabledDescriptor(descriptorKey, tintAlpha);
+                return { descriptor: disabledDescriptor(descriptorKey, tintAlpha) };
             }
 
             var memoKey = descriptorKey + '|' + blurRadius + '|' + maxEdge;
             if (producerCurrentDescriptor && producerCurrentMemoKey === memoKey &&
                 imageExists(producerCurrentDescriptor.path)) {
                 producerCurrentDescriptor.tintAlpha = tintAlpha;
-                return cloneDescriptor(producerCurrentDescriptor);
+                return { descriptor: cloneDescriptor(producerCurrentDescriptor) };
             }
 
             producerSequence += 1;
             var fileName = 'rvg_mica_current_' + producerSession + '_' +
                 hashText(memoKey) + '_' + producerSequence + '.jpg';
-            var path = CACHE_DIRECTORY + fileName;
-            var working = null;
-            var generated = false;
-
-            try {
-                working = image.Clone(0, 0, image.Width, image.Height);
-                if (!working) throw new Error('album-art clone failed');
-
-                var longest = Math.max(working.Width, working.Height);
-                if (longest > maxEdge) {
-                    var ratio = maxEdge / longest;
-                    var resized = working.Resize(
-                        Math.max(1, Math.round(working.Width * ratio)),
-                        Math.max(1, Math.round(working.Height * ratio)),
-                        7
-                    );
-                    if (resized && resized !== working) {
-                        var previous = working;
-                        working = resized;
-                        disposeBitmap(previous);
-                    }
+            return {
+                job: {
+                    key: descriptorKey,
+                    memoKey: memoKey,
+                    path: CACHE_DIRECTORY + fileName,
+                    blurRadius: blurRadius,
+                    tintAlpha: tintAlpha,
+                    maxEdge: maxEdge
                 }
+            };
+        }
 
-                var appliedEdge = Math.max(working.Width, working.Height);
-                working.StackBlur(integer(
-                    blurRadius * appliedEdge / BLUR_REFERENCE_EDGE, 2, 254, blurRadius));
-                generated = !!working.SaveAs(path, 'image/jpeg') && imageExists(path);
-                if (!generated) throw new Error('current-image derivative could not be written');
-            } catch (e) {
-                reportFailure('the blurred current artwork file could not be generated', e);
-            } finally {
-                disposeBitmap(working);
-                working = null;
+        // result: { hasImage, generated }. No artwork retires the current file,
+        // exactly as a disabled theme does.
+        function completeDescriptor(job, result) {
+            result = result || {};
+            if (!result.hasImage) {
+                releaseProducerCache();
+                queueProducerCleanup(job.path);
+                return disabledDescriptor(job.key, job.tintAlpha);
             }
-            if (!generated) return disabledDescriptor(descriptorKey, tintAlpha);
+            if (!result.generated) {
+                queueProducerCleanup(job.path);
+                return disabledDescriptor(job.key, job.tintAlpha);
+            }
 
             var previousPath = producerCurrentDescriptor && producerCurrentDescriptor.path;
             var descriptor = {
                 version: 1,
                 enabled: true,
-                key: descriptorKey,
-                path: path,
-                blurRadius: blurRadius,
-                tintAlpha: tintAlpha
+                key: job.key,
+                path: job.path,
+                blurRadius: job.blurRadius,
+                tintAlpha: job.tintAlpha
             };
-            producerCurrentMemoKey = memoKey;
+            producerCurrentMemoKey = job.memoKey;
             producerCurrentDescriptor = descriptor;
-            if (previousPath && previousPath !== path) queueProducerCleanup(previousPath);
+            if (previousPath && previousPath !== job.path) queueProducerCleanup(previousPath);
             return cloneDescriptor(descriptor);
+        }
+
+        // A superseded job's file may already be written; retire it like any other.
+        function discardDescriptorJob(job) {
+            if (job && job.path) queueProducerCleanup(job.path);
+        }
+
+        // Synchronous producer path; needs shared/mica_derivative.js.
+        function buildDescriptor(image, key, options) {
+            options = options || {};
+            if (!image || !image.Width || !image.Height) {
+                releaseProducerCache();
+                return disabledDescriptor(String(key == null ? '' : key),
+                    integer(options.tintAlpha, 0, 255, DEFAULT_TINT_ALPHA));
+            }
+
+            var plan = planDescriptor(key, options);
+            if (plan.descriptor) return plan.descriptor;
+
+            var generated = false;
+            try {
+                generated = RivageMicaDerivative.render(image, plan.job.path,
+                    plan.job.blurRadius, plan.job.maxEdge);
+            } catch (e) {
+                reportFailure('the blurred current artwork file could not be generated', e);
+            }
+            return completeDescriptor(plan.job, { hasImage: true, generated: generated });
         }
 
         function sharedTheme() {
@@ -1565,7 +1722,7 @@ if (typeof RivageBackdrop === 'undefined') {
 
             syncImage(descriptor.path);
             if (loadedImage && loadedPath === descriptor.path && loadedDrawMode === drawMode) {
-                var cached = ensureSlice(loadedImage, descriptor.path, frame, x, y, width, height);
+                var cached = ensureSlice(loadedImage, descriptor.path, frame, x, y, width, height, descriptor);
                 if (cached) {
                     try {
                         gr.DrawImage(cached, x, y, sliceWidth, sliceHeight,
@@ -1685,7 +1842,7 @@ if (typeof RivageBackdrop === 'undefined') {
         }
 
         return {
-            version: '1.17.1',
+            version: '1.20.0',
             defaults: {
                 maxEdge: DEFAULT_MAX_EDGE,
                 blurRadius: DEFAULT_BLUR_RADIUS,
@@ -1695,6 +1852,9 @@ if (typeof RivageBackdrop === 'undefined') {
             cloneDescriptor: cloneDescriptor,
             disabledDescriptor: disabledDescriptor,
             buildDescriptor: buildDescriptor,
+            planDescriptor: planDescriptor,
+            completeDescriptor: completeDescriptor,
+            discardDescriptorJob: discardDescriptorJob,
             releaseProducerCache: releaseProducerCache,
             disposeProducerCache: disposeProducerCache,
             configureChildPanel: configureChildPanel,

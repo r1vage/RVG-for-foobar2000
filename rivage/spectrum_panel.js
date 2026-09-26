@@ -10,17 +10,19 @@ window.DrawMode = 1;
 
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\power_mode.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\settings_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\audio_pcm_reader.js');
 
 window.EraseOnRepaint = false;
 
 window.DefineScript(RivageUI.copy.popupTitle('Spectrum'), {
     author: 'RivaGe',
-    version: '1.9.0',
+    version: '2.0.0',
     features: {
         drag_n_drop: false,
         grab_focus: false
@@ -1109,28 +1111,27 @@ function decayToSilence(dtMs) {
     return moving;
 }
 
+var pcmReader = AudioPcmReader.create('Spectrum');
+
 function analyseFrame(dtMs) {
     // Ask for exactly the window downmixChunk() will actually use. This was
     // hardcoded to 44100: on a 48k stream it over-requested by 9%, and on a 96k
     // stream by 118%, which only makes an unsatisfiable request more likely.
     var chunkSeconds = Math.max(0.02, settings.fftSize / (analyser.sampleRate || 44100));
-    var chunk;
+    var pcm;
 
     try {
         if (fb.PlaybackTime < chunkSeconds) return false;
-        chunk = fb.GetAudioChunk(chunkSeconds);
     } catch (e) {
         return false;
     }
+    pcm = pcmReader.read(chunkSeconds);
+    if (!pcm) return false;
 
-    if (!chunk) return false;
-
-    var channels = Number(chunk.ChannelCount) || 0;
-    var frames = Number(chunk.SampleCount) || 0;
-    var data = chunk.Data;
-    var rate = Number(chunk.SampleRate) || analyser.sampleRate;
-
-    if (!data || channels < 1 || frames < 1) return false;
+    var channels = pcm.channels;
+    var frames = pcm.frames;
+    var data = pcm.data;
+    var rate = pcm.rate || analyser.sampleRate;
 
     if (rate !== analyser.sampleRate) {
         analyser.sampleRate = rate;
@@ -1234,7 +1235,7 @@ function frameIntervalMs() {
     // Keep the fractional interval. Rounding 30 fps to 33 ms makes it 30.303
     // fps; rounding 60 fps to 17 ms makes it 58.824 fps. Both drift against a
     // normal display refresh and periodically produce an avoidable hitch.
-    return Math.max(8, 1000 / settings.fps);
+    return Math.max(8, 1000 / RivagePowerMode.fps(settings.fps));
 }
 
 function monotonicNowMs() {
@@ -3187,6 +3188,8 @@ function on_font_changed() {
 }
 
 function on_notify_data(name, info) {
+    // The next frame is scheduled with the new cap; nothing else to do.
+    if (RivagePowerMode.consume(name, info)) return;
     if (SharedThemeProtocol.consume(name, info)) return;
     if (SettingsRegistry.provide(name, info, settingsPanelId(), settingsPanelLabel(), getMySettings)) return;
     if (SettingsRegistry.consume(name, info, settingsPanelId(), applyMySetting)) return;
@@ -3337,7 +3340,7 @@ function getMySettings() {
           choiceValueType: 'number', choices: SMOOTH_CHOICES },
 
         { id: 'fps', label: 'Frame rate', type: 'choice', value: settings.fps,
-          choiceValueType: 'number', choices: FPS_CHOICES },
+          choiceValueType: 'number', choices: FPS_CHOICES, hint: RivagePowerMode.capNote(settings.fps) },
         { id: 'attack', label: 'Attack', type: 'choice', value: settings.attack,
           choiceValueType: 'string', choices: BALLISTIC_CHOICES },
         { id: 'release', label: 'Release', type: 'choice', value: settings.release,
@@ -3744,7 +3747,8 @@ function showContextMenu(x, y) {
     builder.addChoiceSubmenu(analysisMenu, 'Neighbour smoothing', SMOOTH_CHOICES, settings.spectralSmooth, 'spectralSmooth');
     analysisMenu.AppendTo(menu, MENU_STRING, 'Analysis');
 
-    builder.addChoiceSubmenu(ballisticsMenu, 'Frame rate', FPS_CHOICES, settings.fps, 'fps');
+    builder.addChoiceSubmenu(ballisticsMenu, 'Frame rate' + RivagePowerMode.capMenuSuffix(settings.fps),
+        FPS_CHOICES, settings.fps, 'fps');
     builder.addChoiceSubmenu(ballisticsMenu, 'Attack', BALLISTIC_CHOICES, settings.attack, 'attack');
     builder.addChoiceSubmenu(ballisticsMenu, 'Release', BALLISTIC_CHOICES, settings.release, 'release');
     builder.addToggle(ballisticsMenu, 'Fade out when playback stops', 'idleFade');

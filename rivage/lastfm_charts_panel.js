@@ -5,13 +5,14 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\cache_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\track_context.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\library_resolver_v2.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\library_actions_v2.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\lastfm_credentials_protocol.js');
 
-var SCRIPT_VERSION = '1.11.0';
+var SCRIPT_VERSION = '1.13.0';
 window.DefineScript(RivageUI.copy.popupTitle('Last.fm charts'), { author: 'RivaGe', version: SCRIPT_VERSION, features: { drag_n_drop: false } });
 
 var DT_LEFT = 0x00000000;
@@ -1338,6 +1339,11 @@ function on_mouse_lbtn_up(x, y, mask) {
     }
 }
 
+function on_mouse_mbtn_up(x, y, mask) {
+    var hit = hitAt(x, y);
+    if (hit && hit.meta) RivageLibraryActions.queueDescriptor(hit.meta);
+}
+
 function on_mouse_wheel(step) {
     return false;
 }
@@ -1518,6 +1524,7 @@ function apply_lastfm_credentials(creds) {
 }
 
 function on_notify_data(name, info) {
+    if (CacheProtocol.consumeClear(name, info, 'lastfmCharts', clearApiCache)) return;
     if (SharedThemeProtocol.consume(name, info)) return;
     if (LastfmCredentialsProtocol.consume(name, info, apply_lastfm_credentials)) return;
     if (SettingsRegistry.provide(name, info, SETTINGS_PANEL_ID, SETTINGS_PANEL_LABEL, getMySettings)) return;

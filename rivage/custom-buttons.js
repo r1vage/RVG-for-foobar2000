@@ -10,6 +10,7 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\settings_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\foobar_actions.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\track_context.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\miniplayer_protocol.js");
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\quick_switcher_protocol.js");
 
 // window.DefineScript's third options member is `features`, not `options`
 // (see docs/html/window.html#.DefineScript). A misnamed key is silently
@@ -17,7 +18,7 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\miniplayer_protocol.js");
 // focus grabbing and drag-and-drop.
 window.DefineScript(RivageUI.copy.popupTitle("Custom buttons"), {
     author: "RivaGe",
-    version: "2.15.0",
+    version: "2.16.0",
     features: { drag_n_drop: false, grab_focus: false }
 });
 
@@ -314,6 +315,7 @@ var BUILTIN_ACTIONS = Object.freeze([
     { id: "library_search", label: "Search library" },
     { id: "toggle_settings_panel", label: "Show/hide SETTINGS panel" },
     { id: "toggle_mini_player", label: "Enter Mini Player" },
+    { id: "toggle_quick_switcher", label: "Open quick switcher" },
 
     // Opens the MusicBrainz.org release search for the target track's
     // %artist%/%album% in the default browser. The Tagging button's default
@@ -2630,6 +2632,9 @@ function executeBuiltin(id, options) {
             } catch (e) {
                 return false;
             }
+        case "toggle_quick_switcher":
+            // quick_switcher_panel.js answers; nothing happens if it is not in the layout.
+            return QuickSwitcherProtocol.toggle();
         case "show_console":
             if (typeof fb.ShowConsole === "function") fb.ShowConsole();
             else return runTopbarMain(TOPBAR_MENU_COMMANDS.console, "Console");

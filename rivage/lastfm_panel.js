@@ -12,7 +12,7 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\lastfm_credentials_protocol
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 
-window.DefineScript('RVG Last.fm', { author: 'RivaGe', version: '2.8.2', features: { drag_n_drop: false } });
+window.DefineScript('RVG Last.fm', { author: 'RivaGe', version: '2.9.0', features: { drag_n_drop: false } });
 
 // Narrow failure reporting. Most empty catches in this file guard host reads
 // and cleanup calls that are *expected* to fail (an aborted request, a timer
@@ -1417,6 +1417,10 @@ function on_mouse_lbtn_up(x, y, mask) {
 		}
 	}
 	if (down_id) { down_id = ''; window.Repaint(); }
+}
+function on_mouse_mbtn_up(x, y, mask) {
+	var l = link_at(x, y);
+	if (l && l.meta) RivageLibraryActions.queueDescriptor(l.meta);
 }
 function on_mouse_rbtn_up(x, y, mask) {
 	if ((mask & MK_SHIFT) !== 0) return false;

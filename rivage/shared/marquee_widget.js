@@ -11,6 +11,12 @@ var MarqueeWidget = (typeof MarqueeWidget !== 'undefined') ? MarqueeWidget : (fu
 
     function noop() {}
 
+    // Soft dependency: panels that include shared/power_mode.js get still titles in
+    // low-power mode; draw() returning false makes callers paint their static text.
+    function lowPower() {
+        return typeof RivagePowerMode !== 'undefined' && RivagePowerMode.isLow();
+    }
+
     function create(options) {
         options = options || {};
 
@@ -82,7 +88,7 @@ var MarqueeWidget = (typeof MarqueeWidget !== 'undefined') ? MarqueeWidget : (fu
         }
 
         function startTimer() {
-            if (state.timer !== null || !state.image) return;
+            if (state.timer !== null || !state.image || lowPower()) return;
             if (skipWorkWhenHidden && !isVisible()) return;
 
             var generation = state.timerGeneration + 1;
@@ -102,6 +108,11 @@ var MarqueeWidget = (typeof MarqueeWidget !== 'undefined') ? MarqueeWidget : (fu
 
                 try {
                     state.timer = null;
+
+                    if (lowPower()) {
+                        state.phase = 'pause';
+                        return;
+                    }
 
                     if (skipWorkWhenHidden && !isVisible()) {
                         if (!stopTimerWhenHidden) schedule(cfg.interval);
@@ -223,7 +234,7 @@ var MarqueeWidget = (typeof MarqueeWidget !== 'undefined') ? MarqueeWidget : (fu
         }
 
         function draw(gr, rect) {
-            if (!state.image || !rect) return false;
+            if (!state.image || !rect || lowPower()) return false;
 
             // Whole-pixel offset keeps both blits 1:1; a fractional source resamples the text.
             var offset = Math.floor(state.phase === 'scroll'

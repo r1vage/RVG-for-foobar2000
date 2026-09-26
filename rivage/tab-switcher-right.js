@@ -2,7 +2,7 @@ window.DrawMode = 0; // Force GDI+ before creating fonts or other drawing object
 
 window.DefineScript('RVG Bottom Tabs', {
     author: 'RivaGe',
-    version: '6.3.1'
+    version: '6.9.0'
 });
 
 // Narrow failure reporting. Most empty catches in this file guard timer
@@ -22,6 +22,8 @@ function reportFailure(what, err) {
 
 // Persistent authority for shared artwork theme/accent, global settings and `> History`.
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\power_mode.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\health_checks.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\material_colour.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_engine.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
@@ -36,6 +38,7 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\tab_bar_style.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\panel_host_kit.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_derivative.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\playback_stats_source.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\track_context.js');
 
@@ -68,6 +71,14 @@ var PROPERTY_EXTRACTION_ALGORITHM = PROPERTY_PREFIX + 'Extraction algorithm'; //
 var PROPERTY_GLOBAL_THEME = PROPERTY_PREFIX + 'Global theme mode';
 var PROPERTY_MICA_BLUR_RADIUS = PROPERTY_PREFIX + 'Mica blur radius';
 var PROPERTY_MICA_TINT_STRENGTH = PROPERTY_PREFIX + 'Mica tint strength';
+var PROPERTY_MICA_NOISE = PROPERTY_PREFIX + 'Mica acrylic noise'; // % opacity, 0 = off
+// Declared before micaNoise is read below: normaliseMicaNoise() runs at load.
+var MICA_NOISE_CHOICES = [
+    { value: 0, label: 'Off' },
+    { value: 2, label: 'Subtle' },
+    { value: 4, label: 'Medium' },
+    { value: 6, label: 'Strong' }
+];
 var PROPERTY_HISTORY_PLAYLIST_ENABLED = PROPERTY_PREFIX + 'History playlist enabled';
 var PROPERTY_RESIZING_MODE = 'RIVAGE.Layout.EnableResizingMode';
 var PROPERTY_PRESETS_SIDE = 'RIVAGE.Layout.PresetsSide'; // 'left' | 'right'
@@ -129,8 +140,9 @@ var MAX_PENDING_HISTORY_ITEMS = 32;
 var extractionAlgorithm = String(window.GetProperty(PROPERTY_EXTRACTION_ALGORITHM, 'material'));
 if (extractionAlgorithm !== 'legacy') extractionAlgorithm = 'material';
 var globalThemeMode = SharedThemeProtocol.normaliseMode(window.GetProperty(PROPERTY_GLOBAL_THEME, 'mica'));
-var micaBlurRadius = normaliseMicaBlurRadius(window.GetProperty(PROPERTY_MICA_BLUR_RADIUS, 60));
-var micaTintStrength = normaliseMicaTintStrength(window.GetProperty(PROPERTY_MICA_TINT_STRENGTH, 68));
+var micaBlurRadius = normaliseMicaBlurRadius(window.GetProperty(PROPERTY_MICA_BLUR_RADIUS, 70));
+var micaTintStrength = normaliseMicaTintStrength(window.GetProperty(PROPERTY_MICA_TINT_STRENGTH, 62));
+var micaNoise = normaliseMicaNoise(window.GetProperty(PROPERTY_MICA_NOISE, 2));
 
 // This panel's tab bar is a dark surface (COLOUR_TAB_BAR below), so tell the engine to
 // tone-correct extracted colours as if drawn on a dark background.
@@ -145,14 +157,28 @@ function clamp(value, minimum, maximum) {
 
 function normaliseMicaBlurRadius(value) {
     value = Number(value);
-    if (!isFinite(value)) value = 60;
+    if (!isFinite(value)) value = 70;
     return Math.round(clamp(value, 8, 96));
 }
 
 function normaliseMicaTintStrength(value) {
     value = Number(value);
-    if (!isFinite(value)) value = 68;
+    if (!isFinite(value)) value = 62;
     return Math.round(clamp(value, 35, 95));
+}
+
+function normaliseMicaNoise(value) {
+    value = Number(value);
+    for (var i = 0; i < MICA_NOISE_CHOICES.length; i++) {
+        if (MICA_NOISE_CHOICES[i].value === value) return value;
+    }
+    return 2;
+}
+
+// The theme actually rendered: low-power mode paints Mica as the plain artwork
+// palette (Artwork auto builds the same palette) without touching the setting.
+function effectiveThemeMode() {
+    return globalThemeMode === 'mica' && RivagePowerMode.isLow() ? 'album-auto' : globalThemeMode;
 }
 
 function micaTintAlpha() {
@@ -403,11 +429,205 @@ function accentSeedHandle() {
     return null;
 }
 
+function applyExtractedTheme(theme, descriptor) {
+    lastThemePayload = theme || fallbackThemePayload;
+    lastBackdropDescriptor = descriptor ||
+        RivageBackdrop.disabledDescriptor(lastThemePayload.key, micaTintAlpha());
+    // The tint can change while a render is in flight; it is paint-only.
+    lastBackdropDescriptor.tintAlpha = micaTintAlpha();
+    lastExtractedAccent = SharedAccentProtocol.opaque(lastThemePayload.accent);
+    return republishAccent();
+}
+
+// Artwork worker (JSplitter 4.2+): decode, palette and Mica blur leave the UI thread.
+// One request in flight; newer ones wait in artworkQueued and supersede it. Any worker
+// failure falls back to extractAccentSync() for good.
+var ARTWORK_WORKER_FILE = fb.ProfilePath + 'jsplitter\\rivage\\shared\\artwork_worker.js';
+var ARTWORK_WORKER_TIMEOUT = 15000;
+var artworkWorker = null;
+var artworkWorkerDisabled = typeof Worker === 'undefined';
+var artworkInFlight = null;
+var artworkQueued = null;
+var artworkRequestSequence = 0;
+
+function discardArtworkJob(request) {
+    if (request && request.job) RivageBackdrop.discardDescriptorJob(request.job);
+}
+
+function finishArtworkRequest() {
+    var request = artworkInFlight;
+    artworkInFlight = null;
+    if (request && request.timer !== null) {
+        try { window.ClearTimeout(request.timer); } catch (e) { }
+    }
+    return request;
+}
+
+function disableArtworkWorker(reason) {
+    if (!artworkWorkerDisabled) {
+        reportFailure('artwork worker disabled, extracting on the panel thread', reason);
+    }
+    artworkWorkerDisabled = true;
+    if (artworkWorker) {
+        try { artworkWorker.terminate(); } catch (e) { }
+        artworkWorker = null;
+    }
+    var request = finishArtworkRequest();
+    discardArtworkJob(request);
+    var pending = artworkQueued || (request && !request.superseded ? request : null);
+    artworkQueued = null;
+    if (pending && scriptActive) extractAccentSync(pending.seed);
+}
+
+function ensureArtworkWorker() {
+    if (artworkWorkerDisabled) return null;
+    if (artworkWorker) return artworkWorker;
+    try {
+        artworkWorker = new Worker({ file: ARTWORK_WORKER_FILE }, 'rvg-artwork');
+        artworkWorker.onmessage = onArtworkWorkerMessage;
+        artworkWorker.onerror = function (event) {
+            disableArtworkWorker(event && event.message);
+        };
+        artworkWorker.onmessageerror = function (event) {
+            disableArtworkWorker(event && event.errorMessage);
+        };
+    } catch (e) {
+        artworkWorker = null;
+        disableArtworkWorker(e);
+    }
+    return artworkWorker;
+}
+
+// Superseded work still replies; its file is retired then.
+function cancelArtworkWork() {
+    if (artworkInFlight) artworkInFlight.superseded = true;
+    artworkQueued = null;
+}
+
+// true when handled: answered from the memos, or posted.
+function startArtworkRequest(seed, worker) {
+    var mica = effectiveThemeMode() === 'mica';
+    var key = seed ? AlbumAccentEngine.key_for(seed) : null;
+    var theme = AlbumAccentEngine.lookupTheme(key);
+    var plan = null;
+    if (mica) {
+        plan = RivageBackdrop.planDescriptor(key === null ? '' : key, {
+            blurRadius: micaBlurRadius,
+            tintAlpha: micaTintAlpha()
+        });
+    }
+    if (theme && (!plan || plan.descriptor)) {
+        applyExtractedTheme(theme, plan ? plan.descriptor : null);
+        return true;
+    }
+    if (!seed) {
+        if (plan && plan.job) RivageBackdrop.discardDescriptorJob(plan.job);
+        return false;
+    }
+
+    var request = {
+        id: ++artworkRequestSequence,
+        seed: seed,
+        key: key,
+        mica: mica,
+        job: plan && plan.job ? plan.job : null,
+        descriptor: plan && plan.descriptor ? plan.descriptor : null,
+        superseded: false,
+        timer: null
+    };
+    try {
+        worker.postMessage({
+            type: 'extract',
+            id: request.id,
+            handle: seed,
+            config: {
+                algorithm: extractionAlgorithm,
+                backgroundTone: AlbumAccentEngine.backgroundTone,
+                fixedAccent: AlbumAccentEngine.FIXED_ACCENT
+            },
+            job: request.job ? {
+                path: request.job.path,
+                blurRadius: request.job.blurRadius,
+                maxEdge: request.job.maxEdge
+            } : null
+        });
+    } catch (e) {
+        discardArtworkJob(request);
+        disableArtworkWorker(e);
+        return false;
+    }
+
+    artworkInFlight = request;
+    try {
+        request.timer = window.SetTimeout(function () {
+            request.timer = null;
+            if (artworkInFlight === request) {
+                disableArtworkWorker('no reply within ' + ARTWORK_WORKER_TIMEOUT + ' ms');
+            }
+        }, ARTWORK_WORKER_TIMEOUT);
+    } catch (e2) {
+        request.timer = null;
+    }
+    return true;
+}
+
+function onArtworkWorkerMessage(event) {
+    var reply = event && event.data;
+    if (!reply || reply.type !== 'extracted' || !artworkInFlight || reply.id !== artworkInFlight.id) return;
+    var request = finishArtworkRequest();
+
+    if (!scriptActive) {
+        discardArtworkJob(request);
+        return;
+    }
+    if (reply.error || !reply.theme) {
+        discardArtworkJob(request);
+        if (!request.superseded && !artworkQueued) artworkQueued = { seed: request.seed };
+        disableArtworkWorker(reply.error || 'empty reply');
+        return;
+    }
+
+    if (request.superseded) {
+        discardArtworkJob(request);
+    } else {
+        // The palette holds in any mode; the derivative only if Mica is still on.
+        var mica = request.mica && effectiveThemeMode() === 'mica';
+        var descriptor = mica ? request.descriptor : null;
+        if (request.job && mica) {
+            descriptor = RivageBackdrop.completeDescriptor(request.job, {
+                hasImage: !!reply.hasArtwork,
+                generated: !!reply.generated
+            });
+        } else {
+            discardArtworkJob(request);
+        }
+        AlbumAccentEngine.rememberTheme(request.key, reply.theme);
+        applyExtractedTheme(reply.theme, descriptor);
+    }
+
+    var queued = artworkQueued;
+    artworkQueued = null;
+    if (queued) extractAndBroadcastAccent(queued.seed);
+}
+
 function extractAndBroadcastAccent(handle) {
     var seed = handle || accentSeedHandle();
+    var worker = ensureArtworkWorker();
+    if (worker) {
+        if (artworkInFlight) {
+            artworkInFlight.superseded = true;
+            artworkQueued = { seed: seed };
+            return lastExtractedAccent;
+        }
+        if (startArtworkRequest(seed, worker)) return lastExtractedAccent;
+    }
+    return extractAccentSync(seed);
+}
+
+function extractAccentSync(seed) {
     var artwork = null;
 
-    if (globalThemeMode === 'mica') {
+    if (effectiveThemeMode() === 'mica') {
         artwork = AlbumAccentEngine.load_artwork(seed);
         try {
             lastThemePayload = artwork
@@ -433,11 +653,13 @@ function extractAndBroadcastAccent(handle) {
     return republishAccent();
 }
 
-// A skip chain delivers real transitions milliseconds apart, and each distinct
-// track still decodes artwork and fans a theme update out to the whole layout.
-// Wait for playback to settle and extract only for the track still current.
+// A skip chain delivers transitions milliseconds apart, and every published theme
+// fans a repaint out to the whole layout. With the worker a lone change goes out at
+// once; a change within ACCENT_SETTLE_DELAY of the previous one waits for the chain
+// to settle. Without it every change waits, since each one decodes on this thread.
 var accentSettleTimer = null;
 var ACCENT_SETTLE_DELAY = 250;
+var lastAccentChangeAt = 0;
 
 function cancelScheduledAccentRefresh() {
     if (accentSettleTimer !== null) {
@@ -446,9 +668,19 @@ function cancelScheduledAccentRefresh() {
     }
 }
 
-function scheduleAccentRefresh() {
+function scheduleAccentRefresh(handle) {
     cancelScheduledAccentRefresh();
     if (!scriptActive) return;
+    var now = Date.now();
+    var chained = now - lastAccentChangeAt < ACCENT_SETTLE_DELAY;
+    lastAccentChangeAt = now;
+    if (chained) {
+        // The track that started the chain is already stale.
+        cancelArtworkWork();
+    } else if (ensureArtworkWorker()) {
+        extractAndBroadcastAccent(handle);
+        return;
+    }
     try {
         accentSettleTimer = window.SetTimeout(function () {
             accentSettleTimer = null;
@@ -476,7 +708,7 @@ function buildPublishedThemePayload() {
     }
 
     var payload = cloneThemePayload(sourcePayload);
-    payload.mode = globalThemeMode;
+    payload.mode = effectiveThemeMode();
 
     if (globalThemeMode === 'host') {
         compatibilityAccent = RivageUI.hostInfo().accent;
@@ -491,9 +723,11 @@ function buildPublishedThemePayload() {
     }
 
     payload.accent = SharedAccentProtocol.opaque(compatibilityAccent);
-    payload.backdrop = globalThemeMode === 'mica'
+    payload.backdrop = effectiveThemeMode() === 'mica'
         ? RivageBackdrop.cloneDescriptor(lastBackdropDescriptor)
         : null;
+    // Paint-only, like the tint: stamped at publish so no render or memo sees it.
+    if (payload.backdrop) payload.backdrop.noise = micaNoise;
 
     return {
         payload: payload,
@@ -602,7 +836,13 @@ function setGlobalThemeMode(mode) {
     if (next === globalThemeMode) return true;
     if (!trySetProperty(PROPERTY_GLOBAL_THEME, next)) return false;
     globalThemeMode = next;
-    if (next === 'mica') extractAndBroadcastAccent();
+    applyEffectiveThemeMode();
+    return true;
+}
+
+// Starts or stops Mica rendering to match effectiveThemeMode().
+function applyEffectiveThemeMode() {
+    if (effectiveThemeMode() === 'mica') extractAndBroadcastAccent();
     else {
         lastBackdropDescriptor = RivageBackdrop.disabledDescriptor(lastThemePayload.key, micaTintAlpha());
         republishAccent();
@@ -613,15 +853,19 @@ function setGlobalThemeMode(mode) {
     }
     // Theme transitions are paint-only. Child frame snapshots stay valid and
     // Mica geometry discovery is handled independently through NotifyOthers.
-    return true;
 }
+
+// Low-power mode only changes what is rendered when the chosen theme is Mica.
+RivagePowerMode.onChange(function () {
+    if (globalThemeMode === 'mica') applyEffectiveThemeMode();
+});
 
 function setMicaBlurRadius(value) {
     var next = normaliseMicaBlurRadius(value);
     if (next === micaBlurRadius) return true;
     if (!trySetProperty(PROPERTY_MICA_BLUR_RADIUS, next)) return false;
     micaBlurRadius = next;
-    if (globalThemeMode === 'mica') extractAndBroadcastAccent();
+    if (effectiveThemeMode() === 'mica') extractAndBroadcastAccent();
     return true;
 }
 
@@ -631,7 +875,16 @@ function setMicaTintStrength(value) {
     if (!trySetProperty(PROPERTY_MICA_TINT_STRENGTH, next)) return false;
     micaTintStrength = next;
     if (lastBackdropDescriptor) lastBackdropDescriptor.tintAlpha = micaTintAlpha();
-    if (globalThemeMode === 'mica') republishAccent();
+    if (effectiveThemeMode() === 'mica') republishAccent();
+    return true;
+}
+
+function setMicaNoise(value) {
+    var next = normaliseMicaNoise(value);
+    if (next === micaNoise) return true;
+    if (!trySetProperty(PROPERTY_MICA_NOISE, next)) return false;
+    micaNoise = next;
+    if (effectiveThemeMode() === 'mica') republishAccent();
     return true;
 }
 
@@ -1945,7 +2198,7 @@ function on_playback_new_track(handle) {
         historyPlaylistActiveTrack = null;
     }
 
-    scheduleAccentRefresh();
+    scheduleAccentRefresh(handle);
 }
 
 function on_playback_time(time) {
@@ -2011,7 +2264,7 @@ function getGlobalSettings() {
     var general = [
         { id: 'rvgRelease', label: release.fullName, type: 'info', section: 'General',
           value: 'Version: ' + release.version + '\nAuthor: ' + release.author },
-        { id: 'globalThemeMode', label: 'Global theme', type: 'choice', section: 'General',
+        { id: 'globalThemeMode', label: 'Global theme', type: 'choice', section: 'Appearance',
           value: globalThemeMode,
           choiceValueType: 'string',
           choices: RivageUI.copy.themeChoices({
@@ -2025,15 +2278,21 @@ function getGlobalSettings() {
               mica: 'mica'
           })
         },
-        { id: 'micaBlurRadius', label: 'Mica blur radius', type: 'number', section: 'General',
+        { id: 'micaBlurRadius', label: 'Mica blur radius', type: 'number', section: 'Appearance',
           value: micaBlurRadius, min: 8, max: 96, step: 2,
           hidden: globalThemeMode !== 'mica',
           hint: 'Blur applied once per artwork image before it is shared across the skin.' },
-        { id: 'micaTintStrength', label: 'Mica tint strength (%)', type: 'number', section: 'General',
+        { id: 'micaTintStrength', label: 'Mica tint strength (%)', type: 'number', section: 'Appearance',
           value: micaTintStrength, min: 35, max: 95, step: 1,
           hidden: globalThemeMode !== 'mica',
           hint: 'Higher values improve contrast; lower values reveal more of the blurred artwork.' },
-        { id: 'globalAccentMode', label: 'Shared accent source', type: 'choice', section: 'General',
+        { id: 'micaNoise', label: 'Acrylic noise', type: 'choice', section: 'Appearance',
+          value: micaNoise,
+          choiceValueType: 'number',
+          choices: MICA_NOISE_CHOICES,
+          hidden: globalThemeMode !== 'mica',
+          hint: 'Fine grain over the blurred artwork, as on Windows acrylic. Hides colour banding in dark covers.' },
+        { id: 'globalAccentMode', label: 'Shared accent source', type: 'choice', section: 'Appearance',
           value: globalAccentMode,
           hidden: !globalThemeUsesConfiguredAccent(),
           hint: 'Used by panels set to Shared accent. Some global themes override this source.',
@@ -2044,12 +2303,12 @@ function getGlobalSettings() {
               custom: GlobalAccentMode.Custom
           })
         },
-        { id: 'globalAccentEffective', label: 'Shared accent', type: 'info', section: 'General',
+        { id: 'globalAccentEffective', label: 'Shared accent', type: 'info', section: 'Appearance',
           value: effectiveSharedAccentLabel(),
           hidden: globalThemeUsesConfiguredAccent(),
           hint: 'The selected global theme overrides Shared accent source.' },
         { id: 'globalAccentCustomColour', label: 'Custom shared accent', type: 'colour',
-          value: globalAccentCustomColour, section: 'General',
+          value: globalAccentCustomColour, section: 'Appearance',
           hidden: !globalThemeUsesConfiguredAccent() || globalAccentMode !== GlobalAccentMode.Custom },
         { id: 'historyPlaylistEnabled', label: 'Maintain "> History" playlist', type: 'bool',
           value: historyPlaylistEnabled, section: 'General',
@@ -2066,7 +2325,7 @@ function getGlobalSettings() {
           ]
         },
         { id: 'extractionAlgorithm', label: 'Artwork colour extraction', type: 'choice',
-          value: extractionAlgorithm, section: 'General',
+          value: extractionAlgorithm, section: 'Appearance',
           choiceValueType: 'string',
           choices: [
               { value: 'material', label: 'Material palette (recommended)' },
@@ -2082,12 +2341,80 @@ function getGlobalSettings() {
           section: 'General', hint: 'Shared by the Last.fm panel and Last.fm charts panel' }
     ];
 
+    var health = RivageHealth.schemaRows(ensureHealth(), HEALTH_SECTION);
+
     return general
-        .concat(settingsWithSection(RivageScale.getSchemaEntries(), 'General'))
+        .concat(settingsWithSection(RivageScale.getSchemaEntries(), 'Appearance'))
+        .concat(settingsWithSection(RivagePowerMode.getSchemaEntries(), 'General'))
         .concat(settingsWithSection(PlaybackStatsSource.getSchemaEntries(), 'General'))
         .concat(settingsWithSection(TrackContext.getSchemaEntries(), 'General'))
-        .concat(lastfm);
+        .concat(lastfm)
+        .concat(health);
 }
+
+// ---------------------------------------------------------------------------
+// Health check (shared/health_checks.js): cached, re-run from its Check again row.
+
+var HEALTH_SECTION = 'Health';
+var PROPERTY_HEALTH_SEEN_VERSION = 'RIVAGE.Health.Seen version';
+var HEALTH_OPEN_REQUEST = 'RIVAGE.HEALTH.OPEN.V1';
+var SETTINGS_OPEN_SECTION = 'RIVAGE.SETTINGS.OPEN_SECTION.V1';
+var SETTINGS_OPEN_SECTION_ACK = 'RIVAGE.SETTINGS.OPEN_SECTION_ACK.V1';
+var healthResult = null;
+var healthOpenTimer = null;
+var healthOpenAttempts = 0;
+
+function runHealth() {
+    healthResult = RivageHealth.run({
+        lastfmApiKey: lastfmApiKey,
+        lastfmUsername: lastfmUsername,
+        statsSourceIs2003: PlaybackStatsSource.isPlaycount2003()
+    });
+    return healthResult;
+}
+
+function ensureHealth() {
+    return healthResult || runHealth();
+}
+
+function stopHealthOpenRetries() {
+    if (healthOpenTimer !== null) { try { window.ClearTimeout(healthOpenTimer); } catch (e) { } }
+    healthOpenTimer = null;
+}
+
+// Shows RVG Settings on Global settings > Health. The Settings script only starts
+// once its panel is shown, so the request repeats until it is acknowledged.
+function openHealthInSettings() {
+    try { window.NotifyOthers('RIVAGE.TOGGLE_PANEL_VISIBILITY', { caption: 'SETTINGS', show: true }); } catch (e) { }
+    stopHealthOpenRetries();
+    healthOpenAttempts = 0;
+    var send = function () {
+        healthOpenTimer = null;
+        try { window.NotifyOthers(SETTINGS_OPEN_SECTION, { panelId: GLOBAL_SETTINGS_PANEL_ID, section: HEALTH_SECTION }); } catch (e2) { }
+        if (++healthOpenAttempts < 25) healthOpenTimer = window.SetTimeout(send, 300);
+    };
+    send();
+}
+
+// Once per RVG version: open Health if something required is missing, and on the
+// very first start also if anything recommended is.
+function checkHealthOnStartup() {
+    var result = runHealth();
+    var version = RivageUI.release.version;
+    var seen = String(window.GetProperty(PROPERTY_HEALTH_SEEN_VERSION, ''));
+    var show = (result.failing.required > 0 && seen !== version) ||
+        (seen === '' && (result.failing.required > 0 || result.failing.recommended > 0));
+    trySetProperty(PROPERTY_HEALTH_SEEN_VERSION, version);
+    try {
+        console.log('[RVG Health] ' + RivageHealth.summaryText(result) +
+            (show ? ' Opening Global settings > Health.' : ''));
+    } catch (e) { }
+    if (show) openHealthInSettings();
+}
+
+try {
+    window.SetTimeout(checkHealthOnStartup, 4000);
+} catch (e) { }
 
 function getMiniPlayerPanelSettings() {
     return [
@@ -2131,6 +2458,11 @@ function applyMiniPlayerSetting(settingId, value) {
 }
 
 function applyGlobalSetting(settingId, value) {
+    var healthAction = RivageHealth.handleAction(healthResult, settingId);
+    if (healthAction) {
+        if (healthAction === 'recheck') runHealth();
+        return;
+    }
     if (settingId === 'globalThemeMode') {
         setGlobalThemeMode(value);
         return;
@@ -2141,6 +2473,10 @@ function applyGlobalSetting(settingId, value) {
     }
     if (settingId === 'micaTintStrength') {
         setMicaTintStrength(value);
+        return;
+    }
+    if (settingId === 'micaNoise') {
+        setMicaNoise(value);
         return;
     }
     if (settingId === 'globalAccentMode') {
@@ -2176,6 +2512,7 @@ function applyGlobalSetting(settingId, value) {
         return;
     }
     if (RivageScale.applySetting(settingId, value)) return;
+    if (RivagePowerMode.applySetting(settingId, value)) return;
     if (settingId === 'trackContextMode') {
         TrackContext.applySetting(settingId, value);
         TrackContext.broadcast();
@@ -2188,6 +2525,10 @@ function on_notify_data(name, info) {
     // This panel produces the shared theme rather than consuming it through
     // SharedThemeProtocol.consume(), so route Mica geometry traffic explicitly.
     if (RivageBackdrop.consumeGeometry(name, info)) return;
+    // Sole authority: other panels (Quick switcher) ask to switch with SET.
+    if (RivagePowerMode.consumeSet(name, info)) return;
+    if (name === SETTINGS_OPEN_SECTION_ACK) { stopHealthOpenRetries(); return; }
+    if (name === HEALTH_OPEN_REQUEST) { runHealth(); openHealthInSettings(); return; }
 
     SettingsRegistry.provide(name, info, TabBarStyle.PANEL_ID, TabBarStyle.PANEL_LABEL, TabBarStyle.getSchema);
     SettingsRegistry.provide(name, info, GLOBAL_SETTINGS_PANEL_ID, GLOBAL_SETTINGS_PANEL_LABEL, getGlobalSettings);
@@ -2270,7 +2611,9 @@ function initialiseTabs() {
     if (!scriptActive) return;
     panelWidth = Math.max(0, Math.floor(Number(window.Width)) || 0);
     panelHeight = Math.max(0, Math.floor(Number(window.Height)) || 0);
-    extractAndBroadcastAccent();
+    // Startup stays synchronous so the first layout paints in its real colours.
+    extractAccentSync(accentSeedHandle());
+    ensureArtworkWorker();
 
     if (!scanChildPanels()) {
         requestChildRefresh(true);
@@ -2326,6 +2669,10 @@ function on_script_unload() {
     childWatchTimer = null;
     childRefreshPending = false;
     layoutRequestPending = false;
+    if (artworkWorker) {
+        try { artworkWorker.terminate(); } catch (e3) { }
+        artworkWorker = null;
+    }
     RivageBackdrop.disposeProducerCache();
     if (activePersistenceDirty) persistActiveTab();
     if (tabIdOwnersDirty) persistTabIdOwners();

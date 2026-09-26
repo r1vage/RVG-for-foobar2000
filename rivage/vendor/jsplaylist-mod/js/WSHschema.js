@@ -254,7 +254,11 @@ function settings_schema() {
 	{ section: "Search", items: [
 		{ id: "search.typeToSearch", type: "toggle", label: "Type to search", get: function () { return properties.directSearchEnabled; },
 			set: function (v) { properties.directSearchEnabled = v; window.SetProperty("CUSTOM.Direct Search Enabled", v); if (!v) clear_incremental_search(); full_repaint(); } },
-		{ id: "search.keys", type: "info", label: "Keyboard shortcuts", get: function () { return "F3: next result; Esc: clear"; } }
+		{ id: "search.clearAfter", type: "number", label: "Close after (seconds, 0 = never)", min: 0, max: 30, get: function () { return properties.searchClearSeconds; },
+			set: function (v) { sset("CUSTOM.Search Clear Seconds", "searchClearSeconds", v); } },
+		{ id: "search.previewRows", type: "number", label: "Preview rows (0 = hidden)", min: 0, max: 12, get: function () { return properties.searchPreviewRows; },
+			set: function (v) { sset("CUSTOM.Search Preview Rows", "searchPreviewRows", v); } },
+		{ id: "search.keys", type: "info", label: "Keyboard shortcuts", get: function () { return "Up/Down, F3/Shift+F3: move; Tab: field; Enter: play; Esc: back"; } }
 	]},
 
 	{ section: "Fonts", items: [

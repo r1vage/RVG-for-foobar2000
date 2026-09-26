@@ -194,6 +194,27 @@ var RivageUI = (function (existing) {
             x < rect.x + rect.w && y < rect.y + rect.h;
     }
 
+    // on_paint(gr, x, y, w, h) update rect (JSplitter 4.2+). null = whole panel,
+    // which is also what an older host that passes only gr gets.
+    function paintArea(x, y, width, height, panelWidth, panelHeight) {
+        var w = Number(width);
+        var h = Number(height);
+        if (!(w > 0) || !(h > 0)) return null;
+        x = Number(x) || 0;
+        y = Number(y) || 0;
+        if (x <= 0 && y <= 0 && x + w >= panelWidth && y + h >= panelHeight) return null;
+        return { x: x, y: y, w: w, h: h };
+    }
+
+    // pad covers ink a section draws past its own rect (seekbar thumb, rims).
+    function areaHits(area, rect, pad) {
+        if (!area) return true;
+        if (!rect) return false;
+        pad = pad || 0;
+        return rect.x - pad < area.x + area.w && area.x < rect.x + rect.w + pad &&
+            rect.y - pad < area.y + area.h && area.y < rect.y + rect.h + pad;
+    }
+
     function defaultScale(value) {
         if (Number(value) === 0) return 0;
         return Math.max(1, Math.round(Number(value) || 0));
@@ -561,7 +582,7 @@ var RivageUI = (function (existing) {
         // semantic surfaces become local acrylic layers over that composition.
         theme.backgroundAlt = withAlpha(theme.backgroundAlt, 218);
         theme.header = withAlpha(theme.header, 188);
-        theme.card = withAlpha(theme.card, 184);
+        theme.card = withAlpha(theme.card, 168);   // 66%
         theme.cardHover = withAlpha(theme.cardHover, 214);
         theme.rowHover = withAlpha(theme.rowHover, 198);
         theme.surfaceSubtle = withAlpha(theme.surfaceSubtle, 166);
@@ -1462,7 +1483,7 @@ var RivageUI = (function (existing) {
         popupTitle: popupTitle
     };
 
-    api.version = '1.8.2';
+    api.version = '1.9.1';
     api.release = RVG_RELEASE;
     api.DEFAULT_ACCENT = rgb(0, 120, 212);
     api.placeholderArt = placeholderArt;
@@ -1545,6 +1566,8 @@ var RivageUI = (function (existing) {
     api.contrastingForegroundForBackgrounds = contrastingForegroundForBackgrounds;
     api.rect = makeRect;
     api.pointInRect = pointInRect;
+    api.paintArea = paintArea;
+    api.areaHits = areaHits;
     api.font = safeFont;
     api.clearFontCache = clearFontCache;
     api.measureText = measureText;

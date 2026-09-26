@@ -262,6 +262,37 @@ var RivageLibraryActions = (typeof RivageLibraryActions !== 'undefined') ? Rivag
         return false;
     }
 
+    // Select the tracks without playing them: in the first ordinary playlist that
+    // holds the first one (all of them that playlist holds get selected), else in
+    // the RVG Search playlist. Selection-following panels pick the track up.
+    function reveal(handles) {
+        if (!handles || handles.Count <= 0) return false;
+        if (showExisting(handles)) {
+            try {
+                var p = plman.ActivePlaylist;
+                var items = plman.GetPlaylistItems(p);
+                var array = RivageLibraryResolver.listToArray(handles);
+                var rows = [];
+                for (var i = 0; i < array.length; i++) {
+                    var at = items.Find(array[i]);
+                    if (at >= 0) rows.push(at);
+                }
+                if (rows.length > 1) plman.SetPlaylistSelection(p, rows, true);
+            } catch (e) { reportFailure('the other tracks could not be selected', e); }
+            return true;
+        }
+        var index = writableScratchPlaylist(SEARCH_PLAYLIST);
+        var insertedAt = insertHandles(index, handles, true);
+        if (insertedAt < 0 || !activatePlaylist(index, insertedAt, false)) return false;
+        try {
+            plman.ClearPlaylistSelection(index);
+            var all = [];
+            for (var r = 0; r < handles.Count; r++) all.push(r);
+            plman.SetPlaylistSelection(index, all, true);
+        } catch (e2) { reportFailure('the tracks could not be selected', e2); }
+        return true;
+    }
+
     function openUrl(url) {
         url = trimText(url);
         if (!isWebUrl(url)) return false;
@@ -276,17 +307,34 @@ var RivageLibraryActions = (typeof RivageLibraryActions !== 'undefined') ? Rivag
     }
 
     function append(menu, descriptor, options) {
-        options = options || {};
         if (!menu || !descriptor) return null;
         var result = RivageLibraryResolver.resolve(descriptor);
+        return build(menu, result, descriptor, 'Play local ' + descriptorLabel(descriptor), options || {});
+    }
+
+    // The same menu for tracks a panel already holds (Rewind, Rediscover, history).
+    // options.label names them ('artist', 'album', 'track', 'tracks'); an optional
+    // options.descriptor feeds the Search library count, else it searches the handles.
+    function appendHandles(menu, handles, options) {
+        options = options || {};
+        if (!menu) return null;
+        if (!handles) handles = new FbMetadbHandleList();
+        var result = options.descriptor ? RivageLibraryResolver.resolve(options.descriptor)
+            : { all: handles, count: handles.Count };
+        result = { all: result.all, count: result.count, action: handles };
+        var state = build(menu, result, options.descriptor || {}, 'Play ' + (options.label || 'tracks'), options);
+        state.local = true;
+        return state;
+    }
+
+    function build(menu, result, descriptor, playLabel, options) {
         var hasLocal = result.action && result.action.Count > 0;
         var hasWeb = isWebUrl(descriptor.url);
         var playlistTargets = [];
         var p, name;
-        var label = descriptorLabel(descriptor);
 
         if (options.separator !== false) menu.AppendMenuSeparator();
-        menu.AppendMenuItem(hasLocal ? MF_STRING : MF_GRAYED, CMD_PLAY, 'Play local ' + label);
+        menu.AppendMenuItem(hasLocal ? MF_STRING : MF_GRAYED, CMD_PLAY, playLabel);
         menu.AppendMenuItem(hasLocal ? MF_STRING : MF_GRAYED, CMD_PLAY_NEXT, 'Play next');
         menu.AppendMenuItem(hasLocal ? MF_STRING : MF_GRAYED, CMD_QUEUE, 'Add to playback queue');
 
@@ -319,11 +367,12 @@ var RivageLibraryActions = (typeof RivageLibraryActions !== 'undefined') ? Rivag
         if (!state || !command) return false;
         var result = state.result;
         var i, target, name, index, insertedAt;
-        if (command === CMD_PLAY) { playHandles(result.action); return true; }
+        if (command === CMD_PLAY) { playInActivePlaylist(result.action); return true; }
         if (command === CMD_PLAY_NEXT) { playNext(result.action); return true; }
         if (command === CMD_QUEUE) { queueHandles(result.action); return true; }
         if (command === CMD_SHOW) {
-            if (!showExisting(result.action)) searchPlaylist(result);
+            if (state.local) reveal(result.action);
+            else if (!showExisting(result.action)) searchPlaylist(result);
             return true;
         }
         if (command === CMD_SEARCH) { searchPlaylist(result); return true; }
@@ -351,5 +400,94 @@ var RivageLibraryActions = (typeof RivageLibraryActions !== 'undefined') ? Rivag
         return false;
     }
 
-    return { append: append, handle: handle };
+    // Play where the tracks already are: the first of them the active playlist holds
+    // starts playing there, so the rest of that playlist follows. Otherwise they
+    // play from the RVG Actions playlist.
+    function playInActivePlaylist(handles) {
+        if (!handles || handles.Count <= 0) return false;
+        return playFromActivePlaylist(handles) || playHandles(handles);
+    }
+
+    // The same without the fallback: false when the active playlist lacks them.
+    function playFromActivePlaylist(handles) {
+        if (!handles || handles.Count <= 0) return false;
+        try {
+            var p = plman.ActivePlaylist;
+            if (p >= 0 && !isInternalPlaylistName(plman.GetPlaylistName(p))) {
+                var items = plman.GetPlaylistItems(p);
+                var array = RivageLibraryResolver.listToArray(handles);
+                for (var i = 0; i < array.length; i++) {
+                    var at = items.Find(array[i]);
+                    if (at < 0) continue;
+                    try { plman.ClearPlaylistSelection(p); plman.SetPlaylistSelectionSingle(p, at, true); } catch (e0) { }
+                    plman.SetPlaylistFocusItem(p, at);
+                    plman.ExecutePlaylistDefaultAction(p, at);
+                    return true;
+                }
+            }
+        } catch (e) { reportFailure('the track could not be played from the active playlist', e); }
+        return false;
+    }
+
+    // Middle click on remote rows (Last.fm): queue the local match, if any.
+    function queueDescriptor(descriptor) {
+        if (!descriptor) return false;
+        return queueHandles(RivageLibraryResolver.resolve(descriptor).action);
+    }
+
+    // Direct entry points for callers that build their own UI (quick_switcher_panel.js).
+    function playHandlesAt(handles, at) {
+        if (!handles || handles.Count <= 0) return false;
+        var index = writableScratchPlaylist(ACTION_PLAYLIST);
+        var insertedAt = insertHandles(index, handles, true);
+        var start = Math.max(0, Math.min(handles.Count - 1, Number(at) || 0));
+        return insertedAt >= 0 && activatePlaylist(index, insertedAt + start, true);
+    }
+
+    function addToPlaylist(handles, playlistIndex) {
+        var insertedAt = insertHandles(playlistIndex, handles, false);
+        return insertedAt >= 0 && activatePlaylist(playlistIndex, insertedAt, false);
+    }
+
+    function addToNewPlaylist(handles, name) {
+        name = trimText(name);
+        if (!name || !handles || handles.Count <= 0) return false;
+        return addToPlaylist(handles, createNewPlaylist(name));
+    }
+
+    // Playlists a user would add tracks to: writable, and not RVG's own scratch lists.
+    function playlistTargets() {
+        var out = [];
+        var p, name;
+        for (p = 0; p < plman.PlaylistCount; p++) {
+            if (!canAddToPlaylist(p)) continue;
+            try { name = plman.GetPlaylistName(p); } catch (e) { continue; }
+            if (name === ACTION_PLAYLIST || name === SEARCH_PLAYLIST || isQueueRecoveryPlaylistName(name)) continue;
+            out.push({ index: p, name: name });
+        }
+        return out;
+    }
+
+    function isInternalPlaylistName(name) {
+        return name === ACTION_PLAYLIST || name === SEARCH_PLAYLIST || isQueueRecoveryPlaylistName(name);
+    }
+
+    return {
+        append: append,
+        appendHandles: appendHandles,
+        handle: handle,
+        play: playHandles,
+        playAt: playHandlesAt,
+        playNext: playNext,
+        queue: queueHandles,
+        show: showExisting,
+        reveal: reveal,
+        queueDescriptor: queueDescriptor,
+        playInActivePlaylist: playInActivePlaylist,
+        playFromActivePlaylist: playFromActivePlaylist,
+        addToPlaylist: addToPlaylist,
+        addToNewPlaylist: addToNewPlaylist,
+        playlistTargets: playlistTargets,
+        isInternalPlaylistName: isInternalPlaylistName
+    };
 })();

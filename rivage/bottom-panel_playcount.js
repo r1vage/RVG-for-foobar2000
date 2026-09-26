@@ -13,7 +13,7 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 
 window.DefineScript("RVG Playback Statistics", {
     author: "RivaGe",
-    version: "2.13.0",
+    version: "2.13.1",
     features: { drag_n_drop: false, grab_focus: false }
 });
 
@@ -376,14 +376,8 @@ function applyMySetting(settingId, value) {
 }
 
 var statsTfo = {
-    localPlayed: fb.TitleFormat("%play_count%"),
-    localFirst: fb.TitleFormat("%first_played%"),
-    localLast: fb.TitleFormat("%last_played%"),
-    local2003Played: fb.TitleFormat("%2003_playcount%"),
-    local2003First: fb.TitleFormat("%2003_first_played%"),
     local2003FirstAgo: fb.TitleFormat("%2003_first_played_ago%"),
     local2003FirstAgo2: fb.TitleFormat("%2003_first_played_ago2%"),
-    local2003Last: fb.TitleFormat("%2003_last_played%"),
     local2003LastAgo: fb.TitleFormat("%2003_last_played_ago%"),
     local2003LastAgo2: fb.TitleFormat("%2003_last_played_ago2%"),
     enhancedFirst: fb.TitleFormat("%first_played_enhanced%"),
@@ -396,24 +390,40 @@ var statsTfo = {
     lastfmLastLegacy: fb.TitleFormat("$if2(%last_scrobble%,$if2(%last.fm last scrobble%,))")
 };
 
-function localPlayedValueForHandle(handle) {
-    return PlaybackStatsSource.isPlaycount2003() ?
-        evaluateForHandle(statsTfo.local2003Played, handle) :
-        evaluateForHandle(statsTfo.localPlayed, handle);
+// Plays / first / last for the active backend, from PlaybackStatsSource.fields();
+// recompiled only when the backend changes.
+var localStatsTfo = { source: null, played: null, first: null, last: null };
+
+function localStatsFormats() {
+    var fields = PlaybackStatsSource.fields();
+    if (localStatsTfo.source !== fields.source) {
+        localStatsTfo.source = fields.source;
+        localStatsTfo.played = fb.TitleFormat(fields.plays);
+        localStatsTfo.first = fb.TitleFormat(fields.first);
+        localStatsTfo.last = fb.TitleFormat(fields.last);
+    }
+    return localStatsTfo;
 }
 
+function localPlayedValueForHandle(handle) {
+    return evaluateForHandle(localStatsFormats().played, handle);
+}
+
+// Playcount 2003 also offers "ago" forms of the dates (modes 1 and 2).
 function localFirstValueForHandle(handle, mode) {
-    if (!PlaybackStatsSource.isPlaycount2003()) return evaluateForHandle(statsTfo.localFirst, handle);
-    if (mode === 1) return evaluateForHandle(statsTfo.local2003FirstAgo, handle);
-    if (mode === 2) return evaluateForHandle(statsTfo.local2003FirstAgo2, handle);
-    return evaluateForHandle(statsTfo.local2003First, handle);
+    if (PlaybackStatsSource.isPlaycount2003()) {
+        if (mode === 1) return evaluateForHandle(statsTfo.local2003FirstAgo, handle);
+        if (mode === 2) return evaluateForHandle(statsTfo.local2003FirstAgo2, handle);
+    }
+    return evaluateForHandle(localStatsFormats().first, handle);
 }
 
 function localLastValueForHandle(handle, mode) {
-    if (!PlaybackStatsSource.isPlaycount2003()) return evaluateForHandle(statsTfo.localLast, handle);
-    if (mode === 1) return evaluateForHandle(statsTfo.local2003LastAgo, handle);
-    if (mode === 2) return evaluateForHandle(statsTfo.local2003LastAgo2, handle);
-    return evaluateForHandle(statsTfo.local2003Last, handle);
+    if (PlaybackStatsSource.isPlaycount2003()) {
+        if (mode === 1) return evaluateForHandle(statsTfo.local2003LastAgo, handle);
+        if (mode === 2) return evaluateForHandle(statsTfo.local2003LastAgo2, handle);
+    }
+    return evaluateForHandle(localStatsFormats().last, handle);
 }
 
 var statsCache = {

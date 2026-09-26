@@ -9,8 +9,10 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\settings_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\design_system.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\visible_paint_work.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\mica_backdrop.js");
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\cache_protocol.js");
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\musicbrainz_gate.js");
 
-const PANEL_VERSION = '1.3.0';
+const PANEL_VERSION = '1.4.0';
 
 window.DefineScript(RivageUI.copy.popupTitle('MusicBrainz tagger'), {
     author: 'RivaGe',
@@ -38,6 +40,7 @@ const MB_ROOT = 'https://musicbrainz.org/ws/2';
 // MusicBrainz caps anonymous clients at one request a second and rejects a
 // generic User-Agent outright, so both are hard requirements, not tuning.
 const MB_MIN_INTERVAL_MS = 1100;
+const REQUEST_TIMEOUT_MS = 45000;
 const INC_BRIEF = 'artist-credits+labels+release-groups+media';
 const INC_FULL = 'artist-credits+labels+release-groups+media+recordings';
 
@@ -209,6 +212,7 @@ let requestContexts = new Map();
 let requestTimer = 0;
 let lastRequestAt = 0;
 let blockedUntil = 0;
+let requestWatchdog = 0;
 let networkDebug = { state: 'idle', kind: '', at: 0, httpStatus: 0, detail: '' };
 
 let cache = null;
@@ -552,7 +556,8 @@ function pumpRequestQueue() {
     const now = Date.now();
     const wait = Math.max(
         Math.max(0, MB_MIN_INTERVAL_MS - (now - lastRequestAt)),
-        Math.max(0, blockedUntil - now)
+        Math.max(0, blockedUntil - now),
+        MusicBrainzGate.wait(MB_MIN_INTERVAL_MS, now)
     );
     if (wait > 0) {
         requestTimer = window.SetTimeout(pumpRequestQueue, wait);
@@ -569,6 +574,8 @@ function pumpRequestQueue() {
         const taskId = utils.HTTPRequestAsync(0, context.url, requestHeaders());
         lastRequestAt = Date.now();
         requestContexts.set(taskId, context);
+        armRequestWatchdog(taskId);
+        MusicBrainzGate.announce(blockedUntil);
         setNetworkDebug('requesting', context.kind, context.url, 0);
     } catch (e) {
         // Deferred, or a host that throws for every URL would recurse through
@@ -578,12 +585,31 @@ function pumpRequestQueue() {
     }
 }
 
+// A request the host never settles would hold the serial queue forever, so
+// give up on it and treat it like a dropped connection.
+function armRequestWatchdog(taskId) {
+    clearTimer(requestWatchdog);
+    requestWatchdog = window.SetTimeout(function () {
+        requestWatchdog = 0;
+        if (!scriptActive) return;
+        const context = requestContexts.get(taskId);
+        if (!context) return;
+        requestContexts.delete(taskId);
+        if (context.generation !== generation) {
+            pumpRequestQueue();
+            return;
+        }
+        handleRequestFailure(context, 0, 'No response after ' + Math.round(REQUEST_TIMEOUT_MS / 1000) + ' s');
+    }, REQUEST_TIMEOUT_MS);
+}
+
 function handleRequestFailure(context, status, detail) {
     if (context.generation !== generation) return;
 
     if (isTransientHttpStatus(status) && Number(context.retries || 0) < MAX_TRANSIENT_RETRIES) {
         const delay = transientRetryDelay(context.retries);
         blockedUntil = Math.max(blockedUntil, Date.now() + delay);
+        MusicBrainzGate.announce(blockedUntil);
         requestQueue.unshift(Object.assign({}, context, { retries: Number(context.retries || 0) + 1 }));
         setNetworkDebug('retrying', context.kind, 'Retry in ' + Math.round(delay / 1000) + ' s.', status);
         statusText = 'MusicBrainz is rate limiting or unavailable; retrying\u2026';
@@ -619,6 +645,8 @@ function on_http_request_done(taskId, success, responseText, status) {
     const context = requestContexts.get(taskId);
     if (!context) return;
     requestContexts.delete(taskId);
+    clearTimer(requestWatchdog);
+    requestWatchdog = 0;
 
     if (context.generation !== generation) {
         pumpRequestQueue();
@@ -1926,12 +1954,7 @@ function on_mouse_rbtn_up(x, y) {
             performUndo();
             break;
         case CMD_CLEAR_CACHE:
-            cache = emptyCache();
-            cacheDirty = true;
-            saveCacheFile();
-            statusText = 'Cached releases cleared.';
-            statusIsError = false;
-            rebuildRows();
+            clearCache();
             break;
         case CMD_SETTINGS:
             try {
@@ -2087,7 +2110,18 @@ function applyTaggerSetting(settingId, value) {
     }
 }
 
+function clearCache() {
+    cache = emptyCache();
+    cacheDirty = true;
+    saveCacheFile();
+    statusText = 'Cached releases cleared.';
+    statusIsError = false;
+    rebuildRows();
+}
+
 function on_notify_data(name, info) {
+    if (CacheProtocol.consumeClear(name, info, 'musicbrainzTagger', clearCache)) return;
+    if (MusicBrainzGate.consume(name, info)) return;
     if (SharedThemeProtocol.consume(name, info, function () {
         updateTheme();
         SharedThemeProtocol.requestRepaint();

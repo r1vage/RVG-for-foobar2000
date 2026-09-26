@@ -4,17 +4,19 @@
 // accent; it never decodes artwork or performs colour scoring itself.
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\power_mode.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\settings_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\audio_pcm_reader.js');
 
 window.EraseOnRepaint = false;
 
 window.DefineScript('RVG VU Meter', {
     author: 'Case + marc2003; adapted by RivaGe',
-    version: '2.9.0',
+    version: '3.1.0',
     features: {
         drag_n_drop: false,
         grab_focus: false
@@ -43,7 +45,10 @@ function reportFailure(what, err) {
 var PROPERTY_PREFIX = 'RIVAGE.VUMETER.';
 var SETTINGS_PANEL_ID_PREFIX = 'vu_meter-';
 var INSTANCE_ID_PROPERTY = PROPERTY_PREFIX + 'Instance id';
+// Identity, not appearance: kept out of DEFAULTS so a reset never renames it.
+var PANEL_NAME_PROPERTY = PROPERTY_PREFIX + 'Panel name';
 var instanceId = '';
+var panelName = String(window.GetProperty(PANEL_NAME_PROPERTY, '') || '').trim().slice(0, 48);
 
 function makeInstanceId() {
     var random = Math.floor(Math.random() * 0x100000000).toString(36);
@@ -66,7 +71,40 @@ function settingsPanelId() {
 }
 
 function settingsPanelLabel() {
-    return 'VU meter ' + instanceId;
+    return panelName || ('VU meter ' + instanceId);
+}
+
+function setPanelName(value) {
+    var next = String(value == null ? '' : value).trim().slice(0, 48);
+    if (next === panelName) return;
+    window.SetProperty(PANEL_NAME_PROPERTY, next);
+    panelName = next;
+}
+
+// Which window owns this instance, so two meters can be told apart in Settings.
+function describePanelWindow() {
+    var parts = [];
+    try {
+        var name = String(window.Name || '').trim();
+        if (name) parts.push('"' + name + '"');
+    } catch (e) { }
+    try {
+        parts.push(Math.round(window.Width) + ' x ' + Math.round(window.Height));
+    } catch (e2) { }
+    parts.push(VisiblePaintWork.isVisible() ? 'visible' : 'hidden');
+    return parts.join('  -  ');
+}
+
+function renameThisPanel() {
+    var entered;
+    try {
+        entered = utils.InputBox(window.ID,
+            'Name shown in RVG Settings.\nLeave blank to use the automatic name.',
+            RivageUI.copy.popupTitle('VU meter'), panelName, true);
+    } catch (e) {
+        return; // cancelled
+    }
+    setPanelName(entered);
 }
 
 var DEFAULTS = {
@@ -770,17 +808,16 @@ AudioMeter.prototype.update_graph = function (generation) {
 
     if (Number(fb.PlaybackTime) < this.rms_window) return;
 
-    var chunk;
-    try { chunk = fb.GetAudioChunk(this.rms_window); } catch (e) { return; }
-    if (!chunk) return;
+    var pcm = pcmReader.read(this.rms_window);
+    if (!pcm) return;
 
-    var count = Math.max(1, Math.round(Number(chunk.ChannelCount) || 0));
-    var data = chunk.Data;
-    var frameLength = Math.max(0, Math.round(Number(chunk.SampleCount) || 0));
-    if (!data || !data.length || frameLength <= 0) return;
+    var count = pcm.channels;
+    var data = pcm.data;
+    var samples = pcm.samples;
+    var frameLength = pcm.frames;
 
     this.channels.count = count;
-    this.channels.config = Number(chunk.ChannelConfig) || 0;
+    this.channels.config = pcm.config;
     this.RMS_levels.length = count;
     this.Peak_levels.length = count;
     this.peakHoldElapsed.length = count;
@@ -788,8 +825,8 @@ AudioMeter.prototype.update_graph = function (generation) {
     for (var c = 0; c < count; c++) {
         var sum = 0;
         var peak = 0;
-        for (var i = c; i < data.length; i += count) {
-            var sample = Math.abs(Number(data[i]) || 0);
+        for (var i = c; i < samples; i += count) {
+            var sample = Math.abs(data[i]);
             if (sample > peak) peak = sample;
             sum += sample * sample;
         }
@@ -830,6 +867,7 @@ AudioMeter.prototype.shutdown = function () {
 };
 
 var vuMeter = new AudioMeter();
+var pcmReader = AudioPcmReader.create('VU Meter');
 
 function suspendMeterForVisibility() {
     // A playback callback can restart polling while the panel is hidden, so always stop here.
@@ -844,13 +882,16 @@ function resumeMeterIfVisible() {
 }
 
 function applyMeterEngineSettings(restartTimer) {
-    vuMeter.timer_interval = 1000 / settings.fps;
+    vuMeter.timer_interval = 1000 / RivagePowerMode.fps(settings.fps);
     vuMeter.rms_window = settings.rmsWindowMs / 1000;
     if (!restartTimer) return;
 
     vuMeter.stop_timer();
     if (fb.IsPlaying && !playbackPaused && !fb.IsPaused) vuMeter.start_timer();
 }
+
+// The meter runs on an interval timer, so a new cap needs a restart.
+RivagePowerMode.onChange(function () { applyMeterEngineSettings(true); });
 
 function clearPeakMarkers() {
     var count = Math.max(1, Number(vuMeter.channels.count) || 1);
@@ -1853,7 +1894,10 @@ function channelAt(x, y) {
 
 function getMySettings() {
     var rows = [
+        { id: 'panelName', label: 'Name in Settings', type: 'string', value: panelName,
+          hint: 'how this panel is listed here; blank uses an automatic name' },
         { id: 'instanceId', label: 'Panel instance', type: 'info', value: instanceId },
+        { id: 'panelWindow', label: 'Panel window', type: 'info', value: describePanelWindow() },
 
         { id: 'themeMode', label: 'Theme', type: 'choice', value: settings.themeMode,
           choiceValueType: 'string', choices: THEME_CHOICES },
@@ -1905,7 +1949,7 @@ function getMySettings() {
           min: 1, max: 8, step: 1 },
 
         { id: 'fps', label: 'Frame rate', type: 'choice', value: settings.fps,
-          choiceValueType: 'number', choices: FPS_CHOICES },
+          choiceValueType: 'number', choices: FPS_CHOICES, hint: RivagePowerMode.capNote(settings.fps) },
         { id: 'rmsWindowMs', label: 'RMS averaging window', type: 'choice', value: settings.rmsWindowMs,
           choiceValueType: 'number', choices: RMS_WINDOW_CHOICES },
         { id: 'response', label: 'Meter response', type: 'choice', value: settings.response,
@@ -1918,7 +1962,7 @@ function getMySettings() {
         { id: 'resetDefaults', label: 'Reset VU meter settings', type: 'action', value: false, actionLabel: 'Reset' }
     ];
     for (var i = 0; i < rows.length; i++) {
-        rows[i].section = rows[i].id === 'instanceId' ? 'Diagnostics' : 'Options';
+        rows[i].section = rows[i].id === 'instanceId' || rows[i].id === 'panelWindow' ? 'Diagnostics' : 'Options';
     }
     return rows;
 }
@@ -1930,6 +1974,12 @@ function applyMySetting(settingId, value) {
     var refreshEngineSettings = false;
 
     switch (settingId) {
+    case 'panelName':
+        setPanelName(value);
+        return;
+    case 'instanceId':
+    case 'panelWindow':
+        return;
     case 'themeMode':
         changed = setStoredSetting('themeMode', choiceValue(String(value), THEME_CHOICES, DEFAULTS.themeMode));
         refreshThemeNeeded = changed;
@@ -2157,7 +2207,8 @@ function showContextMenu(x, y) {
     builder.addToggle(overlays, 'Hover tooltip', 'hoverTooltip');
     overlays.AppendTo(menu, MENU_STRING, 'Overlays');
 
-    builder.addChoiceSubmenu(ballistics, 'Frame rate', FPS_CHOICES, settings.fps, 'fps');
+    builder.addChoiceSubmenu(ballistics, 'Frame rate' + RivagePowerMode.capMenuSuffix(settings.fps),
+        FPS_CHOICES, settings.fps, 'fps');
     builder.addChoiceSubmenu(ballistics, 'RMS window', RMS_WINDOW_CHOICES, settings.rmsWindowMs, 'rmsWindowMs');
     builder.addChoiceSubmenu(ballistics, 'Meter response', RESPONSE_CHOICES, settings.response, 'response');
     builder.addChoiceSubmenu(ballistics, 'Peak hold', PEAK_HOLD_CHOICES, settings.peakHoldMs, 'peakHoldMs');
@@ -2170,6 +2221,7 @@ function showContextMenu(x, y) {
         window.NotifyOthers('RIVAGE.TOGGLE_PANEL_VISIBILITY', { caption: 'SETTINGS' });
     });
     menu.AppendMenuSeparator();
+    builder.addAction(menu, 'Rename panel\u2026 (' + settingsPanelLabel() + ')', renameThisPanel);
     builder.addAction(menu, 'Reset VU meter settings', resetSettings);
     builder.addAction(menu, RivageUI.copy.labels.panelConfiguration, function () { window.ShowConfigureV2(); });
 
@@ -2253,7 +2305,7 @@ function on_playback_new_track() {
 
 function on_playback_pause(state) {
     // Set the guard before stopping the timer so an already queued interval
-    // cannot call fb.GetAudioChunk during the pause transition.
+    // cannot read PCM during the pause transition.
     playbackPaused = !!state;
     if (playbackPaused) {
         vuMeter.stop_timer();
@@ -2281,6 +2333,7 @@ function on_font_changed() {
 }
 
 function on_notify_data(name, info) {
+    if (RivagePowerMode.consume(name, info)) return;
     if (SharedThemeProtocol.consume(name, info)) return;
     if (SettingsRegistry.provide(name, info, settingsPanelId(), settingsPanelLabel(), getMySettings)) return;
     if (SettingsRegistry.consume(name, info, settingsPanelId(), applyMySetting)) return;
