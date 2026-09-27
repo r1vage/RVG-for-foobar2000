@@ -53,8 +53,6 @@ var DT_END_ELLIPSIS = 0x00008000;
 var MF_STRING = 0x00000000;
 var MF_GRAYED = 0x00000001;
 
-var MF_STRING = 0x00000000;
-
 var IDC_ARROW = 32512;
 var IDC_HAND  = 32649;
 
@@ -139,7 +137,13 @@ var MAX_PENDING_HISTORY_ITEMS = 32;
 
 var extractionAlgorithm = String(window.GetProperty(PROPERTY_EXTRACTION_ALGORITHM, 'material'));
 if (extractionAlgorithm !== 'legacy') extractionAlgorithm = 'material';
-var globalThemeMode = SharedThemeProtocol.normaliseMode(window.GetProperty(PROPERTY_GLOBAL_THEME, 'mica'));
+// An unreadable saved value falls back to the default (Artwork Mica), not to
+// normaliseMode()'s protocol fallback of Accent dark ('existing').
+var globalThemeMode = (function () {
+    var saved = window.GetProperty(PROPERTY_GLOBAL_THEME, 'mica');
+    var mode = SharedThemeProtocol.normaliseMode(saved);
+    return (mode === 'existing' && String(saved).toLowerCase() !== 'existing') ? 'mica' : mode;
+})();
 var micaBlurRadius = normaliseMicaBlurRadius(window.GetProperty(PROPERTY_MICA_BLUR_RADIUS, 70));
 var micaTintStrength = normaliseMicaTintStrength(window.GetProperty(PROPERTY_MICA_TINT_STRENGTH, 62));
 var micaNoise = normaliseMicaNoise(window.GetProperty(PROPERTY_MICA_NOISE, 2));
@@ -717,7 +721,7 @@ function buildPublishedThemePayload() {
     } else if (globalThemeMode === 'album-auto' || globalThemeMode === 'album-dark' || globalThemeMode === 'album-light' || globalThemeMode === 'mica') {
         // Artwork-palette themes are coherent only when direct Shared accent
         // consumers receive the same artwork-derived accent as the palette.
-        // Keep globalAccentMode untouched so returning to Panel defaults restores
+        // Keep globalAccentMode untouched so returning to Accent dark restores
         // the user's previously configured Shared accent source.
         compatibilityAccent = lastExtractedAccent;
     }

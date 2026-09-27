@@ -97,7 +97,7 @@ var COLOUR_TITLE_TEXT = 0xffb8b8b8;
 var COLOUR_SEPARATOR = 0xff333333;
 var micaSurfaces = false;
 
-// Under Panel defaults the only pixels this theme owns are the gaps and the outer
+// Under Accent dark the only pixels this theme owns are the gaps and the outer
 // padding, so the background has to be the one the child panels paint - 'host', as
 // the splitters already resolve - or every gap reads as a dark groove between them.
 // The artwork modes override the mode themselves.

@@ -288,7 +288,7 @@ function firstUuid(value) {
 function userAgent() {
     const contact = cleanSpaces(contactInfo);
     return 'RVG-MusicBrainzTagger/' + PANEL_VERSION +
-        ' ( ' + (contact || 'foobar2000 RVG skin user') + ' )';
+        ' ( ' + (contact || 'https://github.com/r1vage/rvg-for-foobar2000') + ' )';
 }
 
 function requestHeaders() {

@@ -740,7 +740,7 @@ function refreshTheme() {
         accent: currentPanelAccent()
     };
 
-    // Panel defaults should continue to use the cached host background, but an
+    // Accent dark should continue to use the cached host background, but an
     // explicit shared theme must own its background. Passing hostBackground for
     // RVG dark/light overrides the shared mode inside createTheme(), leaving the
     // Player stuck on the host colour (for example 39,39,39).

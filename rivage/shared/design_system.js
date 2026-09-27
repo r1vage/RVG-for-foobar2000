@@ -22,7 +22,7 @@ var RVG_RELEASE = {
     name: 'RVG',
     fullName: 'RVG skin for foobar2000',
     author: 'RivaGe',
-    version: '0.9.5'
+    version: '1.0.0'
 };
 
 var RivageUI = (function (existing) {
@@ -1426,7 +1426,7 @@ var RivageUI = (function (existing) {
         rvgBlue: 'RVG blue',
         artwork: 'Artwork',
         customColour: 'Custom colour',
-        panelDefaults: 'Panel defaults',
+        panelDefaults: 'Accent dark',
         matchFoobar2000: 'Match foobar2000',
         foobar2000Accent: 'foobar2000 accent',
         rvgDark: 'RVG dark',
@@ -1451,6 +1451,8 @@ var RivageUI = (function (existing) {
 
     function themeChoices(values) {
         var out = [];
+        // Artwork Mica first: it is the default look.
+        pushCopyChoice(out, values, 'mica', copyLabels.artworkMica);
         pushCopyChoice(out, values, 'panelDefaults', copyLabels.panelDefaults);
         pushCopyChoice(out, values, 'host', copyLabels.matchFoobar2000);
         pushCopyChoice(out, values, 'dark', copyLabels.rvgDark);
@@ -1458,7 +1460,6 @@ var RivageUI = (function (existing) {
         pushCopyChoice(out, values, 'artworkAuto', copyLabels.artworkPaletteAutomatic);
         pushCopyChoice(out, values, 'artworkDark', copyLabels.artworkPaletteDark);
         pushCopyChoice(out, values, 'artworkLight', copyLabels.artworkPaletteLight);
-        pushCopyChoice(out, values, 'mica', copyLabels.artworkMica);
         return out;
     }
 

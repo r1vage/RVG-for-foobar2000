@@ -12,7 +12,7 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\track_context.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 
-window.DefineScript(RivageUI.copy.popupTitle('Lyrics'), { author: 'RivaGe', version: '2.9.1', features: { drag_n_drop: false } });
+window.DefineScript(RivageUI.copy.popupTitle('Lyrics'), { author: 'RivaGe', version: '2.9.2', features: { drag_n_drop: false } });
 
 // Narrow failure reporting. Most empty catches in this file guard host reads
 // that are *expected* to fail (an aborted request has no .status, a handle may
@@ -664,8 +664,37 @@ var MXM_BASE = 'https://apic-desktop.musixmatch.com/ws/1.1';
 var MXM_APP_ID = 'web-desktop-app-v1.0';
 var MXM_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
+// The anonymous Musixmatch token is kept in a cache file in the profile, not in
+// a panel property: properties travel with layout (.fcl) exports, and this one
+// had no setting to clear it before sharing a layout.
+var MXM_TOKEN_DIR = fb.ProfilePath + 'jsplitter_lyrics_cache\\';
+var MXM_TOKEN_FILE = MXM_TOKEN_DIR + 'musixmatch_token.txt';
+
+function mxm_read_token() {
+	try {
+		if (!utils.FileExists(MXM_TOKEN_FILE)) return '';
+		return String(utils.ReadTextFile(MXM_TOKEN_FILE) || '').trim();
+	} catch (e) { return ''; }
+}
+function mxm_write_token(value) {
+	try {
+		utils.CreateFolder(MXM_TOKEN_DIR);
+		utils.WriteTextFile(MXM_TOKEN_FILE, value || '');
+		return true;
+	} catch (e) { report_failure('Musixmatch token could not be cached', e); return false; }
+}
+// Earlier versions stored the token in the lyrics.mxm_token property: move it
+// to the cache file once and empty the property.
+(function mxm_migrate_token() {
+	var old = '';
+	try { old = String(window.GetProperty('lyrics.mxm_token', '') || ''); } catch (e) { old = ''; }
+	if (!old) return;
+	if (!mxm_read_token()) mxm_write_token(old);
+	try { window.SetProperty('lyrics.mxm_token', ''); } catch (e2) {}
+})();
+
 function mxm_get_token(token, cb) {
-	var cached = window.GetProperty('lyrics.mxm_token', '');
+	var cached = mxm_read_token();
 	if (cached) { cb(cached); return; }
 	var url = MXM_BASE + '/token.get?' + build_query({ app_id: MXM_APP_ID, format: 'json' });
 	http_get(url, { 'User-Agent': MXM_UA }, token, function (status, text) {
@@ -678,10 +707,7 @@ function mxm_get_token(token, cb) {
 			} catch (e) { report_failure('Musixmatch token response was malformed', e); }
 		}
 		// Losing the cache is not fatal, but it means a fresh token fetch per request.
-		if (t) {
-			try { window.SetProperty('lyrics.mxm_token', t); }
-			catch (e2) { report_failure('Musixmatch token could not be cached', e2); }
-		}
+		if (t) mxm_write_token(t);
 		cb(t);
 	});
 }
@@ -699,8 +725,7 @@ function mxm_call(method, params, token, cb) {
 			if (!hdr || hdr.status_code != 200) {
 				// A rejected cached token must not poison future requests.
 				if (hdr && (hdr.status_code == 401 || hdr.status_code == 400)) {
-					try { window.SetProperty('lyrics.mxm_token', ''); }
-					catch (e2) { report_failure('rejected Musixmatch token could not be cleared', e2); }
+					mxm_write_token('');
 				}
 				cb(null);
 				return;

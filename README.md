@@ -2,7 +2,7 @@
 
 ![RVG for foobar2000](https://i.ibb.co/Xf2XD21K/splash.webp)
 
-**Version 0.9.5** · **Author: RivaGe**
+**Version 1.0.0** · **Author: RivaGe**
 
 RVG is a UWP inspired, panel-based foobar2000 skin built for JSPlitter. It is a very distant descendant of Br3tt's [Curacao](https://www.deviantart.com/br3tt/art/Curacao-v1-0a-Released-104322264) skin I've been using since 2008. The point of it is to be extremely adaptive and customizable - you can add basically any panels and they will be picked up by the skin's panel management engine. Although I've tried to optimize it, this is not a friendly skin for weak computers.
 
@@ -13,7 +13,7 @@ RVG is a UWP inspired, panel-based foobar2000 skin built for JSPlitter. It is a 
 ## Requirements
 
 - **foobar2000 x64** (x32 may work, I haven't tested it).
-- **JSplitter 4+** ([foo_uie_jsplitter](https://github.com/dima-lur/jsplitter), 3.x versions won't work for some panels). Spectrum and VU meter need **4.2.1** or newer.
+- **JSplitter 4.2.1 or newer** ([foo_uie_jsplitter](https://github.com/dima-lur/jsplitter)). Older builds are missing drawing functions RVG relies on, and panels will throw script errors.
 
 - **Required and recommended\* components:**
 
@@ -41,7 +41,7 @@ RVG is a UWP inspired, panel-based foobar2000 skin built for JSPlitter. It is a 
 2. Extract the package so this folder exists: `<foobar2000 profile>\jsplitter\rivage\`.
 3. Keep the folder names as they are; script includes depend on it.
 4. Import Columns UI .fcl file.
-5. Start foobar2000 and **right** click on the top right settings icon to open **RVG Settings**. The release row should show **RVG skin for foobar2000, Version 0.9.5, Author: RivaGe**.
+5. Start foobar2000 and **right** click on the top right settings icon to open **RVG Settings**. The release row should show **RVG skin for foobar2000, Version 1.0.0, Author: RivaGe**.
 6. Disable toolbars for a better look.
 7. Add Last.fm credentials only if you use the Last.fm-backed panels or features.
 8. You can freely copy, move, add and rename panels in Preferences > Columns UI > Layout.
@@ -55,8 +55,8 @@ Most configuration lives in the central **RVG Settings** panel. Panel right-clic
 
 Open **RVG Settings › Global settings** for the settings that affect several panels. The look of the skin — Global theme and its Mica controls, Shared accent, Artwork colour extraction and UI scale — is on the **Appearance** tab; everything else is on **General**, apart from Health, Backup & Restore and Storage:
 
-- **Global theme:** Panel defaults, Match foobar2000, RVG dark, RVG light, the artwork-palette modes, or **Artwork Mica — blurred**. When Mica is selected, blur-radius, tint-strength and acrylic-noise controls appear directly below it.
-- **Shared accent:** when Global theme is **Panel defaults**, choose Artwork, RVG blue, or a custom colour.
+- **Global theme:** **Artwork Mica — blurred** (the default), Accent dark, Match foobar2000, RVG dark, RVG light, or the artwork-palette modes. When Mica is selected, blur-radius, tint-strength and acrylic-noise controls appear directly below it.
+- **Shared accent:** when Global theme is **Accent dark**, choose Artwork, RVG blue, or a custom colour.
 - **Last.fm API key and username:** shared by the Last.fm and Last.fm Charts panels.
 - **Playback statistics source:** `foo_playcount` fields or `Playcount 2003` fields.
 - **Default track source:** choose whether panels follow Now Playing, the selected track, or a fallback between them.
@@ -71,7 +71,7 @@ Open **RVG Settings › Global settings** for the settings that affect several p
 
 ### Theme and accent switching
 
-The **Shared accent** is the colour most panels can follow. With **Panel defaults**, you choose Artwork, RVG blue, or Custom colour yourself. Other global themes choose the effective accent automatically: **Match foobar2000** uses the host accent from Columns UI settings, **RVG dark/light** use UWP blue, and the artwork-derived themes use the current cover palette.
+The **Shared accent** is the colour most panels can follow. With **Accent dark**, you choose Artwork, RVG blue, or Custom colour yourself. Other global themes choose the effective accent automatically: **Match foobar2000** uses the host accent from Columns UI settings, **RVG dark/light** use UWP blue, and the artwork-derived themes use the current cover palette.
 
 **Artwork Mica — blurred** keeps that artwork-derived palette but also places one blurred, cover-cropped derivative of the current artwork behind the entire RVG skin, with semi-transparent cards and navigation surfaces layered over it. **Mica blur radius** controls how soft the artwork becomes; **Mica tint strength** controls how much of the semantic background colour is mixed over the blur for readability. **Acrylic noise** (Off / Subtle / Medium / Strong) adds a fine grain over the blur, as Windows acrylic does, which hides the colour banding dark covers can show. If no artwork is available, RVG falls back to the same opaque artwork-palette background instead of leaving a transparent or broken surface. The mapped backdrop is re-anchored after Mini Player enter/exit, so returning to the full layout should restore the same continuous root composition rather than keeping coordinates from the compact window.
 

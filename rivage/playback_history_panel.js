@@ -2147,7 +2147,14 @@ function on_mouse_lbtn_up(x, y) {
     }
     repaintHoveredRow(releasedIndex, false);
 
-    if (activate) jumped = jumpToHistoryEntry(clickedIndex);
+    if (activate) {
+        jumped = jumpToHistoryEntry(clickedIndex);
+        // Not in the active playlist: select it wherever it is, like the other panels.
+        if (!jumped) {
+            var handles = historyEntryHandles(clickedIndex);
+            if (handles) jumped = RivageLibraryActions.reveal(handles);
+        }
+    }
     return jumped;
 }
 

@@ -13,7 +13,7 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\visible_paint_work.js");
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\cache_protocol.js');
 
-const PANEL_VERSION = '2.4.0';
+const PANEL_VERSION = '2.4.1';
 
 window.DefineScript(RivageUI.copy.popupTitle('Live shows'), {
     author: 'RivaGe',
@@ -1392,7 +1392,13 @@ function on_mouse_lbtn_up(x, y) {
     const index = rowAt(x, y);
     if (index < 0 || !isShowRow(displayRows[index])) return;
     const url = displayRows[index].show.url;
-    if (url) utils.Run(url);
+    openWebUrl(url);
+}
+
+// Show and ticket links come from Ticketmaster: launch only real web pages.
+function openWebUrl(url) {
+    url = String(url || '').trim();
+    if (/^https?:\/\/\S+$/i.test(url)) utils.Run(url);
 }
 
 function on_mouse_rbtn_up(x, y) {
@@ -1432,10 +1438,10 @@ function on_mouse_rbtn_up(x, y) {
 
     switch (command) {
         case CMD_OPEN_EVENT:
-            if (show && show.url) utils.Run(show.url);
+            if (show) openWebUrl(show.url);
             break;
         case CMD_OPEN_TICKETS:
-            if (show && show.tickets) utils.Run(show.tickets);
+            if (show) openWebUrl(show.tickets);
             break;
         case CMD_COPY:
             if (show) copyShow(show);

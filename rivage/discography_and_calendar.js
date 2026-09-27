@@ -77,7 +77,7 @@ const CALENDAR_LOOKBACK_MONTHS = 3;
 const CALENDAR_QUERY_BUDGET_CHARS = 4000;
 const CALENDAR_CACHE_WRITE_INTERVAL_MS = 8000;
 const VARIOUS_ARTISTS_MBID = '89ad4ac3-39f7-470e-963a-56509c546377';
-const MUSICBRAINZ_USER_AGENT = 'foobar2000-JSplitter-Discography/' + PANEL_VERSION + ' (https://github.com/dima-lur/jsplitter)';
+const MUSICBRAINZ_USER_AGENT = 'RVG-Discography/' + PANEL_VERSION + ' ( https://github.com/r1vage/rvg-for-foobar2000 )';
 
 const MF_STRING = 0x00000000;
 const MF_GRAYED = 0x00000001;

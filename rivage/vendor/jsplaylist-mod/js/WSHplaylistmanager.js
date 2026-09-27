@@ -4,41 +4,114 @@
 // *****************************************************************************************************************************************
 
 // ----------------------------------------------------------------------------
-// Rivage chrome colours (design-theme restyle)
+// Flyout styling
 // ----------------------------------------------------------------------------
-// Every other surface in JSPlaylist (rows, group headers, top bar, column
-// header) still follows this panel's own configurable colour scheme
-// (g_color_normal_bg/txt - see main.js's "Colours" settings tab, itself
-// user-editable or CUI/DUI-derived). The playlist manager is the one surface
-// restyled here to match the FIXED dark palette every other Rivage panel
-// hardcodes (tab-switcher-right.js's COLOUR_TAB_BAR/COLOUR_TEXT_PRIMARY,
-// extra-tab-parent.js, settings_panel.js's background/text, ...), via
-// shared\design_system.js (included by playlist_panel.js /
-// jsplaylist-mod\jsplaylist main script.js). See
-// jsplitter\rivage\shared\SHARED_LIBRARIES.md.
+// The playlist manager takes its colours from the shared RVG theme
+// (RivageUI.createTheme), like every other panel: light and dark themes,
+// artwork palettes, and under Artwork Mica a translucent card over this
+// panel's own slice of the backdrop. With the shared theme off it follows
+// this panel's configurable colours instead (g_color_normal_bg/txt).
 //
-// Scope, deliberately narrow:
-//   - setColors() below now points this.color_bg/this.color_txt at these
-//     constants instead of g_color_normal_bg/txt. Every blendColors(...)
-//     call elsewhere in draw()/setButtons() already keys off those two
-//     fields (or the local color_bg/color_txt in setButtons()), so this one
-//     change re-themes the whole manager - no other call site needed to move.
-//   - color_sel (drag-drop blink flash) and color_high ("now playing"
-//     indicator) are LEFT on their own configurable colours - those carry
-//     real information (a distinct "the playlist that's actually playing"
-//     cue, separate from "the playlist you're viewing", the latter already
-//     shown via the shared album accent) rather than being generic chrome,
-//     so collapsing them into the Rivage palette would lose that signal.
-//   - Fonts are NOT changed. g_font_ui/g_font_ui_bold (used here) share one
-//     family with the top bar and column header across this whole panel
-//     ("jssp font system", PORT_NOTES.md Round 4) - swapping only this
-//     surface to a hardcoded Segoe UI/Segoe UI Semibold would make the
-//     manager's text look foreign next to its own header bar, trading one
-//     inconsistency for another. Colour is what reads as "Rivage" at a
-//     glance; the existing bold-weight header treatment already matches
-//     that language structurally.
-var PM_COLOUR_SURFACE      = RivageUI.rgb(28, 28, 28);   // == tab-switcher-right.js COLOUR_TAB_BAR
-var PM_COLOUR_TEXT_PRIMARY = RivageUI.rgb(245, 245, 245); // == tab-switcher-right.js COLOUR_TEXT_PRIMARY
+// Rows use the same rounded accent wash and capsule bar as Inset card
+// playlist rows. A playlist's name is always drawn in the primary text
+// colour: "active" is carried by the wash, bar and bold weight, "playing" by
+// the speaker icon. Tinting the name itself (the old behaviour) put an
+// accent-coloured name on an accent wash, which was unreadable on the
+// active + playing row.
+var PM_FALLBACK_SURFACE = RGB(28, 28, 28);
+var PM_FALLBACK_TEXT = RGB(245, 245, 245);
+
+function pm_with_alpha(colour, alpha) {
+	return (colour & 0x00ffffff) | (clamp_int(alpha, 0, 255) << 24);
+};
+
+function pm_opaque(colour) {
+	return colour | 0xff000000;
+};
+
+function pm_pick(value, fallback) {
+	return (typeof value == "number" && isFinite(value)) ? value : fallback;
+};
+
+// Palette derived from one background and one text colour, for when the
+// shared theme is off or unavailable.
+function pm_palette_from(bg, txt) {
+	bg = pm_opaque(bg);
+	txt = pm_opaque(txt);
+	var dark = (getRed(bg) * 0.299 + getGreen(bg) * 0.587 + getBlue(bg) * 0.114) < 128;
+	return {
+		mica: false,
+		dark: dark,
+		background: bg,
+		surface: blendColors(bg, txt, dark ? 0.055 : 0.045),
+		input: blendColors(bg, txt, 0.10),
+		separator: blendColors(bg, txt, 0.16),
+		text: txt,
+		textSecondary: blendColors(bg, txt, 0.78),
+		textMuted: blendColors(bg, txt, 0.60),
+		textDisabled: blendColors(bg, txt, 0.35),
+		hover: pm_with_alpha(txt, dark ? 24 : 20),
+		danger: dark ? RGB(255, 99, 99) : RGB(196, 43, 28)
+	};
+};
+
+function pm_palette() {
+	var shared = null;
+	try { shared = RivageUI.getSharedTheme ? RivageUI.getSharedTheme() : null; } catch (e) { shared = null; }
+	if (!shared || shared.mode === "existing") {
+		return (typeof g_color_normal_bg == "number" && typeof g_color_normal_txt == "number" && (g_color_normal_bg || g_color_normal_txt))
+			? pm_palette_from(g_color_normal_bg, g_color_normal_txt)
+			: pm_palette_from(PM_FALLBACK_SURFACE, PM_FALLBACK_TEXT);
+	};
+	var t = null;
+	try { t = RivageUI.createTheme({ mode: "host" }); } catch (e) { t = null; }
+	if (!t) return pm_palette_from(PM_FALLBACK_SURFACE, PM_FALLBACK_TEXT);
+	var base = pm_palette_from(t.background, t.textPrimary);
+	return {
+		mica: !!t.mica,
+		dark: t.dark !== false,
+		background: pm_opaque(t.background),
+		// Under Mica the flyout floats over the playlist, so it takes a much
+		// denser card than the 66% panels use: the artwork only tints it.
+		surface: t.mica ? pm_with_alpha(pm_pick(t.card, base.surface), 232) : pm_pick(t.card, base.surface),
+		input: pm_opaque(pm_pick(t.surfaceHover, base.input)),
+		separator: pm_pick(t.separator, base.separator),
+		text: pm_opaque(t.textPrimary),
+		textSecondary: pm_pick(t.textSecondary, base.textSecondary),
+		textMuted: pm_pick(t.textMuted, base.textMuted),
+		textDisabled: pm_pick(t.textDisabled, base.textDisabled),
+		hover: base.hover,
+		danger: pm_opaque(pm_pick(t.danger, base.danger))
+	};
+};
+
+// Rounded fill / outline with the radius clamped to the rectangle, so a
+// short row or narrow panel can never produce an invalid arc.
+function pm_round_fill(gr, x, y, w, h, r, colour) {
+	if (w <= 0 || h <= 0) return;
+	r = Math.min(r, Math.floor(w / 2), Math.floor(h / 2));
+	if (r < 1) {
+		gr.FillSolidRect(x, y, w, h, colour);
+		return;
+	};
+	gr.SetSmoothingMode(2);
+	gr.FillRoundRect(x, y, w, h, r, r, colour);
+	gr.SetSmoothingMode(0);
+};
+
+function pm_round_stroke(gr, x, y, w, h, r, colour, line_width) {
+	var lw = line_width || 1;
+	var sw = w - lw, shh = h - lw;
+	if (sw <= 0 || shh <= 0) return;
+	r = Math.min(r, Math.floor(sw / 2), Math.floor(shh / 2));
+	gr.SetSmoothingMode(2);
+	if (r < 1) {
+		gr.DrawRect(x + lw / 2, y + lw / 2, sw, shh, lw, colour);
+	} else {
+		gr.DrawRoundRect(x + lw / 2, y + lw / 2, sw, shh, r, r, lw, colour);
+	};
+	gr.SetSmoothingMode(0);
+};
 
 oPlaylist = function (idx, rowId, isAutoPl, parent, filter_type, filter_idx) {
 	this.idx = idx;
@@ -72,90 +145,70 @@ oPlaylistManager = function (obj_name) {
 	this.inputboxID = -1;
 
 	this.setButtons = function () {
-		// Rivage chrome colours, not this panel's configurable scheme - see
-		// the header comment above.
-		var color_txt = PM_COLOUR_TEXT_PRIMARY;
-		var color_bg = PM_COLOUR_SURFACE;
-		var bt_w = g_z16;
-		var bt_h = g_z16;
+		var pal = this.palette || pm_palette();
 
-		// Az & zA vars
-		var Az_h = cPlaylistManager.statusBarHeight;
-		var Az_w = Math.floor(Az_h * 1.9);
-		var left_padding = g_z2;
-		var right_padding = zoom(4, g_dpi);
+		// Text uses the playlist row font (g_font / g_font_small), so rows
+		// and the footer grow with it instead of clipping larger sizes.
+		cPlaylistManager.rowHeight = Math.max(zoom(cRow.playlistManager_h, g_dpi), g_font.Height + zoom(12, g_dpi));
+		cPlaylistManager.statusBarHeight = Math.max(zoom(16, g_dpi), g_font_small.Height + zoom(8, g_dpi));
+		var rowH = cPlaylistManager.rowHeight;
 
-		// normal sort Az playlist Image
-		this.bt_sortAz_normal = gdi.CreateImage(Az_w, Az_h);
-		var gb = this.bt_sortAz_normal.GetGraphics();
-		gb.SetTextRenderingHint(3);
-		gb.FillSolidRect(0, 0, 1, Az_h, blendColors(color_bg, color_txt, 0.35));
-		gb.DrawString(String.fromCharCode(159), gdi_font(g_font_wd3.Name, g_fsize, 1), blendColors(color_bg, color_txt, 0.5), left_padding, 1, Az_w, Az_h, lc_stringformat);
-		gb.DrawString("Az", g_font, blendColors(color_bg, color_txt, 0.5), 0, 0, Az_w - right_padding, Az_h, rc_stringformat);
-		gb.FillSolidRect(Az_w - 1, 0, 1, Az_h, blendColors(color_bg, color_txt, 0.35));
-		this.bt_sortAz_normal.ReleaseGraphics(gb);
+		// remove button: a close glyph, with a red rounded wash on hover. Only
+		// the hovered row shows it (see draw()).
+		var s = Math.max(g_z16, Math.min(rowH - zoom(6, g_dpi), zoom(22, g_dpi)));
+		var r = Math.max(2, Math.floor(s / 4));
+		var use_icons = ICONS.available();
+		var glyph = use_icons ? chars.close : String.fromCharCode(209);
+		var glyph_font = use_icons
+			? gdi_font(ICONS.fontName, Math.max(8, Math.round(g_font_icon.Size * 0.72)), 0)
+			: gdi_font(g_font_wd2.Name, g_font_wd2.Size - g_z8, 0);
+		var make_remove = function (bg, fg) {
+			var img = gdi.CreateImage(s, s);
+			var gb = img.GetGraphics();
+			if (bg) pm_round_fill(gb, 0, 0, s, s, r, bg);
+			gb.SetTextRenderingHint(4);
+			gb.DrawString(glyph, glyph_font, fg, 0, 0, s, s, cc_stringformat);
+			img.ReleaseGraphics(gb);
+			return img;
+		};
+		this.bt_remove_normal = make_remove(0, pal.textMuted);
+		this.bt_remove_hover = make_remove(pm_with_alpha(pal.danger, 46), pal.danger);
+		this.bt_remove_down = make_remove(pm_with_alpha(pal.danger, 84), pal.danger);
+		for (var i = 0; i < this.playlists.length; i++) {
+			this.playlists[i].bt_remove.update(this.bt_remove_normal, this.bt_remove_hover, this.bt_remove_down);
+		};
 
-		// hover sort Az playlist Image
-		this.bt_sortAz_hover = gdi.CreateImage(Az_w, Az_h);
-		var gb = this.bt_sortAz_hover.GetGraphics();
-		gb.SetTextRenderingHint(3);
-		gb.FillSolidRect(0, 0, 1, Az_h, blendColors(color_bg, color_txt, 0.35));
-		gb.DrawString(String.fromCharCode(159), gdi_font(g_font_wd3.Name, g_fsize, 1), color_txt, left_padding, 1, Az_w, Az_h, lc_stringformat);
-		gb.DrawString("Az", g_font, color_txt, 0, 0, Az_w - right_padding, Az_h, rc_stringformat);
-		gb.FillSolidRect(Az_w - 1, 0, 1, Az_h, blendColors(color_bg, color_txt, 0.35));
-		this.bt_sortAz_hover.ReleaseGraphics(gb);
-
+		// sort buttons in the footer: plain text labels, rounded wash on hover
+		var fh = cPlaylistManager.statusBarHeight;
+		var sfont = g_font_small;
+		var probe = gdi.CreateImage(1, 1);
+		var pg = probe.GetGraphics();
+		var make_sort = function (label, hot) {
+			var w = Math.ceil(pg.CalcTextWidth(label, sfont)) + zoom(14, g_dpi);
+			var img = gdi.CreateImage(w, fh);
+			var gb = img.GetGraphics();
+			var vpad = Math.max(1, zoom(3, g_dpi));
+			if (hot) pm_round_fill(gb, 0, vpad, w, fh - vpad * 2, zoom(4, g_dpi), pal.hover);
+			gb.SetTextRenderingHint(4);
+			gb.DrawString(label, sfont, hot ? pal.text : pal.textMuted, 0, 0, w, fh, cc_stringformat);
+			img.ReleaseGraphics(gb);
+			return img;
+		};
+		this.bt_sortAz_normal = make_sort("A-Z", false);
+		this.bt_sortAz_hover = make_sort("A-Z", true);
+		this.bt_sortZa_normal = make_sort("Z-A", false);
+		this.bt_sortZa_hover = make_sort("Z-A", true);
+		probe.ReleaseGraphics(pg);
 		this.sortAz_button = new button(this.bt_sortAz_normal, this.bt_sortAz_hover, this.bt_sortAz_hover);
-
-		// normal sort Za playlist Image
-		this.bt_sortZa_normal = gdi.CreateImage(Az_w, Az_h);
-		var gb = this.bt_sortZa_normal.GetGraphics();
-		gb.SetTextRenderingHint(3);
-		gb.DrawString(String.fromCharCode(160), gdi_font(g_font_wd3.Name, g_fsize, 1), blendColors(color_bg, color_txt, 0.5), left_padding, 1, Az_w, Az_h, lc_stringformat);
-		gb.DrawString("Za  ", g_font, blendColors(color_bg, color_txt, 0.5), 0, 0, Az_w - right_padding, Az_h, rc_stringformat);
-		gb.FillSolidRect(Az_w - 1, 0, 1, Az_h, blendColors(color_bg, color_txt, 0.35));
-		this.bt_sortZa_normal.ReleaseGraphics(gb);
-
-		// hover sort Za playlist Image
-		this.bt_sortZa_hover = gdi.CreateImage(Az_w, Az_h);
-		var gb = this.bt_sortZa_hover.GetGraphics();
-		gb.SetTextRenderingHint(3);
-		gb.DrawString(String.fromCharCode(160), gdi_font(g_font_wd3.Name, g_fsize, 1), color_txt, left_padding, 1, Az_w, Az_h, lc_stringformat);
-		gb.DrawString("Za  ", g_font, color_txt, 0, 0, Az_w - right_padding, Az_h, rc_stringformat);
-		gb.FillSolidRect(Az_w - 1, 0, 1, Az_h, blendColors(color_bg, color_txt, 0.35));
-		this.bt_sortZa_hover.ReleaseGraphics(gb);
-
 		this.sortZa_button = new button(this.bt_sortZa_normal, this.bt_sortZa_hover, this.bt_sortZa_hover);
-
-		// normal remove playlist Image
-		this.bt_remove_normal = gdi.CreateImage(bt_w, bt_h);
-		var gb = this.bt_remove_normal.GetGraphics();
-		gb.SetTextRenderingHint(4);
-		gb.DrawString(String.fromCharCode(209), gdi_font(g_font_wd2.Name, g_font_wd2.Size - g_z8, 0), blendColors(color_bg, color_txt, 0.5), 0, 0, bt_w, bt_h, cc_stringformat);
-		this.bt_remove_normal.ReleaseGraphics(gb);
-
-		// hover remove playlist Image
-		this.bt_remove_hover = gdi.CreateImage(bt_w, bt_h);
-		gb = this.bt_remove_hover.GetGraphics();
-		gb.SetTextRenderingHint(4);
-		gb.DrawString(String.fromCharCode(209), gdi_font(g_font_wd2.Name, g_font_wd2.Size - g_z2, 0), RGB(255, 0, 0), 0, 0, bt_w, bt_h, cc_stringformat);
-		this.bt_remove_hover.ReleaseGraphics(gb);
-
-		// down remove playlist Image
-		this.bt_remove_down = gdi.CreateImage(bt_w, bt_h);
-		gb = this.bt_remove_down.GetGraphics();
-		gb.SetTextRenderingHint(4);
-		gb.DrawString(String.fromCharCode(209), gdi_font(g_font_wd2.Name, g_font_wd2.Size - g_z2, 0), color_txt, 0, 0, bt_w, bt_h, cc_stringformat);
-		this.bt_remove_down.ReleaseGraphics(gb);
 	};
 
 	this.setColors = function () {
-		// Rivage chrome colours, not this panel's configurable scheme - see
-		// the header comment above. color_sel/color_high stay on their own
-		// configurable colours on purpose (drag-drop flash / "now playing"
-		// cue, not generic chrome).
-		this.color_txt = PM_COLOUR_TEXT_PRIMARY;
-		this.color_bg = PM_COLOUR_SURFACE;
+		this.palette = pm_palette();
+		this.color_txt = this.palette.text;
+		this.color_bg = pm_opaque(this.palette.surface);
+		// color_sel/color_high stay on this panel's configurable colours for
+		// any code outside draw() that still reads them.
 		this.color_sel = g_color_selected_bg;
 		this.color_high = g_color_highlight;
 		this.scrollbar.setDefaultColors();
@@ -269,222 +322,202 @@ oPlaylistManager = function (obj_name) {
 			cPlaylistManager.playlist_switch_pending = false;
 		};
 
-		var cx,
-		cy,
-		cw,
-		ch,
-		iconw = 0,
-		row_idx = 0,
-		t = 0,
-		tw = 0;
-		var txt_color,
-		icon_char,
-		xoffset;
-		var bt_w = this.bt_remove_normal.Width;
+		if (this.woffset <= 0) return;
 
-		if (this.woffset > 0) {
-			// panel bg - UWP / jssp styling: one flat elevated surface, a single accent-tinted
-			// hairline on the leading edge, no heavy border box.
-			gr.FillSolidRect(this.x - this.woffset + this.border, this.y, this.w - this.border, this.h, blendColors(this.color_bg, this.color_txt, 0.04) & 0xf7ffffff);
-			gr.FillSolidRect(this.x - this.woffset + this.border, this.y, Math.max(1, zoom(1, g_dpi)), this.h, pm_accent(170));
+		var pal = this.palette || (this.palette = pm_palette());
+		var px = this.x - this.woffset + this.border;
+		var pw = this.w - this.border;
+		var ch = cPlaylistManager.rowHeight;
+		var fh = cPlaylistManager.showStatusBar ? cPlaylistManager.statusBarHeight : 0;
+		var hair = Math.max(1, zoom(1, g_dpi));
+		var pad = zoom(10, g_dpi);
+		var inset = zoom(6, g_dpi);
+		var radius = Math.max(1, Math.min(zoom(6, g_dpi), Math.floor((ch - 2) / 2)));
+		var drop_mode = g_dragndrop_hover_playlistManager;
+		var blink_on = cPlaylistManager.blink_counter > -1 && cPlaylistManager.blink_counter <= 5 &&
+			cPlaylistManager.blink_counter % 2 == 0;
+		var use_icons = ICONS.available();
+		var i;
 
-			// dims
-			cx = this.x - this.woffset + this.border + 5.0;
-			cw = this.w - this.border - this.scrollbarWidth - 10.0;
-			ch = cPlaylistManager.rowHeight;
-			cy = this.y;
+		// ---------------------------------------------------------------- surface
+		// This panel's slice of the Mica backdrop under a translucent card, or
+		// the opaque card on every other theme.
+		if (pal.mica && typeof RivageBackdrop != "undefined" && RivageBackdrop.isMicaMode()) {
+			RivageBackdrop.paint(gr, px, this.y, pw, this.h, pal.background);
+		} else {
+			gr.FillSolidRect(px, this.y, pw, this.h, pal.background);
+		};
+		gr.FillSolidRect(px, this.y, pw, this.h, pal.surface);
+		gr.FillSolidRect(px, this.y, hair, this.h, pal.separator);
 
-			// panel header - flat, uppercase label, accent underline
-			var hdr_x = this.x - this.woffset + this.border;
-			var hdr_w = this.w - this.border;
-			var drop_mode = g_dragndrop_hover_playlistManager;
+		// ---------------------------------------------------------------- header
+		var cy = this.y;
+		var hdr_x = px + inset;
+		var hdr_w = pw - inset * 2;
+		if (drop_mode) {
+			var hot = this.ishoverHeader;
+			if (hot) {
+				pm_round_fill(gr, hdr_x, cy + 1, hdr_w, ch - 2, radius, pm_accent(40));
+				pm_round_stroke(gr, hdr_x, cy + 1, hdr_w, ch - 2, radius, pm_accent(200));
+			};
+			var hdr_col = hot ? accent_colour(255) : pal.textSecondary;
+			var add_w = 0;
+			if (use_icons) {
+				add_w = gr.CalcTextWidth(chars.add, g_font_icon) + zoom(6, g_dpi);
+				gr.GdiDrawText(chars.add, g_font_icon, hdr_col, px + pad, cy, add_w, ch, DT_LEFT | DT_VCENTER | DT_NOPREFIX);
+			};
+			gr.GdiDrawText("Drop to create a new playlist", g_font_bold, hdr_col, px + pad + add_w, cy, pw - pad * 2 - add_w, ch, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+		} else {
+			gr.GdiDrawText("Playlists", g_font_bold, pal.textSecondary, px + pad, cy, pw - pad * 2, ch, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+		};
+		gr.FillSolidRect(px + pad, cy + ch - hair, pw - pad * 2, hair, pal.separator);
 
-			gr.FillSolidRect(hdr_x, cy, hdr_w, ch - 1, this.color_txt & 0x0affffff);
+		// flash the header after tracks were dropped on it
+		if (blink_on && cPlaylistManager.blink_id == -1) {
+			pm_round_stroke(gr, hdr_x, cy + 1, hdr_w, ch - 2, radius, accent_colour(255), 2);
+		};
 
-			if (drop_mode) {
-				if (this.ishoverHeader) {
-					gr.FillSolidRect(hdr_x, cy, hdr_w, ch - 1, pm_accent(40));
-					gr.DrawRect(hdr_x, cy, hdr_w - 1, ch - 2, 1.0, pm_accent(200));
-				};
-				iconw = ICONS.available() ? gr.CalcTextWidth(chars.add, g_font_icon) + zoom(4, g_dpi) : gr.CalcTextWidth(String.fromCharCode(201), g_font_wd2);
-				gr.GdiDrawText(ICONS.available() ? chars.add : String.fromCharCode(201), ICONS.available() ? g_font_icon : g_font_wd2, this.ishoverHeader ? pm_accent(255) : blendColors(this.color_txt, this.color_bg, 0.25), cx, cy, iconw, ch, DT_LEFT | DT_CALCRECT | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-				gr.GdiDrawText("TO A NEW PLAYLIST", g_font_ui_bold, this.ishoverHeader ? pm_accent(255) : blendColors(this.color_txt, this.color_bg, 0.25), cx + iconw + 5, cy, cw - iconw - 10, ch, DT_LEFT | DT_CALCRECT | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+		// ---------------------------------------------------------------- rows
+		// Remove buttons are hit-tested from where they were last drawn. Park
+		// them all off-panel first, so only the button actually on screen (the
+		// hovered row's) can ever be clicked - a row scrolled away or no longer
+		// hovered must not keep a live button at its old position.
+		for (i = 0; i < this.playlists.length; i++) {
+			this.playlists[i].bt_remove.x = -10000;
+			this.playlists[i].bt_remove.y = -10000;
+		};
+
+		var list_bottom = this.y + this.h - fh;
+		var rx = px + inset;
+		var rw = pw - this.scrollbarWidth - inset * 2;
+		var bar_w = Math.max(2, zoom(3, g_dpi));
+		var icon_w = use_icons ? gr.CalcTextWidth(chars.list, g_font_icon) : gr.CalcTextWidth(String.fromCharCode(46), g_font_wd2);
+		var icon_x = rx + bar_w + zoom(7, g_dpi);
+		var text_x = icon_x + icon_w + zoom(8, g_dpi);
+		var right = rx + rw - zoom(8, g_dpi);
+		var playing_idx = (fb.IsPlaying || fb.IsPaused) ? plman.PlayingPlaylist : -1;
+		this.text_x_offset = text_x - px;
+
+		var row_idx = 0;
+		for (i = this.offset; i < this.playlists.length; i++) {
+			cy = this.y + ch + row_idx * ch;
+			if (cy + ch > list_bottom) break;
+			var pl = this.playlists[i];
+			pl.y = cy;
+
+			var is_active = pl.idx == plman.ActivePlaylist;
+			var is_playing = pl.idx == playing_idx;
+			var is_hover = i == this.hoverId;
+			var locked = pl.isAutoPlaylist || pl.isReservedPlaylist;
+			var is_medialib = cPlaylistManager.mediaLibraryPlaylist && i == 0;
+			var can_drop = drop_mode && is_hover && !locked;
+			// while dragging tracks, playlists that can't take them are dimmed
+			var unavailable = dragndrop.moved && (locked || (is_active && cPlaylistManager.visible));
+			var wy = cy + 1;
+			var wh = ch - 2;
+
+			// row wash - same family as Inset card playlist rows
+			if (is_active) {
+				pm_round_fill(gr, rx, wy, rw, wh, radius, pm_accent(55));
+				var bar_h = Math.max(2, wh - radius * 2);
+				pm_round_fill(gr, rx, wy + Math.floor((wh - bar_h) / 2), bar_w, bar_h, Math.floor(bar_w / 2), pm_accent(255));
+			} else if (is_hover && !drop_mode) {
+				pm_round_fill(gr, rx, wy, rw, wh, radius, pm_accent(30));
+			};
+			if (can_drop) {
+				pm_round_fill(gr, rx, wy, rw, wh, radius, pm_accent(40));
+				pm_round_stroke(gr, rx, wy, rw, wh, radius, pm_accent(200));
+			};
+			if (cPlaylistManager.rightClickedId == i) {
+				pm_round_stroke(gr, rx, wy, rw, wh, radius, pm_accent(200));
+			};
+			if (blink_on && i == cPlaylistManager.blink_id) {
+				pm_round_stroke(gr, rx, wy, rw, wh, radius, accent_colour(255), 2);
+			};
+
+			// icon - the speaker marks the playing playlist
+			var icon_col = unavailable ? pal.textDisabled
+				 : (is_playing ? accent_colour(255) : (is_active ? pal.text : pal.textSecondary));
+			if (use_icons) {
+				var glyph = is_playing ? chars.volume
+					 : (is_medialib && cPlaylistManager.visible ? chars.music
+					 : (pl.isReservedPlaylist ? chars.lock
+					 : (pl.isAutoPlaylist ? chars.filter : chars.list)));
+				gr.SetTextRenderingHint(4);
+				gr.DrawString(glyph, g_font_icon, icon_col, icon_x, cy, icon_w, ch, cc_stringformat);
 			} else {
-				gr.GdiDrawText("PLAYLISTS", g_font_ui_bold, blendColors(this.color_txt, this.color_bg, 0.30), cx, cy, cw - 5, ch, DT_LEFT | DT_CALCRECT | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+				var icon_char = (is_medialib && cPlaylistManager.visible) ? String.fromCharCode(46)
+					 : (pl.isReservedPlaylist ? String.fromCharCode(45)
+					 : (pl.isAutoPlaylist ? String.fromCharCode(44) : String.fromCharCode(41)));
+				gr.SetTextRenderingHint(5);
+				gr.DrawString(icon_char, g_font_wd2, icon_col, icon_x, cy - 1, icon_w, ch, lc_stringformat);
 			};
 
-			// accent underline beneath the header
-			gr.FillSolidRect(hdr_x, cy + ch - 2, hdr_w, Math.max(1, zoom(1.5, g_dpi)), pm_accent(210));
-
-			// draw flashing header on lbtn_up after a drag'n drop
-			if (cPlaylistManager.blink_counter > -1) {
-				if (cPlaylistManager.blink_id == -1) {
-					if (cPlaylistManager.blink_counter <= 5 && Math.floor(cPlaylistManager.blink_counter / 2) == Math.ceil(cPlaylistManager.blink_counter / 2)) {
-						gr.DrawRect(this.x - this.woffset + this.border + 1, cy + 1, this.w - this.border - 2, ch - 3, 2.0, this.color_sel);
-					};
-				};
-			};
-
-			cx = this.x - this.woffset + this.border;
-			for (var i = this.offset; i < this.playlists.length; i++) {
-				cy = this.y + cPlaylistManager.rowHeight + row_idx * ch;
-				this.playlists[i].y = cy;
-				// ---------------------------------------------------------------- row background
-				// UWP / jssp styling: flat rows, no per-row fill or separator line.
-				// Active playlist  -> accent wash + leading accent bar
-				// Hovered playlist -> faint accent wash
-				// External drop target -> accent outline
-				var rw = this.w - this.border - this.scrollbarWidth - 2;
-				var is_active = (this.playlists[i].idx == plman.ActivePlaylist);
-				var is_hover = (i == this.hoverId);
-				var can_drop = g_dragndrop_hover_playlistManager && is_hover &&
-					!this.playlists[i].isAutoPlaylist && !this.playlists[i].isReservedPlaylist;
-				var bar_w = Math.max(2, zoom(4, g_dpi));
-
-				if (is_active) {
-					gr.FillSolidRect(cx + 1, cy, rw, ch - 1, pm_accent(55));
-					gr.FillSolidRect(cx + 1, cy, bar_w, ch - 1, pm_accent(255));
-				} else if (is_hover && !g_dragndrop_hover_playlistManager) {
-					gr.FillSolidRect(cx + 1, cy, rw, ch - 1, pm_accent(30));
+			if (this.inputboxID == i) {
+				// rename in progress
+				this.inputbox.draw(gr, text_x, cy + 5);
+			} else {
+				// right side: the item count, or the remove button on the hovered row
+				var tail = right;
+				if (is_hover && !is_medialib && !dragndrop.moved && this.inputboxID < 0) {
+					var bt = pl.bt_remove;
+					bt.draw(gr, right - bt.w + zoom(4, g_dpi), cy + Math.floor((ch - bt.h) / 2), 255);
+					tail = right - bt.w;
+				} else if (cPlaylistManager.showTotalItems) {
+					var count = String(plman.PlaylistItemCount(pl.idx));
+					var count_w = gr.CalcTextWidth(count, g_font_small);
+					gr.GdiDrawText(count, g_font_small, unavailable ? pal.textDisabled : pal.textMuted, right - count_w, cy, count_w, ch, DT_RIGHT | DT_VCENTER | DT_NOPREFIX);
+					tail = right - count_w - zoom(8, g_dpi);
 				};
 
-				if (can_drop) {
-					gr.FillSolidRect(cx + 1, cy, rw, ch - 1, pm_accent(40));
-					gr.DrawRect(cx + 1, cy, rw - 1, ch - 2, 1.0, pm_accent(200));
-				};
-
-				// right clicked item
-				if (cPlaylistManager.rightClickedId == i) {
-					gr.DrawRect(cx + 1, cy, this.w - this.border - this.scrollbarWidth - 3, ch - 2, 1.0, pm_accent(200));
-				};
-
-				// draw flashing item on lbtn_up after a drag'n drop
-				if (cPlaylistManager.blink_counter > -1) {
-					if (i == cPlaylistManager.blink_id) {
-						if (cPlaylistManager.blink_counter <= 5 && Math.floor(cPlaylistManager.blink_counter / 2) == Math.ceil(cPlaylistManager.blink_counter / 2)) {
-							gr.DrawRect(cx + 1, cy + 1, this.w - this.border - this.scrollbarWidth - 3, ch - 3, 2.0, this.color_sel);
-						};
-					};
-				};
-				// if autoplaylist or active playlist > item not available for droping
-				if (dragndrop.moved && (this.playlists[i].isAutoPlaylist || this.playlists[i].isReservedPlaylist || (i == plman.ActivePlaylist && cPlaylistManager.visible))) {
-					txt_color = blendColors(this.color_txt, this.color_bg, 0.45);
-				} else {
-					txt_color = this.color_txt;
-				};
-
-				// icon
-				var icon_color = null;
-				if (this.playlists[i].idx == plman.ActivePlaylist) {
-					if (this.playlists[i].idx == plman.PlayingPlaylist) {
-						icon_color = blendColors(this.color_high, this.color_bg, 0.1);
+				// a Playlist Filter group pattern applies: small dot, filled when
+				// the playlist is named in the filter, hollow for the "*" default
+				if (pl.filter_type > 0) {
+					var d = Math.max(4, zoom(5, g_dpi));
+					var dx = tail - d;
+					var dy = cy + Math.floor((ch - d) / 2);
+					gr.SetSmoothingMode(2);
+					if (pl.filter_type == 1) {
+						gr.FillEllipse(dx, dy, d, d, pal.textMuted);
 					} else {
-						// active playlist icon takes the album accent (jssp behaviour)
-						icon_color = properties.albumAccentEnabled ? AlbumAccent.colour : blendColors(this.color_sel, this.color_txt, 0.1);
+						gr.DrawEllipse(dx, dy, d - 1, d - 1, 1.0, pal.textMuted);
 					};
-				} else {
-					if (this.playlists[i].idx == plman.PlayingPlaylist && fb.IsPlaying) {
-						icon_color = blendColors(this.color_high, this.color_bg, 0.1);
-					} else {
-						icon_color = this.color_txt;
-					};
-				};
-				// playlist kind icon - Fluent glyphs, with the old Wingdings set as fallback
-				var is_medialib = (cPlaylistManager.mediaLibraryPlaylist && i == 0 && cPlaylistManager.visible);
-				if (ICONS.available()) {
-					var pm_icon = is_medialib ? chars.music
-						 : (this.playlists[i].isReservedPlaylist ? chars.lock
-						 : (this.playlists[i].isAutoPlaylist ? chars.filter : chars.list));
-					iconw = gr.CalcTextWidth(chars.list, g_font_icon) + zoom(4, g_dpi);
-					gr.SetTextRenderingHint(4);
-					gr.DrawString(pm_icon, g_font_icon, icon_color, cx + zoom(6, g_dpi), cy, iconw, ch, cc_stringformat);
-				} else {
-					iconw = gr.CalcTextWidth(String.fromCharCode(46), g_font_wd2);
-					icon_char = is_medialib ? String.fromCharCode(46)
-						 : (this.playlists[i].isReservedPlaylist ? String.fromCharCode(45)
-						 : (this.playlists[i].isAutoPlaylist ? String.fromCharCode(44) : String.fromCharCode(41)));
-					gr.SetTextRenderingHint(5);
-					gr.DrawString(icon_char, g_font_wd2, blendColors(icon_color, this.color_bg, 0.35), cx + 5, cy - (is_medialib ? 3 : 1), iconw, ch, lc_stringformat);
+					gr.SetSmoothingMode(0);
+					tail = dx - zoom(6, g_dpi);
 				};
 
-				// draw INPUTBOX if rename requested
-				if (this.inputboxID == i) {
-					this.inputbox.draw(gr, this.x - this.woffset + this.border + 10.0 + iconw, cy + 5);
-				} else {
-					// set text color et font
-					if (this.playlists[i].idx == plman.ActivePlaylist) {
-						if (this.playlists[i].idx == plman.PlayingPlaylist) {
-							txt_color = blendColors(this.color_high, this.color_bg, 0.1);
-						} else {
-							txt_color = blendColors(this.color_sel, this.color_txt, 0.1);
-						};
-					} else {
-						if (this.playlists[i].idx == plman.PlayingPlaylist && fb.IsPlaying) {
-							txt_color = blendColors(this.color_high, this.color_bg, 0.1);
-						} else {
-							txt_color = this.color_txt;
-						};
-					};
-
-					// playlist total items
-					if (cPlaylistManager.showTotalItems) {
-						t = plman.PlaylistItemCount(this.playlists[i].idx);
-						tw = gr.CalcTextWidth(t, gdi_font(g_fname, g_fsize - 1, 0)) + 5;
-						gr.GdiDrawText(t, gdi_font(g_fname, g_fsize - 1, 0), blendColors(txt_color, this.color_bg, 0.35), cx + 5 + iconw + 5, cy, cw - iconw - 5 - bt_w, ch, DT_RIGHT | DT_CALCRECT | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-					} else {
-						tw = 0;
-					};
-
-					// draw playlist name
-					gr.GdiDrawText(this.playlists[i].name, g_font_ui, txt_color, cx + 5 + iconw + 4, cy, cw - iconw - 4 - tw - bt_w, ch, DT_LEFT | DT_CALCRECT | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-					// add mark when a Playlist Filter is set for this playlist
-					if (this.playlists[i].filter_type > 0) {
-						gr.GdiDrawText(String.fromCharCode(this.playlists[i].filter_type == 1 ? 162 : 163), gdi_font(g_font_wd2.Name, g_font_wd2.Size - zoom(14, g_dpi), 0), txt_color, cx + 5 + iconw + 5, cy - zoom(4, g_dpi), cw - iconw - zoom(6.0, g_dpi), ch, DT_RIGHT | DT_CALCRECT | DT_BOTTOM | DT_END_ELLIPSIS | DT_NOPREFIX);
-					};
-
-					// draw remove button
-					if (!(cPlaylistManager.mediaLibraryPlaylist && i == 0)) {
-						this.playlists[i].bt_remove.draw(gr, cx + cw - bt_w + 9, cy + 2, 255);
-					};
-				};
-
-				// draw "drag destination bar" on dragging playlist item
-				if (this.ishoverItem && !cPlaylistManager.vscroll_timer) {
-					if (cPlaylistManager.drag_target_id == this.rowTotal) {
-						//gr.DrawRect(cx+1, this.playlists[this.rowTotal-1].y + cPlaylistManager.rowHeight, this.w-this.border-this.scrollbarWidth-3, 1, 2.0, this.color_sel);
-					} else if (cPlaylistManager.drag_target_id == i) {
-						if (cPlaylistManager.drag_target_id > cPlaylistManager.drag_source_id) {
-							gr.DrawRect(cx + 1, cy + cPlaylistManager.rowHeight, this.w - this.border - this.scrollbarWidth - 2, 1, 2.0, this.color_sel);
-						} else if (cPlaylistManager.drag_target_id < cPlaylistManager.drag_source_id) {
-							gr.DrawRect(cx + 1, cy, this.w - this.border - this.scrollbarWidth - 2, 1, 2.0, this.color_sel);
-						};
-					};
-				} else {
-					cPlaylistManager.drag_target_id = -1;
-				};
-
-				row_idx++;
+				gr.GdiDrawText(pl.name, is_active ? g_font_bold : g_font, unavailable ? pal.textDisabled : pal.text,
+					text_x, cy, Math.max(0, tail - text_x), ch, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 			};
 
-			// panel footer
-			if (cPlaylistManager.showStatusBar) {
-				var fx = this.x - this.woffset + this.border;
-				var fy = this.y + this.h - cPlaylistManager.statusBarHeight;
-				var fw = this.w - this.border;
-				var fh = cPlaylistManager.statusBarHeight;
-				gr.FillSolidRect(fx, fy, fw, fh, this.color_txt & 0x0affffff);
-				gr.FillSolidRect(fx, fy, fw, Math.max(1, zoom(1, g_dpi)), pm_accent(170));
-				var status_txt = this.playlists.length + (this.playlists.length > 1 ? " PLAYLISTS" : " PLAYLIST");
-				gr.GdiDrawText(status_txt, gdi_font(g_fname, g_fsize - 2, 0), blendColors(this.color_txt, this.color_bg, 0.25), fx + 5, fy, fw - 10, fh, DT_RIGHT | DT_CALCRECT | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-				// draw sort buttons
-				this.sortAz_button.draw(gr, fx, fy, 255);
-				this.sortZa_button.draw(gr, fx + this.sortAz_button.img[0].Width, fy, 255);
+			// drop position while dragging a playlist to reorder
+			if (this.ishoverItem && !cPlaylistManager.vscroll_timer) {
+				if (cPlaylistManager.drag_target_id == i && cPlaylistManager.drag_target_id != this.rowTotal &&
+					cPlaylistManager.drag_target_id != cPlaylistManager.drag_source_id) {
+					var line_h = Math.max(2, zoom(2, g_dpi));
+					var line_y = cPlaylistManager.drag_target_id > cPlaylistManager.drag_source_id ? cy + ch - line_h : cy;
+					pm_round_fill(gr, rx, line_y, rw, line_h, Math.floor(line_h / 2), accent_colour(255));
+				};
+			} else {
+				cPlaylistManager.drag_target_id = -1;
 			};
 
-			// draw scrollbar
-			if (this.scrollbarWidth > 0) {
-				this.scrollbar.drawXY(gr, this.x - this.woffset + this.w - this.scrollbarWidth, this.y + cPlaylistManager.rowHeight);
-			};
+			row_idx++;
+		};
+
+		// ---------------------------------------------------------------- footer
+		if (cPlaylistManager.showStatusBar) {
+			var fy = this.y + this.h - fh;
+			gr.FillSolidRect(px + pad, fy, pw - pad * 2, hair, pal.separator);
+			var n = this.playlists.length;
+			gr.GdiDrawText(n + (n == 1 ? " playlist" : " playlists"), g_font_small, pal.textMuted, px + pad, fy, pw - pad * 2, fh, DT_RIGHT | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+			this.sortAz_button.draw(gr, px + inset, fy, 255);
+			this.sortZa_button.draw(gr, px + inset + this.sortAz_button.w, fy, 255);
+		};
+
+		// ---------------------------------------------------------------- scrollbar
+		if (this.scrollbarWidth > 0) {
+			this.scrollbar.drawXY(gr, this.x - this.woffset + this.w - this.scrollbarWidth, this.y + ch);
 		};
 	};
 
@@ -835,7 +868,7 @@ oPlaylistManager = function (obj_name) {
 				plman.ActivePlaylist = id;
 			};
 			// set rename it
-			this.inputbox = new oInputbox(this.w - this.border - this.scrollbarWidth - 40, cPlaylistManager.rowHeight - 10, plman.GetPlaylistName(id), "", PM_COLOUR_TEXT_PRIMARY, PM_COLOUR_SURFACE, RGB(0, 0, 0), g_color_selected_bg & 0xccffffff, "renamePlaylist()", "p.playlistManager", 0, g_fsize, 225);
+			this.inputbox = new oInputbox(this.w - this.border - this.scrollbarWidth - (this.text_x_offset || 40) - zoom(12, g_dpi), cPlaylistManager.rowHeight - 10, plman.GetPlaylistName(id), "", this.palette.text, this.palette.input, this.palette.separator, pm_accent(120), "renamePlaylist()", "p.playlistManager", 0, g_font_row_size, 225);
 			this.inputboxID = id;
 			// activate box content + selection activated
 			if (cPlaylistManager.inputbox_timer) {
@@ -858,7 +891,7 @@ oPlaylistManager = function (obj_name) {
 				plman.ShowAutoPlaylistUI(id);
 			};
 			// set rename it
-			this.inputbox = new oInputbox(this.w - this.border - this.scrollbarWidth - 40, cPlaylistManager.rowHeight - 10, plman.GetPlaylistName(id), "", PM_COLOUR_TEXT_PRIMARY, PM_COLOUR_SURFACE, RGB(0, 0, 0), g_color_selected_bg & 0xccffffff, "renamePlaylist()", "p.playlistManager", 0, g_fsize, 225);
+			this.inputbox = new oInputbox(this.w - this.border - this.scrollbarWidth - (this.text_x_offset || 40) - zoom(12, g_dpi), cPlaylistManager.rowHeight - 10, plman.GetPlaylistName(id), "", this.palette.text, this.palette.input, this.palette.separator, pm_accent(120), "renamePlaylist()", "p.playlistManager", 0, g_font_row_size, 225);
 			this.inputboxID = id;
 			// activate box content + selection activated
 			if (cPlaylistManager.inputbox_timer) {
@@ -872,7 +905,7 @@ oPlaylistManager = function (obj_name) {
 			break;
 		case (idx == 3):
 			// set rename it
-			this.inputbox = new oInputbox(this.w - this.border - this.scrollbarWidth - 40, cPlaylistManager.rowHeight - 10, plman.GetPlaylistName(id), "", PM_COLOUR_TEXT_PRIMARY, PM_COLOUR_SURFACE, RGB(0, 0, 0), g_color_selected_bg & 0xccffffff, "renamePlaylist()", "p.playlistManager", 0, g_fsize, 225);
+			this.inputbox = new oInputbox(this.w - this.border - this.scrollbarWidth - (this.text_x_offset || 40) - zoom(12, g_dpi), cPlaylistManager.rowHeight - 10, plman.GetPlaylistName(id), "", this.palette.text, this.palette.input, this.palette.separator, pm_accent(120), "renamePlaylist()", "p.playlistManager", 0, g_font_row_size, 225);
 			this.inputboxID = id;
 			// activate box content + selection activated
 			if (cPlaylistManager.inputbox_timer) {

@@ -11,8 +11,7 @@ if (typeof RivageHealth === 'undefined') {
     var RivageHealth = (function () {
         var ACTION_PREFIX = 'health.';
         var RECHECK_ID = ACTION_PREFIX + 'recheck';
-        var MIN_JSPLITTER = [4, 0, 0];
-        var FULL_JSPLITTER = [4, 2, 1];
+        var MIN_JSPLITTER = [4, 2, 1];
 
         // level: required - parts of RVG fail without it; recommended - a feature or a
         // panel of the shipped layout needs it; optional - nice to have.
@@ -89,11 +88,11 @@ if (typeof RivageHealth === 'undefined') {
             var jsVersionText = '';
             try { jsVersionText = String(utils.Version || ''); } catch (e) { jsVersionText = ''; }
             var jsVersion = parseVersion(jsVersionText);
-            if (!jsVersion || !atLeast(jsVersion, FULL_JSPLITTER)) {
+            if (!jsVersion || !atLeast(jsVersion, MIN_JSPLITTER)) {
                 items.push({ id: 'jsplitter', label: 'JSplitter ' + (jsVersionText || '(version unknown)'), ok: false,
                     problem: 'update needed',
-                    level: jsVersion && !atLeast(jsVersion, MIN_JSPLITTER) ? 'required' : 'recommended',
-                    detail: 'RVG needs JSplitter 4 or newer; Spectrum, VU meter and partial repaints need 4.2.1.',
+                    level: 'required',
+                    detail: 'RVG needs JSplitter 4.2.1 or newer; older builds throw script errors.',
                     url: 'https://github.com/dima-lur/jsplitter' });
             } else {
                 items.push({ id: 'jsplitter', label: 'JSplitter', ok: true, level: 'required',

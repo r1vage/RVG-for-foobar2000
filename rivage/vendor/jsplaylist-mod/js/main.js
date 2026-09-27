@@ -3,7 +3,7 @@
 // Modified by RivaGe
 // *****************************************************************************************************************************************
 
-var g_script_version = "2.18.0";
+var g_script_version = "2.19.0";
 var g_LDT = DT_LEFT | DT_VCENTER | DT_CALCRECT | DT_NOPREFIX | DT_END_ELLIPSIS;
 var g_middle_clicked = false;
 var g_middle_click_timer = false;
@@ -1664,6 +1664,15 @@ function togglePlaylistManager() {
 	};
 };
 
+// Playlist manager width: half the playlist, never so narrow that the names
+// are unreadable, never wider than the panel. Every place that sets
+// cPlaylistManager.width goes through here, so the slide animation (which
+// stops at cPlaylistManager.width) always matches the width it is drawn at.
+function playlistManagerWidth() {
+	var panel_w = (typeof ww == "number" && ww > 0) ? ww : window.Width;
+	return Math.min(panel_w, Math.max(zoom(160, g_dpi), Math.round(panel_w * 0.5)));
+};
+
 function applyPlaylistManagerVisibilityTarget() {
 	if (cPlaylistManager.hscroll_timer) return;
 	var target = cPlaylistManager.visibility_target;
@@ -1690,7 +1699,7 @@ function adjustMetrics(origin) {
 		cover.resized = true;
 	cScrollBar.width = (g_dpi != g_dpi_percent ? Math.ceil(get_system_scrollbar_width() * g_dpi / 100) : get_system_scrollbar_width());
 	cTrack.height = zoom(cRow.playlist_h, g_dpi);
-	cPlaylistManager.width = zoom(220, g_dpi);
+	cPlaylistManager.width = playlistManagerWidth();
 	cPlaylistManager.rowHeight = zoom(cRow.playlistManager_h, g_dpi);
 	cPlaylistManager.statusBarHeight = zoom(16, g_dpi);
 	cPlaylistManager.step = zoom(50, g_dpi);
@@ -2017,7 +2026,7 @@ function resize_panels() {
 		p.headerBar.visible = false;
 	};
 
-	// playlist_manager default width/height ?
+	cPlaylistManager.width = playlistManagerWidth();
 	var playlistManager_h = wh - topbar_h;
 	cPlaylistManager.visible_on_launch = cPlaylistManager.visible;
 	if (cPlaylistManager.visible) {
@@ -3256,7 +3265,7 @@ var act_pls = plman.ActivePlaylist;
 			case VK_F2:
 				// rename playlist (playlist manager panel visible)
 				if (cPlaylistManager.visible) {
-					p.playlistManager.inputbox = new oInputbox(p.playlistManager.w - p.playlistManager.border - p.playlistManager.scrollbarWidth - 40, cPlaylistManager.rowHeight - 10, plman.GetPlaylistName(act_pls), "", g_color_normal_txt, g_color_normal_bg, RGB(0, 0, 0), g_color_selected_bg & 0xccffffff, "renamePlaylist()", "p.playlistManager", 0, g_fsize, 225);
+					p.playlistManager.inputbox = new oInputbox(p.playlistManager.w - p.playlistManager.border - p.playlistManager.scrollbarWidth - (p.playlistManager.text_x_offset || 40) - zoom(12, g_dpi), cPlaylistManager.rowHeight - 10, plman.GetPlaylistName(act_pls), "", p.playlistManager.palette.text, p.playlistManager.palette.input, p.playlistManager.palette.separator, pm_accent(120), "renamePlaylist()", "p.playlistManager", 0, g_font_row_size, 225);
 					p.playlistManager.inputboxID = act_pls;
 					// activate box content + selection activated
 					if (cPlaylistManager.inputbox_timer) {
