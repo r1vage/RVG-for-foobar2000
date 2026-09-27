@@ -1,6 +1,6 @@
 # RVG skin for foobar2000
 
-![RVG for foobar2000](https://i.ibb.co/Xf2XD21K/splash.webp)
+![RVG for foobar2000](https://i.ibb.co/V0LXzcSz/rvg-for-foobar2000.webp)
 
 **Version 1.0.0** · **Author: RivaGe**
 
