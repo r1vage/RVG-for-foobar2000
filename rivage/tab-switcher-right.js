@@ -82,6 +82,7 @@ var PROPERTY_RESIZING_MODE = 'RIVAGE.Layout.EnableResizingMode';
 var PROPERTY_PRESETS_SIDE = 'RIVAGE.Layout.PresetsSide'; // 'left' | 'right'
 var PROPERTY_MINI_LAYOUT = 'RIVAGE.MiniPlayer.Layout'; // 'classic' | 'cover'
 var PROPERTY_MINI_LOCK_WINDOW_SIZE = 'RIVAGE.MiniPlayer.LockWindowSize';
+var PROPERTY_MINI_BORDERLESS = 'RIVAGE.MiniPlayer.Borderless';
 var PROPERTY_MINI_ALWAYS_ON_TOP = 'RIVAGE.MiniPlayer.AlwaysOnTop';
 var PROPERTY_MINI_RESTORE_ALWAYS_ON_TOP = 'RIVAGE.MiniPlayer.RestoreAlwaysOnTop';
 var PROPERTY_MINI_RESTORE_LOCK_WINDOW_SIZE = 'RIVAGE.MiniPlayer.RestoreLockWindowSize';
@@ -292,6 +293,7 @@ var presetsSide = PresetsSideProtocol.normalise(
 var miniPlayerSettings = MiniPlayerProtocol.normaliseSettings({
     layout: window.GetProperty(PROPERTY_MINI_LAYOUT, MiniPlayerProtocol.Layout.Classic),
     lockWindowSize: window.GetProperty(PROPERTY_MINI_LOCK_WINDOW_SIZE, false),
+    borderless: window.GetProperty(PROPERTY_MINI_BORDERLESS, true),
     alwaysOnTop: window.GetProperty(PROPERTY_MINI_ALWAYS_ON_TOP, true),
     restoreAlwaysOnTop: window.GetProperty(PROPERTY_MINI_RESTORE_ALWAYS_ON_TOP, true),
     restoreLockWindowSize: window.GetProperty(PROPERTY_MINI_RESTORE_LOCK_WINDOW_SIZE, true),
@@ -962,6 +964,10 @@ function setMiniPlayerSetting(settingId, value) {
     case 'miniPlayerLockWindowSize':
         key = 'lockWindowSize';
         property = PROPERTY_MINI_LOCK_WINDOW_SIZE;
+        break;
+    case 'miniPlayerBorderless':
+        key = 'borderless';
+        property = PROPERTY_MINI_BORDERLESS;
         break;
     case 'miniPlayerAlwaysOnTop':
         key = 'alwaysOnTop';
@@ -2436,6 +2442,9 @@ function getMiniPlayerPanelSettings() {
         { id: 'miniPlayerLockWindowSize', label: 'Lock Mini Player window size', type: 'bool',
           value: miniPlayerSettings.lockWindowSize,
           hint: 'Prevents mouse resizing while compact' },
+        { id: 'miniPlayerBorderless', label: 'Borderless Mini Player window', type: 'bool',
+          value: miniPlayerSettings.borderless,
+          hint: 'Hides the title bar and frame while compact; drag any empty spot or the cover to move it, and the edges to resize. Requires JSplitter 4.2.2 or newer' },
         { id: 'miniPlayerAlwaysOnTop', label: 'Keep Mini Player always on top', type: 'bool',
           value: miniPlayerSettings.alwaysOnTop,
           hint: 'Applied while compact only' },

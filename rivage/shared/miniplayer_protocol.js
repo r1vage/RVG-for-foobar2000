@@ -60,6 +60,7 @@ if (typeof MiniPlayerProtocol === 'undefined') {
             return {
                 layout: DEFAULT_LAYOUT,
                 lockWindowSize: false,
+                borderless: true,
                 alwaysOnTop: true,
                 restoreAlwaysOnTop: true,
                 restoreLockWindowSize: true,
@@ -78,6 +79,7 @@ if (typeof MiniPlayerProtocol === 'undefined') {
             return {
                 layout: normaliseLayout(source.layout, base.layout),
                 lockWindowSize: asBoolean(source.lockWindowSize, base.lockWindowSize),
+                borderless: asBoolean(source.borderless, base.borderless),
                 alwaysOnTop: asBoolean(source.alwaysOnTop, base.alwaysOnTop),
                 restoreAlwaysOnTop: asBoolean(source.restoreAlwaysOnTop, base.restoreAlwaysOnTop),
                 restoreLockWindowSize: asBoolean(source.restoreLockWindowSize, base.restoreLockWindowSize),

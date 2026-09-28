@@ -2,6 +2,12 @@
 
 All notable changes to RVG (skin for foobar2000) are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Borderless Mini Player** — the Mini Player can drop its title bar and frame. Drag any empty spot, or the cover, to move it around; the edges still resize it. On by default; switch it off in RVG Settings › Mini Player. Needs JSplitter 4.2.2 or newer.
+
 ## [1.0.0] - 2026-09-27
 
 ### Added

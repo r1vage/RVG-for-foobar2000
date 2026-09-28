@@ -413,9 +413,14 @@ function adoptMiniPlayerSettings(settings) {
     const next = MiniPlayerProtocol.normaliseSettings(settings, miniPlayerSettings);
     const policyChanged = next.lockWindowSize !== miniPlayerSettings.lockWindowSize ||
         next.alwaysOnTop !== miniPlayerSettings.alwaysOnTop;
+    const frameChanged = next.borderless !== miniPlayerSettings.borderless;
 
     miniPlayerSettings = next;
-    if (!policyChanged || !miniModeActive) return;
+    if (!miniModeActive) return;
+    if (frameChanged && !applyMiniWindowFrame(true)) {
+        logDiagnostic('Mini Player: the window frame could not be changed.');
+    }
+    if (!policyChanged) return;
 
     if (!applyActiveMiniPolicies()) {
         logDiagnostic('Mini Player: an active window policy could not be applied.');
@@ -428,21 +433,63 @@ function isUsableRect(rect) {
         rect.w >= MINI_MIN_SIZE && rect.h >= MINI_MIN_SIZE;
 }
 
+// fb.Window (JSplitter 4.2.2+) replaces the deprecated window.FoobarWindow*.
+function getMainWindow() {
+    try {
+        return fb.Window || null;
+    } catch (e) {
+        return null;
+    }
+}
+
 function readCurrentWindowRect() {
+    const mainWindow = getMainWindow();
+    const source = mainWindow
+        ? { x: mainWindow.X, y: mainWindow.Y, w: mainWindow.Width, h: mainWindow.Height }
+        : { x: window.FoobarWindowX, y: window.FoobarWindowY, w: window.FoobarWindowWidth, h: window.FoobarWindowHeight };
     return {
-        x: Math.round(Number(window.FoobarWindowX) || 0),
-        y: Math.round(Number(window.FoobarWindowY) || 0),
-        w: Math.round(Number(window.FoobarWindowWidth) || 0),
-        h: Math.round(Number(window.FoobarWindowHeight) || 0)
+        x: Math.round(Number(source.x) || 0),
+        y: Math.round(Number(source.y) || 0),
+        w: Math.round(Number(source.w) || 0),
+        h: Math.round(Number(source.h) || 0)
     };
 }
 
 function applyWindowRect(rect) {
     try {
+        const mainWindow = getMainWindow();
+        if (mainWindow) {
+            mainWindow.Move(rect.x, rect.y, rect.w, rect.h);
+            return true;
+        }
         window.FoobarWindowWidth = rect.w;
         window.FoobarWindowHeight = rect.h;
         window.FoobarWindowX = rect.x;
         window.FoobarWindowY = rect.y;
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+// JSplitter 4.2.2 does not define the documented FrameStyle global.
+const MINI_FRAME_STYLE = typeof FrameStyle !== 'undefined'
+    ? FrameStyle
+    : { Default: 0, NoCaption: 1, NoBorder: 2 };
+
+// JSplitter drops these requests when the script unloads, so nothing needs
+// recovering at startup. Call before moving the window.
+function applyMiniWindowFrame(active) {
+    const mainWindow = getMainWindow();
+    if (!mainWindow) return true;
+    try {
+        const borderless = active && miniPlayerSettings.borderless;
+        mainWindow.FrameStyle = borderless ? MINI_FRAME_STYLE.NoBorder : MINI_FRAME_STYLE.Default;
+        if (active) {
+            mainWindow.MinWidth = MINI_MIN_SIZE;
+            mainWindow.MinHeight = MINI_MIN_SIZE;
+        }
+        mainWindow.MinSize = !!active;
         return true;
     } catch (e) {
         return false;
@@ -604,7 +651,7 @@ function enterMiniMode() {
     let miniRect = readJsonProperty(MINI_RECT_PROPERTY);
     if (!isUsableRect(miniRect)) miniRect = defaultMiniRect(normalRect);
 
-    // The main-menu lock blocks FoobarWindowWidth/Height writes. Temporarily
+    // The main-menu lock blocks window size writes. Temporarily
     // release it for the compact resize, then apply the Mini Player policy.
     if (!setWindowSizeLocked(false)) {
         writeProperty(MINI_WAS_ACTIVE_PROPERTY, false);
@@ -616,10 +663,14 @@ function enterMiniMode() {
     miniBackdropRefreshPending = true;
     closeQuickSwitcher();
     requestDeferredLayout(true);
+    if (!applyMiniWindowFrame(true)) {
+        logDiagnostic('Mini Player: the borderless frame could not be applied.');
+    }
     if (!applyWindowRect(miniRect)) {
         miniModeActive = false;
         miniBackdropRefreshPending = true;
         requestDeferredLayout(true);
+        applyMiniWindowFrame(false);
         const rollbackRestored = applyWindowRect(normalRect);
         const rollbackLockRestored = setWindowSizeLocked(prevLockWindowSize);
         // A partial compact rectangle is recoverable on the next load, but a failed
@@ -658,6 +709,7 @@ function exitMiniMode() {
     requestDeferredLayout(true);
 
     const lockReleased = setWindowSizeLocked(false);
+    applyMiniWindowFrame(false);
     const normalRectRestored = lockReleased && isUsableRect(normalRect) && applyWindowRect(normalRect);
     restoreNormalWindowPolicies(prevAlwaysOnTop, prevLockWindowSize, 'exit', false);
     // Only a failed geometry restore keeps this marker; a policy that did not take

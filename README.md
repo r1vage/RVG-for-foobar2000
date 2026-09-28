@@ -13,7 +13,7 @@ RVG is a UWP inspired, panel-based foobar2000 skin built for JSPlitter. It is a 
 ## Requirements
 
 - **foobar2000 x64** (x32 may work, I haven't tested it).
-- **JSplitter 4.2.1 or newer** ([foo_uie_jsplitter](https://github.com/dima-lur/jsplitter)). Older builds are missing drawing functions RVG relies on, and panels will throw script errors.
+- **JSplitter 4.2.1 or newer** ([foo_uie_jsplitter](https://github.com/dima-lur/jsplitter)). Older builds are missing drawing functions RVG relies on, and panels will throw script errors. The borderless Mini Player needs 4.2.2 or newer.
 
 - **Required and recommended\* components:**
 

@@ -724,8 +724,24 @@ var loveBtn = makeButton({
 });
 var exitBtn = makeButton({ id: "exit", glyph: EXIT_GLYPH, onClick: function () { MiniPlayerProtocol.requestExit(); } });
 var allButtons = [prevBtn, playBtn, nextBtn, loveBtn, exitBtn];
+
+// Movement after pressing the cover that turns the click into a window drag.
+var ART_DRAG_THRESHOLD = 4;
+
+// Needs JSplitter 4.2.2+ (fb.Window).
+function startWindowMove() {
+    try {
+        if (!fb.Window) return false;
+        fb.Window.MoveStart();
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
 var pressedButton = null;
 var artPressed = false;
+var artPressX = 0;
+var artPressY = 0;
 var ratingHover = 0;
 var ratingPressed = 0;
 
@@ -1292,6 +1308,13 @@ function on_mouse_move(x, y, mask) {
     var seekResult;
     var nextRatingHover = ratingStarAt(x, y);
 
+    if (artPressed && (Math.abs(x - artPressX) > _scale(ART_DRAG_THRESHOLD) ||
+            Math.abs(y - artPressY) > _scale(ART_DRAG_THRESHOLD))) {
+        artPressed = false;
+        startWindowMove();
+        return;
+    }
+
     for (i = 0; i < allButtons.length; i++) {
         btn = allButtons[i];
         hoverNow = btn.w > 0 && btn.h > 0 && btn.isEnabled() && btn.contains(x, y);
@@ -1352,7 +1375,14 @@ function on_mouse_lbtn_down(x, y) {
         return;
     }
 
-    artPressed = isPointInRect(layoutRects.art, x, y);
+    if (isPointInRect(layoutRects.art, x, y)) {
+        artPressed = true;
+        artPressX = x;
+        artPressY = y;
+        return;
+    }
+
+    startWindowMove();
 }
 
 function on_mouse_lbtn_up(x, y) {
