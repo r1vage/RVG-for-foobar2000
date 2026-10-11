@@ -2,7 +2,7 @@
 
 All notable changes to RVG (skin for foobar2000) are documented here.
 
-## [Unreleased]
+## [1.0.1] - 2026-10-11
 
 ### Added
 
