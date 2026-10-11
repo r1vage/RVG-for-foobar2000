@@ -76,9 +76,12 @@ function _scale(value) {
 // Position locally; only the tooltip box rendering is shared.
 var tooltipPainter = RivageUI.createPainter({ scale: _scale });
 
+// Core: Default size relative to stock; refreshed in on_font_changed().
+var fontPreference = 1;
+
 function fontPx(value) {
     if (Number(value) === 0) return 0;
-    return Math.max(1, Math.round(_scale(value) * adaptiveFontScale));
+    return Math.max(1, Math.round(_scale(value) * adaptiveFontScale * fontPreference));
 }
 
 function updateAdaptiveFontScale(width, height) {
@@ -238,6 +241,7 @@ function updateFixedHeight() {
 
 function on_font_changed() {
     hostFontName = RivageUI.hostFontFamily() || "Segoe UI";
+    fontPreference = RivageUI.fontPreferenceScale();
     refreshPanelDpi();
     updateFixedHeight();
     layout();

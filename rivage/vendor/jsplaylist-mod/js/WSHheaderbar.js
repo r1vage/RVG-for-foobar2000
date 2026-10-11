@@ -248,7 +248,7 @@ oHeaderBar = function () {
 							images.sortdirection && gr.DrawImage(images.sortdirection, sx, sh, images.sortdirection.Width, images.sortdirection.Height, 0, 0, images.sortdirection.Width, images.sortdirection.Height, (this.sortedColumnDirection > 0 ? 180 : 0), 130);
 						};
 					};
-					gr.GdiDrawText(this.columns[j].label, gdi_font(g_fname, this.txtHeight, 1), g_color_normal_txt, cx + (this.borderWidth * 2), cy + 1, cw - (this.borderWidth * 4) - 1, this.h, this.columns[j].DT_align | DT_VCENTER | DT_CALCRECT | DT_NOPREFIX | DT_END_ELLIPSIS);
+					gr.GdiDrawText(this.columns[j].label, gdi_font(g_uiFontName, this.txtHeight, 1), g_color_normal_txt, cx + (this.borderWidth * 2), cy + 1, cw - (this.borderWidth * 4) - 1, this.h, this.columns[j].DT_align | DT_VCENTER | DT_CALCRECT | DT_NOPREFIX | DT_END_ELLIPSIS);
 				} else if (j == this.columnDraggedId && this.columnDragged == 2) {
 					gr.FillSolidRect(cx, cy, cw, this.h, g_color_normal_txt & 0x0cffffff);
 				};
@@ -286,7 +286,7 @@ oHeaderBar = function () {
 							images.sortdirection && gr.DrawImage(images.sortdirection, sx, sh, images.sortdirection.Width, images.sortdirection.Height, 0, 0, images.sortdirection.Width, images.sortdirection.Height, (this.sortedColumnDirection > 0 ? 180 : 0), 130);
 						};
 					};
-					gr.GdiDrawText(this.columns[j].label, gdi_font(g_fname, this.txtHeight, 1), g_color_normal_txt, cx + (this.borderWidth * 2), cy + 1, cw - (this.borderWidth * 4) - 1, this.h, this.columns[j].DT_align | DT_VCENTER | DT_CALCRECT | DT_NOPREFIX | DT_END_ELLIPSIS);
+					gr.GdiDrawText(this.columns[j].label, gdi_font(g_uiFontName, this.txtHeight, 1), g_color_normal_txt, cx + (this.borderWidth * 2), cy + 1, cw - (this.borderWidth * 4) - 1, this.h, this.columns[j].DT_align | DT_VCENTER | DT_CALCRECT | DT_NOPREFIX | DT_END_ELLIPSIS);
 				} else if (j == this.columnDraggedId && this.columnDragged == 2) {
 					gr.FillSolidRect(cx, cy, cw, this.h, g_color_normal_txt & 0x18ffffff);
 				};
@@ -307,7 +307,7 @@ oHeaderBar = function () {
 			gr.DrawRect(cx, cy + 1, Math.floor(this.columns[this.columnDraggedId].w - 2), this.h - 2, 2.0, g_color_normal_txt);
 			gr.DrawRect(cx + 1, cy + 2, Math.floor(this.columns[this.columnDraggedId].w - 5), this.h - 5, 1.0, blendColors(g_color_normal_txt, g_color_normal_bg, 0.55));
 			// header text info
-			gr.GdiDrawText(this.columns[this.columnDraggedId].label, gdi_font(g_fname, this.txtHeight, 1), g_color_normal_bg, cx + (this.borderWidth * 2), cy + 1, this.columns[this.columnDraggedId].w - (this.borderWidth * 4) - 2, this.h, this.columns[this.columnDraggedId].DT_align | DT_VCENTER | DT_CALCRECT | DT_NOPREFIX | DT_END_ELLIPSIS);
+			gr.GdiDrawText(this.columns[this.columnDraggedId].label, gdi_font(g_uiFontName, this.txtHeight, 1), g_color_normal_bg, cx + (this.borderWidth * 2), cy + 1, this.columns[this.columnDraggedId].w - (this.borderWidth * 4) - 2, this.h, this.columns[this.columnDraggedId].DT_align | DT_VCENTER | DT_CALCRECT | DT_NOPREFIX | DT_END_ELLIPSIS);
 		};
 		// draw settings button
 		this.button.draw(gr, this.x + this.w, this.y, 255);

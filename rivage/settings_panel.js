@@ -4,6 +4,7 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\dynamic_theme_protocol.js")
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\album_accent_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\settings_protocol.js");
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\ui_scale.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\design_system.js");
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\cache_protocol.js");
@@ -633,18 +634,9 @@ function layout() {
 }
 
 function on_font_changed() {
-    var host_font = null, next_font_name = "Segoe UI", host_font_size = 12;
-    try {
-        host_font = window.InstanceType === 1 ? window.GetFontDUI(FontTypeDUI.defaults) : window.GetFontCUI(FontTypeCUI.items);
-        if (host_font) {
-            if (host_font.Name) next_font_name = host_font.Name;
-            if (Number(host_font.Size) > 0) host_font_size = Number(host_font.Size);
-        }
-    } catch (e) {
-        next_font_name = "Segoe UI";
-        host_font_size = 12;
-    }
-    g_dpi = Math.max(50, Math.round(host_font_size / 12 * 100));
+    var host = RivageUI.hostInfo();
+    var next_font_name = host.fontFamily || "Segoe UI";
+    g_dpi = Math.max(50, Math.round(RivageUI.textScale() * 100));
     RivageUI.clearFontCache();
 
     fonts.header = make_font(next_font_name, 15, 1);

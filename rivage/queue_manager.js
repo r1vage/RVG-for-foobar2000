@@ -105,10 +105,13 @@ function updateAdaptiveFontScale(width, height) {
     );
 }
 
+// Core: Default size relative to stock; refreshed with the host theme.
+var fontPreference = 1;
+
 function fontPx(value) {
-    var minPx = scale(MINIMUM_FONT_PT);
-    var maxPx = scale(MAXIMUM_FONT_PT);
-    var requested = Math.round(scale(value) * adaptiveFontScale);
+    var minPx = scale(MINIMUM_FONT_PT) * fontPreference;
+    var maxPx = scale(MAXIMUM_FONT_PT) * fontPreference;
+    var requested = Math.round(scale(value) * adaptiveFontScale * fontPreference);
 
     if (Number(value) === 0) return 0;
     return Math.round(clampNumber(requested, minPx, maxPx));
@@ -129,6 +132,7 @@ function currentAccent() {
 function refreshTheme() {
     hostVisualInfo = RivageUI.hostInfo();
     hostFontName = hostVisualInfo.fontFamily || 'Segoe UI';
+    fontPreference = RivageUI.fontPreferenceScale();
     theme = RivageUI.createTheme({
         host: hostVisualInfo,
         accent: currentAccent()

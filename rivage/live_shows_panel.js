@@ -6,6 +6,7 @@ window.DrawMode = 0;
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\dynamic_theme_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\album_accent_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\settings_protocol.js");
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\ui_scale.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\design_system.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\library_resolver_v2.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\library_actions_v2.js");
@@ -451,8 +452,12 @@ function drawText(gr, text, font, colour, x, y, w, h, flags) {
 
 function fillRoundRect(gr, x, y, w, h, radius, colour) {
     if (w <= 0 || h <= 0) return;
-    if (typeof gr.FillRoundRect === 'function') {
-        gr.FillRoundRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h), Math.round(radius), Math.round(radius), colour);
+    x = Math.round(x); y = Math.round(y); w = Math.round(w); h = Math.round(h);
+    // FillRoundRect throws when the corners don't fit, which fractional scales
+    // can cause after rounding (a 5 px bar with a 3 px radius).
+    const r = Math.min(Math.round(radius), Math.floor(w / 2), Math.floor(h / 2));
+    if (typeof gr.FillRoundRect === 'function' && r >= 1) {
+        gr.FillRoundRect(x, y, w, h, r, r, colour);
     } else {
         gr.FillSolidRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h), colour);
     }

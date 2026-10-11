@@ -1,6 +1,7 @@
 ﻿window.DrawMode = 0;
 
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\settings_protocol.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\power_mode.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');

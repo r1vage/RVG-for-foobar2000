@@ -146,6 +146,19 @@ var SeekbarWidget = (function (existing) {
     var SB_FONT_TYPE_CUI_ITEMS = 0;
     var SB_FONT_TYPE_DUI_CONSOLE = 5;
 
+    // Same as RivageUI.uiScaleRatio(): host fonts come sized for the Windows
+    // DPI, and RVG's UI scale may override it. ui_scale.js is included first.
+    function uiScaleRatio() {
+        var host = 0, effective = 0;
+        try {
+            if (typeof RivageScale !== "undefined" && RivageScale) {
+                host = Number(RivageScale.hostDpi()) || 0;
+                effective = Number(RivageScale.dpi()) || 0;
+            }
+        } catch (e) { }
+        return host > 0 && effective > 0 ? effective / host : 1;
+    }
+
     function inheritedConsoleFontInfo() {
         var info = {
             fontFamily: "Segoe UI",
@@ -170,7 +183,7 @@ var SeekbarWidget = (function (existing) {
 
         try {
             if (hostFont && hostFont.Name) info.fontFamily = String(hostFont.Name);
-            if (hostFont && Number(hostFont.Size) > 0) info.fontSize = Math.max(1, Math.round(Number(hostFont.Size)));
+            if (hostFont && Number(hostFont.Size) > 0) info.fontSize = Math.max(1, Math.round(Number(hostFont.Size) * uiScaleRatio()));
             if (hostFont && isFinite(Number(hostFont.Style))) info.fontStyle = Math.round(Number(hostFont.Style));
         } catch (e2) {
             // Keep the stable fallback descriptor above.

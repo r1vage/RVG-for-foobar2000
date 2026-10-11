@@ -17,8 +17,8 @@ oTopBar = function () {
 		this.txt2Height = Math.ceil(cTopBar.txtHeight * 70 / 100);
 		this.logoW = Math.max(1, this.h - ((cHeaderBar.borderWidth * 4) * 2));
 		this.logoImg = images.logo ? images.logo.Resize(this.logoW, this.logoW, 7) : null;
-		this.titleFont = gdi_font("segoe ui", this.txt1Height, 1);
-		this.infoFont = gdi_font("segoe ui", this.txt2Height, 0);
+		this.titleFont = gdi_font(g_uiFontName, this.txt1Height, 1);
+		this.infoFont = gdi_font(g_uiFontName, this.txt2Height, 0);
 	};
 
 	this.calc_playlist_duration = function () {

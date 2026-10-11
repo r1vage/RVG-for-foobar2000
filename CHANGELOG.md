@@ -8,6 +8,12 @@ All notable changes to RVG (skin for foobar2000) are documented here.
 
 - **Borderless Mini Player** — the Mini Player can drop its title bar and frame. Drag any empty spot, or the cover, to move it around; the edges still resize it. On by default; switch it off in RVG Settings › Mini Player. Needs JSplitter 4.2.2 or newer.
 
+### Changed
+
+- **One main font.** RVG now takes both the font and its size from Columns UI's **Core: Default**. Make it bigger and the text in Settings, Lyrics, Last.fm, the history and statistics panels, the Queue, Discography and the rest grows with it. Before, the size came from the playlist font instead. The Playlist keeps using **Common (list items)**.
+- **UI scale now applies everywhere.** Lyrics, Last.fm, Track information, Settings, Discography, the Playlist and several other panels used to ignore it. Tooltips and the Seekbar follow it too.
+- The Playlist's own font choice now also covers column headers, the search bar and the rename box. The Bottom bar frame labels and the empty tab message use the main font instead of a fixed Segoe UI.
+
 ## [1.0.0] - 2026-09-27
 
 ### Added

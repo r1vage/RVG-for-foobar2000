@@ -227,7 +227,7 @@ var hoverDividerIndex = -1;
 var activeDrag = null;
 
 function rebuildFrameFont() {
-    frameFont = RivageUI.font('Segoe UI Semibold', Math.max(9, scale(10)), 0);
+    frameFont = RivageUI.font(RivageUI.hostFontFamily(), Math.max(9, scale(10)), 1);
 }
 rebuildFrameFont();
 

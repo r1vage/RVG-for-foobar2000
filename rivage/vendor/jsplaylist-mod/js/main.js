@@ -1117,10 +1117,10 @@ function qs_mouse(event, x, y, delta) {
 };
 
 function qs_fonts() {
-	var key = g_fname + "|" + g_fsize;
+	var key = g_uiFontName + "|" + g_fsize;
 	if (!qs.fonts || qs.fonts.key != key)
-		qs.fonts = { key: key, bar: gdi_font(g_fname, g_fsize + 2, 1), row: gdi_font(g_fname, g_fsize, 0),
-			rowBold: gdi_font(g_fname, g_fsize, 1), small: gdi_font(g_fname, g_fsize - 1, 0), chip: gdi_font(g_fname, g_fsize - 1, 1) };
+		qs.fonts = { key: key, bar: gdi_font(g_uiFontName, g_fsize + 2, 1), row: gdi_font(g_uiFontName, g_fsize, 0),
+			rowBold: gdi_font(g_uiFontName, g_fsize, 1), small: gdi_font(g_uiFontName, g_fsize - 1, 0), chip: gdi_font(g_uiFontName, g_fsize - 1, 1) };
 	return qs.fonts;
 };
 
@@ -2292,14 +2292,14 @@ function paint_panel(gr, area) {
 			if (text_top.substr(0, 8) == "Search [") {
 				gr.SetTextRenderingHint(3);
 				var search_text = text_top.substr(8, text_top.length - 9);
-				gr.DrawString("No results for \"" + search_text + "\".", gdi_font(g_fname, g_fsize + 7, 0), g_color_normal_txt & 0x40ffffff, 0, 0 - zoom(20, g_dpi), ww, wh, cc_stringformat);
-				gr.DrawString(text_bot, gdi_font(g_fname, g_fsize + 2, 0), g_color_normal_txt & 0x40ffffff, 0, 0 + zoom(20, g_dpi), ww, wh, cc_stringformat);
+				gr.DrawString("No results for \"" + search_text + "\".", gdi_font(g_uiFontName, g_fsize + 7, 0), g_color_normal_txt & 0x40ffffff, 0, 0 - zoom(20, g_dpi), ww, wh, cc_stringformat);
+				gr.DrawString(text_bot, gdi_font(g_uiFontName, g_fsize + 2, 0), g_color_normal_txt & 0x40ffffff, 0, 0 + zoom(20, g_dpi), ww, wh, cc_stringformat);
 				gr.FillSolidRect(40, Math.floor(wh / 2), ww - 80, Math.floor(zoom(1, g_dpi)), g_color_normal_txt & 0x28ffffff);
 			} else {
 				// if empty playlist, display text info
 				gr.SetTextRenderingHint(3);
-				gr.DrawString(text_top, gdi_font(g_fname, g_fsize + 7, 0), g_color_normal_txt & 0x40ffffff, 0, 0 - zoom(20, g_dpi), ww, wh, cc_stringformat);
-				gr.DrawString(text_bot, gdi_font(g_fname, g_fsize + 2, 0), g_color_normal_txt & 0x40ffffff, 0, 0 + zoom(20, g_dpi), ww, wh, cc_stringformat);
+				gr.DrawString(text_top, gdi_font(g_uiFontName, g_fsize + 7, 0), g_color_normal_txt & 0x40ffffff, 0, 0 - zoom(20, g_dpi), ww, wh, cc_stringformat);
+				gr.DrawString(text_bot, gdi_font(g_uiFontName, g_fsize + 2, 0), g_color_normal_txt & 0x40ffffff, 0, 0 + zoom(20, g_dpi), ww, wh, cc_stringformat);
 				gr.FillSolidRect(40, Math.floor(wh / 2), ww - 80, Math.floor(zoom(1, g_dpi)), g_color_normal_txt & 0x28ffffff);
 			};
 		};
@@ -3918,6 +3918,10 @@ function get_font() {
 		font_error = true;
 	};
 
+	// RVG's UI scale (shared/ui_scale.js) applies to the Playlist too.
+	if (typeof RivageUI !== "undefined" && RivageUI.uiScaleRatio)
+		g_fsize = Math.max(1, Math.round(g_fsize * RivageUI.uiScaleRatio()));
+
 	g_dpi_percent = Math.floor(g_fsize / 12 * 100);
 	g_forced_percent = window.GetProperty("SYSTEM.dpi (0 = Default)", 0);
 	g_dpi = (g_forced_percent == 0 ? g_dpi_percent : g_forced_percent);
@@ -3933,15 +3937,15 @@ function get_font() {
 
 	if (g_forced_percent) {
 		g_fsize = Math.ceil(zoom(g_fsize, g_forced_percent));
-		g_font = gdi_font(g_fname, g_fsize, g_fstyle);
+		g_font = gdi_font(g_uiFontName, g_fsize, g_fstyle);
 	} else if (font_error) {
-		g_font = gdi_font(g_fname, g_fsize, g_fstyle);
+		g_font = gdi_font(g_uiFontName, g_fsize, g_fstyle);
 	};
 
 	g_font_playicon = gdi_font("wingdings 3", Math.floor(zoom(17, g_dpi)), 0);
 	g_font_pauseicon = gdi_font("wingdings", Math.floor(zoom(17, g_dpi)), 0);
 	g_font_checkbox = gdi_font("wingdings 2", Math.floor(zoom(18, g_dpi)), 0);
-	g_font_queue_idx = gdi_font("tahoma", Math.floor(zoom(11, g_dpi)), 1);
+	g_font_queue_idx = gdi_font(g_uiFontName, Math.floor(zoom(11, g_dpi)), 1);
 
 	if (g_font_guifx_found) {
 		g_font_rating = gdi_font("guifx v2 transports", Math.floor(zoom(17, g_dpi)), 0);

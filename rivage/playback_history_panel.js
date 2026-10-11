@@ -148,23 +148,26 @@ function updateHistoryFontScale(width, height) {
     );
 }
 
+// Core: Default size relative to stock; refreshed with the host theme.
+var fontPreference = 1;
+
 function fontPx(value) {
-    var minPx = scale(UI_MINIMUM_FONT_PT);
-    var maxPx = scale(UI_MAXIMUM_FONT_PT);
+    var minPx = scale(UI_MINIMUM_FONT_PT) * fontPreference;
+    var maxPx = scale(UI_MAXIMUM_FONT_PT) * fontPreference;
     var requested;
 
     if (Number(value) === 0) return 0;
-    requested = Math.round(scale(value) * adaptiveFontScale);
+    requested = Math.round(scale(value) * adaptiveFontScale * fontPreference);
     return Math.round(clampNumber(requested, minPx, maxPx));
 }
 
 function historyFontPx(value) {
-    var minPx = scale(HISTORY_MINIMUM_FONT_PT);
-    var maxPx = scale(HISTORY_MAXIMUM_FONT_PT);
+    var minPx = scale(HISTORY_MINIMUM_FONT_PT) * fontPreference;
+    var maxPx = scale(HISTORY_MAXIMUM_FONT_PT) * fontPreference;
     var requested;
 
     if (Number(value) === 0) return 0;
-    requested = Math.round(scale(value) * historyFontScale);
+    requested = Math.round(scale(value) * historyFontScale * fontPreference);
     return Math.round(clampNumber(requested, minPx, maxPx));
 }
 
@@ -208,6 +211,7 @@ function currentAccent() {
 function refreshTheme() {
     hostVisualInfo = RivageUI.hostInfo();
     hostFontName = hostVisualInfo.fontFamily || 'Segoe UI';
+    fontPreference = RivageUI.fontPreferenceScale();
 
     theme = RivageUI.createTheme({
         host: hostVisualInfo,
@@ -221,6 +225,7 @@ function currentFontResourceSignature() {
     return [
         String(hostFontName || 'Segoe UI').toLowerCase(),
         panelDpi,
+        Math.round(fontPreference * 10000),
         Math.round(adaptiveFontScale * 10000),
         Math.round(historyFontScale * 10000),
         String(syncedHeaderFontFamily || '').toLowerCase(),

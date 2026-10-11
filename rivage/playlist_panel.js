@@ -16,6 +16,7 @@ function reportFailure(what, err) {
 }
 
 // WSHplaylistmanager.js reads RivageUI at include time, so the design system must load first.
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\ui_scale.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\design_system.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\dynamic_theme_protocol.js");
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');

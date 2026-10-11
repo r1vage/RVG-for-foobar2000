@@ -63,7 +63,7 @@ Open **RVG Settings › Global settings** for the settings that affect several p
 - **Allow panel resizing:** enables the draggable layout dividers. Enable, resize, disable to save the positions.
 - **Maintain `> History` playlist:** controls RVG's automatic play-history playlist.
 - **Artwork colour extraction:** Material You palette or the legacy extractor.
-- **UI scale:** Follow Windows DPI (default), **Ignore Windows DPI (100%)**, or a custom percentage between 50 and 300 applied to every RVG panel. Windows reports its DPI to foobar2000 only at startup, so a change here takes effect after foobar2000 is restarted. It scales panel layout and the sizes RVG derives itself; text that follows a foobar2000 host font still follows that font.
+- **UI scale:** Follow Windows DPI (default), **Ignore Windows DPI (100%)**, or a custom percentage between 50 and 300 applied to every RVG panel. Windows reports its DPI to foobar2000 only at startup, so a change here takes effect after foobar2000 is restarted. It scales panel layout and all RVG text, including text that takes its font from foobar2000; the size you set for those fonts is kept, just scaled.
 - **Health:** what RVG needs and whether it is installed — components, JSplitter version, fonts and the Last.fm account — each with what uses it and a **Get** button for anything missing. Opens by itself on the first start if something is missing; also on the Quick switcher as **Run health check**.
 - **Low-power mode:** for slower machines. Artwork Mica paints as the plain artwork palette, Spectrum, VU meter and Lyrics animation are capped at 20 fps, and scrolling titles stay still. Your own settings are untouched and return when it is switched off. Also on the Quick switcher as **Toggle low-power mode**.
 - **Backup & Restore:** export/import RVG settings as JSON.
@@ -203,16 +203,15 @@ Enable **RVG Settings › Global settings › Allow panel resizing** to use the 
 
 ## Font wiring
 
-1. **Most RVG text panels** use the foobar2000 Columns UI/Core: Default family as their host font reference.
-2. **Playlist** follows the foobar2000 playlist/Common (list items) font when its custom Family field is blank.
-3. **Settings** also follows Common (list items) under Columns UI.
-4. **Top and bottom Tabs** use Common (labels) by default; their shared font can be overridden in RVG Settings › Tabs.
-5. **Presets** use Common (labels) by default and have an optional custom button font.
-6. **Shared Seekbar** uses Core: Console by default; leave its Font family blank to keep inheritance.
-7. **Player and Top bar** use the host family for main text and can override that family independently; their tooltip/seekbar path still uses Core: Console.
-8. **Lyrics** uses the host family unless a dedicated lyric font is selected; active/inactive lyric sizes remain panel settings.
-9. **Playback statistics and Track information** use the host family with their own text-size controls; Spectrum/VU use the host family for normal labels.
-10. **Playback history and Compact Queue** use native row tooltips matching their row font; a few layout-only labels still use hard-coded Segoe UI/Segoe UI Semibold.
+All fonts come from **Preferences › Display › Columns UI › Colours and fonts › Fonts**, and all of them follow **UI scale**.
+
+1. **Main font — Core: Default.** Its family is used by every RVG panel except the Playlist and the tab bars. Its size sets how big text is in panels that show lists, cards and messages: Settings, Lyrics, Last.fm, Last.fm Charts, Track information, Playback statistics, Playback history, Compact Queue, Playback timeline, Rewind, Rediscover, Discography, Live shows, MusicBrainz tagger and Quick switcher. 9 pt is the normal size; 12 pt makes their text a third bigger.
+2. **Panels sized to fit** — Player, Top bar, Mini Player, Custom buttons, Bottom bar frame labels and the Spectrum/VU labels use the main font's family, but their text size follows the panel, so it always fits. Player and Top bar can use a different family in their settings.
+3. **Playlist — Common (list items).** Its size is the Playlist's 100%; each part (rows, group headers, column headers, search) has its own size in the Playlist settings, and its **Family** field replaces the font everywhere in the Playlist, column headers included.
+4. **Tabs and Presets — Common (labels)**, unless you pick another font in RVG Settings › Tabs or the Presets menu.
+5. **Seekbar and tooltips — Core: Console.** The Seekbar can use its own font in RVG Settings › Seekbar.
+6. **Lyrics** can use a separate font for the lyric lines; everything else in the panel uses the main font.
+7. **Icons** use Segoe Fluent Icons, or Segoe MDL2 Assets on Windows 10.
 
 ## Optional components and first-run behaviour
 

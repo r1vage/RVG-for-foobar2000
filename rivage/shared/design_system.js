@@ -317,6 +317,29 @@ var RivageUI = (function (existing) {
         return 'Segoe MDL2 Assets';
     }
 
+    // Host fonts arrive sized for the Windows DPI foobar2000 started with.
+    // RVG's UI scale (shared/ui_scale.js) can override that DPI, so every font
+    // taken from the host is multiplied by this ratio to follow it too.
+    function hostDpiValue() {
+        var dpi = 0;
+        try {
+            if (typeof RivageScale !== 'undefined' && RivageScale) dpi = Number(RivageScale.hostDpi()) || 0;
+        } catch (e) { dpi = 0; }
+        return dpi > 0 ? dpi : 96;
+    }
+
+    function effectiveDpiValue() {
+        var dpi = 0;
+        try {
+            if (typeof RivageScale !== 'undefined' && RivageScale) dpi = Number(RivageScale.dpi()) || 0;
+        } catch (e) { dpi = 0; }
+        return dpi > 0 ? dpi : hostDpiValue();
+    }
+
+    function uiScaleRatio() {
+        return effectiveDpiValue() / hostDpiValue();
+    }
+
     // Three to five host COM calls per invocation, uncached (this module owns
     // no callbacks, so it cannot know when to invalidate). Call from
     // update_colours()/on_colours_changed, never from on_paint.
@@ -329,37 +352,40 @@ var RivageUI = (function (existing) {
             scaleFontSize: 12,
             dark: true
         };
-        var scaleFont = null;
-        var familyFont = null;
+        var mainFont = null;
 
         try {
             if (typeof window !== 'undefined' && window && window.InstanceType === 1) {
                 result.background = window.GetColourDUI(COLOUR_TYPE_DUI.background);
                 result.text = window.GetColourDUI(COLOUR_TYPE_DUI.text);
                 result.accent = window.GetColourDUI(COLOUR_TYPE_DUI.highlight);
-                scaleFont = window.GetFontDUI(FONT_TYPE_DUI.defaults);
-                familyFont = scaleFont;
+                mainFont = window.GetFontDUI(FONT_TYPE_DUI.defaults);
             } else if (typeof window !== 'undefined' && window) {
                 result.background = window.GetColourCUI(COLOUR_TYPE_CUI.background);
                 result.text = window.GetColourCUI(COLOUR_TYPE_CUI.text);
                 result.accent = mix(result.text, result.background, 0.35);
-                scaleFont = window.GetFontCUI(FONT_TYPE_CUI.items);
+                // The main RVG font is Core: Default, family and size. Common
+                // (list items) belongs to the Playlist and is only a fallback.
                 try {
-                    familyFont = window.GetFontCUI(
+                    mainFont = window.GetFontCUI(
                         FONT_TYPE_CUI.items,
                         CUI_FONT_GUIDS.coreDefault
                     );
                 } catch (fontError) {
-                    familyFont = null;
+                    mainFont = null;
                 }
+                if (!mainFont) mainFont = window.GetFontCUI(FONT_TYPE_CUI.items);
             }
         } catch (e) {
             // Keep the stable fallback values.
         }
 
-        if (!familyFont) familyFont = scaleFont;
-        if (familyFont && familyFont.Name) result.fontFamily = String(familyFont.Name);
-        if (scaleFont && Number(scaleFont.Size) > 0) result.scaleFontSize = Number(scaleFont.Size);
+        if (mainFont && mainFont.Name) result.fontFamily = String(mainFont.Name);
+        if (mainFont && Number(mainFont.Size) > 0) result.hostFontSize = Number(mainFont.Size);
+        else result.hostFontSize = Math.round(12 * hostDpiValue() / 96);
+        // scaleFontSize is the main font's size with RVG's UI scale applied:
+        // panels treat it as their 100% text size (12 px) multiplied up or down.
+        result.scaleFontSize = Math.max(1, Math.round(result.hostFontSize * uiScaleRatio()));
         result.background = opaque(result.background);
         result.text = opaque(result.text);
         result.accent = opaque(result.accent);
@@ -369,6 +395,22 @@ var RivageUI = (function (existing) {
 
     function hostFontFamily() {
         return hostInfo().fontFamily;
+    }
+
+    // How much bigger the main font is than stock (9 pt = 12 px at 96 DPI),
+    // with Windows DPI taken out. Panels that already scale by
+    // RivageScale.dpi() multiply their text sizes by this.
+    function fontPreferenceScale() {
+        var info = hostInfo();
+        var scale = Number(info.hostFontSize) / (12 * hostDpiValue() / 96);
+        return isFinite(scale) && scale > 0 ? scale : 1;
+    }
+
+    // The whole text scale: main font size and UI scale together, 1 at stock
+    // size and 96 DPI. For panels that size text from a 12 px base.
+    function textScale() {
+        var scale = Number(hostInfo().scaleFontSize) / 12;
+        return isFinite(scale) && scale > 0 ? scale : 1;
     }
 
     function fontInfoFromHostFont(font, fallbackFamily, fallbackSize, source) {
@@ -424,12 +466,14 @@ var RivageUI = (function (existing) {
             font = null;
         }
 
-        return fontInfoFromHostFont(
+        var info = fontInfoFromHostFont(
             font,
             fallback.fontFamily || 'Segoe UI',
-            fallback.scaleFontSize || 12,
+            fallback.hostFontSize || 12,
             source
         );
+        info.fontSize = Math.max(1, Math.round(info.fontSize * uiScaleRatio()));
+        return info;
     }
 
     function commonLabelsFontInfo() {
@@ -1575,6 +1619,9 @@ var RivageUI = (function (existing) {
     api.iconFontFamily = iconFontFamily;
     api.hostInfo = hostInfo;
     api.hostFontFamily = hostFontFamily;
+    api.fontPreferenceScale = fontPreferenceScale;
+    api.textScale = textScale;
+    api.uiScaleRatio = uiScaleRatio;
     api.commonLabelsFontInfo = commonLabelsFontInfo;
     api.consoleFontInfo = consoleFontInfo;
     api.setSharedTheme = setSharedTheme;

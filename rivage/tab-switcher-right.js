@@ -237,7 +237,13 @@ function refreshRootTheme() {
     COLOUR_MESSAGE = rootTheme.textSecondary;
 }
 
-var messageFont = RivageUI.font('Segoe UI', Math.max(10, Math.round(12 * dpi / 96)), 0);
+// The empty-tab-host message is ordinary text in the main font.
+var messageFont = null;
+function rebuildMessageFont() {
+    messageFont = RivageUI.font(RivageUI.hostFontFamily(),
+        Math.max(10, Math.round(12 * dpi / 96 * RivageUI.fontPreferenceScale())), 0);
+}
+rebuildMessageFont();
 
 var tabFont = null;
 
@@ -2617,6 +2623,7 @@ function on_colours_changed() {
 
 function on_font_changed() {
     rebuildTabFont();
+    rebuildMessageFont();
     window.Repaint(true);
 }
 
