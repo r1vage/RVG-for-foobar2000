@@ -270,7 +270,7 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 				case "Rating":
 					cw = p.headerBar.columns[j].w - g_z6;
 					if (typeof(this.rating) == "undefined") {
-						this.rating = fb.TitleFormat(p.headerBar.columns[j].tf).EvalWithMetadb(this.metadb);
+						this.rating = fb.TitleFormat(stats_column_tf(p.headerBar.columns[j].tf)).EvalWithMetadb(this.metadb);
 						var ratingArray = this.parseTF(this.rating, this.text_colour);
 						this.rating = ratingArray[0];
 						this.rating_color = ratingArray[1];

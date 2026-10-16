@@ -1288,7 +1288,17 @@ function prepare_column_tf(tf, track_index, is_playing_row) {
 	tf = tf.replace(/%list_index%/gi, String(track_index + 1));
 	tf = tf.replace(/%list_total%/gi, String(p.list ? p.list.count : 0));
 	tf = tf.replace(/%isplaying%/gi, is_playing_row ? "1" : "");
-	return tf;
+	return stats_column_tf(tf);
+};
+
+// Columns, sorts and auto-playlists are written with foo_playcount's fields;
+// swap them for the active stats source's (%2003_*% / %upc_*%) so they follow it.
+function stats_column_tf(tf) {
+	if (!tf || tf.indexOf("%") == -1 || !PlaybackStatsSource.isPlaycount2003())
+		return tf;
+	var f = PlaybackStatsSource.fields();
+	return tf.replace(/%rating%/gi, f.rating).replace(/%play_count%/gi, f.plays)
+		.replace(/%first_played%/gi, f.first).replace(/%last_played%/gi, f.last).replace(/%added%/gi, f.added);
 };
 
 //=================================================// Album accent consumer (2.2)
@@ -2130,11 +2140,12 @@ function on_init() {
 on_init();
 
 // Adopt whatever another panel already has configured this session, instead
-// of sitting on this instance's own possibly-stale persisted value. No
-// onChange() hook is needed: the rating stars only read this at write time
-// (writeRatingCommand/ratingCanWrite in this file), and the rating/playcount
-// COLUMNS stay purely title-format driven, per column configuration, same as
-// before.
+// of sitting on this instance's own possibly-stale persisted value. Columns
+// map their stats fields through stats_column_tf(), so a switch rebuilds them.
+PlaybackStatsSource.onChange(function () {
+	p.list.setItems(false);
+	full_repaint();
+});
 PlaybackStatsSource.requestSync();
 
 //=================================================// OnSize

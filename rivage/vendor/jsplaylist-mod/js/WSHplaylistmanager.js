@@ -936,7 +936,7 @@ oPlaylistManager = function (obj_name) {
 		case (idx == 200):
 			var total = plman.PlaylistCount;
 			p.playlistManager.inputboxID = -1;
-			plman.CreateAutoPlaylist(total, "Tracks never played", "%play_counter% MISSING", "%album artist% | $if(%album%,%date%,'9999') | %album% | %discnumber% | %tracknumber% | %title%", 0);
+			plman.CreateAutoPlaylist(total, "Tracks never played", (PlaybackStatsSource.isPlaycount2003() ? stats_column_tf("%play_count% MISSING OR %play_count% IS 0") : "%play_counter% MISSING"), "%album artist% | $if(%album%,%date%,'9999') | %album% | %discnumber% | %tracknumber% | %title%", 0);
 			if (id == 0 && cPlaylistManager.mediaLibraryPlaylist) {
 				plman.MovePlaylist(total, id + 1);
 				plman.ActivePlaylist = id + 1;
@@ -948,7 +948,7 @@ oPlaylistManager = function (obj_name) {
 		case (idx == 201):
 			var total = plman.PlaylistCount;
 			p.playlistManager.inputboxID = -1;
-			plman.CreateAutoPlaylist(total, "Tracks played in the last 5 days", "%last_played% DURING LAST 5 DAYS", "%last_played%", 0);
+			plman.CreateAutoPlaylist(total, "Tracks played in the last 5 days", stats_column_tf("%last_played% DURING LAST 5 DAYS"), stats_column_tf("%last_played%"), 0);
 			if (id == 0 && cPlaylistManager.mediaLibraryPlaylist) {
 				plman.MovePlaylist(total, id + 1);
 				plman.ActivePlaylist = id + 1;
@@ -960,7 +960,7 @@ oPlaylistManager = function (obj_name) {
 		case (idx == 210):
 			var total = plman.PlaylistCount;
 			p.playlistManager.inputboxID = -1;
-			plman.CreateAutoPlaylist(total, "Tracks unrated", "%rating% MISSING", "%album artist% | $if(%album%,%date%,'9999') | %album% | %discnumber% | %tracknumber% | %title%", 0);
+			plman.CreateAutoPlaylist(total, "Tracks unrated", stats_column_tf("%rating% MISSING"), "%album artist% | $if(%album%,%date%,'9999') | %album% | %discnumber% | %tracknumber% | %title%", 0);
 			if (id == 0 && cPlaylistManager.mediaLibraryPlaylist) {
 				plman.MovePlaylist(total, id + 1);
 				plman.ActivePlaylist = id + 1;
@@ -972,7 +972,7 @@ oPlaylistManager = function (obj_name) {
 		case (idx == 211):
 			var total = plman.PlaylistCount;
 			p.playlistManager.inputboxID = -1;
-			plman.CreateAutoPlaylist(total, "Tracks rated 3 to 5", "%rating% GREATER 2", "%album artist% | $if(%album%,%date%,'9999') | %album% | %discnumber% | %tracknumber% | %title%", 0);
+			plman.CreateAutoPlaylist(total, "Tracks rated 3 to 5", stats_column_tf("%rating% GREATER 2"), "%album artist% | $if(%album%,%date%,'9999') | %album% | %discnumber% | %tracknumber% | %title%", 0);
 			if (id == 0 && cPlaylistManager.mediaLibraryPlaylist) {
 				plman.MovePlaylist(total, id + 1);
 				plman.ActivePlaylist = id + 1;
@@ -984,7 +984,7 @@ oPlaylistManager = function (obj_name) {
 		case (idx == 212):
 			var total = plman.PlaylistCount;
 			p.playlistManager.inputboxID = -1;
-			plman.CreateAutoPlaylist(total, "Tracks rated 4", "%rating% IS 4", "%album artist% | $if(%album%,%date%,'9999') | %album% | %discnumber% | %tracknumber% | %title%", 0);
+			plman.CreateAutoPlaylist(total, "Tracks rated 4", stats_column_tf("%rating% IS 4"), "%album artist% | $if(%album%,%date%,'9999') | %album% | %discnumber% | %tracknumber% | %title%", 0);
 			if (id == 0 && cPlaylistManager.mediaLibraryPlaylist) {
 				plman.MovePlaylist(total, id + 1);
 				plman.ActivePlaylist = id + 1;
@@ -996,7 +996,7 @@ oPlaylistManager = function (obj_name) {
 		case (idx == 213):
 			var total = plman.PlaylistCount;
 			p.playlistManager.inputboxID = -1;
-			plman.CreateAutoPlaylist(total, "Tracks rated 5", "%rating% IS 5", "%album artist% | $if(%album%,%date%,'9999') | %album% | %discnumber% | %tracknumber% | %title%", 0);
+			plman.CreateAutoPlaylist(total, "Tracks rated 5", stats_column_tf("%rating% IS 5"), "%album artist% | $if(%album%,%date%,'9999') | %album% | %discnumber% | %tracknumber% | %title%", 0);
 			if (id == 0 && cPlaylistManager.mediaLibraryPlaylist) {
 				plman.MovePlaylist(total, id + 1);
 				plman.ActivePlaylist = id + 1;

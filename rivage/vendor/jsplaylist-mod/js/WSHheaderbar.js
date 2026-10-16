@@ -663,9 +663,9 @@ oHeaderBar = function () {
 								cHeaderBar.sortRequested = true;
 								plman.UndoBackup(plman.ActivePlaylist);
 								if (this.columns[this.columnDraggedId].sortOrder != "null") {
-									plman.SortByFormatV2(plman.ActivePlaylist, this.columns[this.columnDraggedId].sortOrder, this.sortedColumnDirection);
+									plman.SortByFormatV2(plman.ActivePlaylist, stats_column_tf(this.columns[this.columnDraggedId].sortOrder), this.sortedColumnDirection);
 								} else {
-									plman.SortByFormatV2(plman.ActivePlaylist, this.columns[this.columnDraggedId].tf, this.sortedColumnDirection);
+									plman.SortByFormatV2(plman.ActivePlaylist, stats_column_tf(this.columns[this.columnDraggedId].tf), this.sortedColumnDirection);
 								};
 								update_playlist(properties.collapseGroupsByDefault);
 							} else {
