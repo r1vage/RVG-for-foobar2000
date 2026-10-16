@@ -1291,14 +1291,22 @@ function prepare_column_tf(tf, track_index, is_playing_row) {
 	return stats_column_tf(tf);
 };
 
-// Columns, sorts and auto-playlists are written with foo_playcount's fields;
-// swap them for the active stats source's (%2003_*% / %upc_*%) so they follow it.
+// Columns, sorts and auto-playlists may name foo_playcount (%rating%), Playcount 2003
+// (%2003_rating%) or Ultimate Playcount (%upc_rating%) fields; point them all at the
+// active stats source so they follow it.
 function stats_column_tf(tf) {
-	if (!tf || tf.indexOf("%") == -1 || !PlaybackStatsSource.isPlaycount2003())
+	if (!tf || tf.indexOf("%") == -1)
 		return tf;
 	var f = PlaybackStatsSource.fields();
-	return tf.replace(/%rating%/gi, f.rating).replace(/%play_count%/gi, f.plays)
-		.replace(/%first_played%/gi, f.first).replace(/%last_played%/gi, f.last).replace(/%added%/gi, f.added);
+	var core = { rating: f.rating, playcount: f.plays, play_count: f.plays, first_played: f.first, last_played: f.last, added: f.added };
+	tf = tf.replace(/%(?:(?:2003_|upc_)(rating|playcount|first_played|last_played|added)|(rating|play_count|first_played|last_played|added))%/gi,
+		function (m, prefixed, plain) { return core[(prefixed || plain).toLowerCase()]; });
+	// The rest (_ago forms, loved, ...) exists only on the 2003-style sources.
+	if (PlaybackStatsSource.isPlaycount2003()) {
+		var prefix = PlaybackStatsSource.prefix2003();
+		tf = tf.replace(/%(?:2003_|upc_)(\w+)%/gi, function (m, name) { return "%" + prefix + name + "%"; });
+	}
+	return tf;
 };
 
 //=================================================// Album accent consumer (2.2)
