@@ -90,7 +90,8 @@ var foo_playcount = utils.CheckComponent("foo_playcount", true);
 // statistics backend selectable via the global "Playback statistics field
 // source" setting (shared/playback_stats_source.js). See ratingCanWrite()/
 // writeRatingCommand() below and their one call site in WSHplaylist.js.
-var foo_playcount_2003 = utils.CheckComponent("foo_playcount_2003", true);
+// Ultimate Playcount (foo_ultimate_playcount) exposes the same fields and Rating menu.
+var foo_playcount_2003 = utils.CheckComponent("foo_playcount_2003", true) || utils.CheckComponent("foo_ultimate_playcount", true);
 clipboard = {
 	selection: null
 };
@@ -298,10 +299,11 @@ function ratingCanWrite() {
 // Rating > Clear / Set Rating to 1..5) - neither has a scripting API for it,
 // unlike e.g. handle.SetRating() for the unrelated JSplitter/SMP database.
 function writeRatingCommand(metadb, value) {
-	var command = PlaybackStatsSource.isPlaycount2003()
-		? (value ? "Playcount 2003/Rating/Set Rating to " + value : "Playcount 2003/Rating/Clear")
-		: "Playback Statistics/Rating/" + (value == 0 ? "<not set>" : value);
-	fb.RunContextCommandWithMetadb(command, metadb, 8); // Regorxxx <- Fix for hidden context menu entries ->
+	if (PlaybackStatsSource.isPlaycount2003()) {
+		PlaybackStatsSource.setRating2003(metadb, value);
+		return;
+	}
+	fb.RunContextCommandWithMetadb("Playback Statistics/Rating/" + (value == 0 ? "<not set>" : value), metadb, 8); // Regorxxx <- Fix for hidden context menu entries ->
 };
 
 // Toggle loved for a handle. Loves/unloves locally AND on Last.fm when the sync

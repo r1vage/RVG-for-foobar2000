@@ -1423,7 +1423,7 @@ let ratingHover = 0;
 let visualHoverKey = "";
 
 function ratingStorageName() {
-    return PlaybackStatsSource.isPlaycount2003() ? "Playcount 2003" : "Playback Statistics";
+    return PlaybackStatsSource.isPlaycount2003() ? PlaybackStatsSource.name2003() : "Playback Statistics";
 }
 
 function ratingStarAt(x, y) {
@@ -1442,16 +1442,9 @@ function setRating(value) {
 
     try {
         if (PlaybackStatsSource.isPlaycount2003()) {
-            // Playcount 2003's own context menu, confirmed by inspection:
-            // Playcount 2003 > Rating > Clear / Set Rating to 1..5. Unlike
-            // Playback Statistics there is no "<not set>" wording - clearing
-            // is its own separate "Clear" item.
-            const command = nextValue
-                ? "Playcount 2003/Rating/Set Rating to " + nextValue
-                : "Playcount 2003/Rating/Clear";
-            const ok = fb.RunContextCommandWithMetadb(command, new FbMetadbHandleList(handle), 8);
-            if (!ok) {
-                throw new Error("Playcount 2003 did not expose the rating command.");
+            // Ultimate Playcount or Playcount 2003 > Rating > Clear / Set Rating to 1..5.
+            if (!PlaybackStatsSource.setRating2003(new FbMetadbHandleList(handle), nextValue)) {
+                throw new Error(ratingStorageName() + " did not expose the rating command.");
             }
         } else {
             const command = nextValue

@@ -24,15 +24,32 @@ if (typeof PlaybackStatsSource === 'undefined') {
             try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
         }
 
-        function detectPlaycount2003() {
+        function hasComponent(name) {
             try {
-                return typeof utils !== 'undefined' && !!utils.CheckComponent('foo_playcount_2003', true);
+                return typeof utils !== 'undefined' && !!utils.CheckComponent(name, true);
             } catch (e) {
                 return false;
             }
         }
 
-        var playcount2003Available = detectPlaycount2003();
+        // Ultimate Playcount exposes the same %2003_*% fields and Rating menu as
+        // Playcount 2003, so both back the one 'playcount2003' source; it wins when both exist.
+        var hasUltimate = hasComponent('foo_ultimate_playcount');
+        var has2003 = hasComponent('foo_playcount_2003');
+        var playcount2003Available = hasUltimate || has2003;
+        var NAME_2003 = hasUltimate ? 'Ultimate Playcount' : 'Playcount 2003';
+        var DLL_2003 = hasUltimate ? 'foo_ultimate_playcount' : 'foo_playcount_2003';
+        var RATING_ROOTS_2003 = hasUltimate && has2003 ? ['Ultimate Playcount', 'Playcount 2003'] : [NAME_2003];
+
+        // Runs "<root>/Rating/Set Rating to N" (or ".../Rating/Clear") on the first
+        // %2003_*% component that has it; returns whether one ran.
+        function setRating2003(handles, value) {
+            var item = value ? 'Set Rating to ' + value : 'Clear';
+            for (var i = 0; i < RATING_ROOTS_2003.length; i++) {
+                if (fb.RunContextCommandWithMetadb(RATING_ROOTS_2003[i] + '/Rating/' + item, handles, 8)) return true;
+            }
+            return false;
+        }
 
         // Titleformat fields per backend, so no panel hard-codes them.
         var FIELDS = {};
@@ -54,7 +71,9 @@ if (typeof PlaybackStatsSource === 'undefined') {
             return isUsableSource(value) ? value : SOURCE_FOO_PLAYCOUNT;
         }
 
-        var storedSource = window.GetProperty(PROPERTY_PREFIX + 'Data source', SOURCE_FOO_PLAYCOUNT);
+        var defaultSource = playcount2003Available && !hasComponent('foo_playcount')
+            ? SOURCE_PLAYCOUNT_2003 : SOURCE_FOO_PLAYCOUNT;
+        var storedSource = window.GetProperty(PROPERTY_PREFIX + 'Data source', defaultSource);
         var dataSource = normaliseStoredSource(storedSource);
         if (dataSource !== storedSource) {
             window.SetProperty(PROPERTY_PREFIX + 'Data source', dataSource);
@@ -84,7 +103,7 @@ if (typeof PlaybackStatsSource === 'undefined') {
             if (playcount2003Available) {
                 choices.push({
                     value: SOURCE_PLAYCOUNT_2003,
-                    label: 'Playcount 2003 (foo_playcount_2003)'
+                    label: NAME_2003 + ' (' + DLL_2003 + ')'
                 });
             }
 
@@ -97,8 +116,8 @@ if (typeof PlaybackStatsSource === 'undefined') {
                 choices: choices
             };
             entry.hint = playcount2003Available
-                ? 'Playcount 2003 reads the %2003_*% fields.'
-                : 'Install foo_playcount_2003 to enable Playcount 2003.';
+                ? NAME_2003 + ' reads the %2003_*% fields.'
+                : 'Install foo_playcount_2003 or foo_ultimate_playcount to enable the %2003_*% fields.';
             return [entry];
         }
 
@@ -129,6 +148,9 @@ if (typeof PlaybackStatsSource === 'undefined') {
             isPlaycount2003: function () {
                 return dataSource === SOURCE_PLAYCOUNT_2003;
             },
+            // 'Ultimate Playcount' or 'Playcount 2003': the component behind the %2003_*% fields.
+            name2003: function () { return NAME_2003; },
+            setRating2003: setRating2003,
             // { plays, first, last, added, rating } titleformat strings for the active
             // backend. A copy, so callers may keep it; compare it to spot a switch.
             // history: the other places a play can be recorded, for "smart" views

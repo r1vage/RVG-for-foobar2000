@@ -22,7 +22,8 @@ if (typeof RivageHealth === 'undefined') {
             { id: 'enhanced', dll: ['foo_enhanced_playcount'], label: 'Enhanced Playback Statistics', level: 'recommended',
               uses: 'Rewind, Playback timeline, and first/last-played dates.',
               url: 'https://www.foobar2000.org/components/view/foo_enhanced_playcount' },
-            { id: 'playcount', dll: ['foo_playcount', 'foo_playcount_2003'], label: 'Playback statistics (foo_playcount or Playcount 2003)',
+            { id: 'playcount', dll: ['foo_ultimate_playcount', 'foo_playcount_2003', 'foo_playcount'],
+              label: 'Playback statistics (foo_playcount, Playcount 2003 or Ultimate Playcount)',
               level: 'recommended', uses: 'Play counts and dates in Playback statistics and Track information.',
               url: 'https://www.foobar2000.org/components/view/foo_playcount' },
             { id: 'lastfmsync', dll: ['foo_lastfm_playcount_sync'], label: 'Last.fm Playcount Sync', level: 'recommended',
@@ -108,16 +109,16 @@ if (typeof RivageHealth === 'undefined') {
             }
 
             // The statistics source setting must point at a component that exists.
-            var has2003 = !!hasComponent(['foo_playcount_2003']);
+            var has2003 = !!hasComponent(['foo_ultimate_playcount', 'foo_playcount_2003']);
             var hasPlaycount = !!hasComponent(['foo_playcount']);
             if (context.statsSourceIs2003 !== undefined && (has2003 || hasPlaycount)) {
                 var mismatch = context.statsSourceIs2003 ? !has2003 : !hasPlaycount;
+                var sourceName = context.statsSourceIs2003 ? 'Playcount 2003 / Ultimate Playcount' : 'foo_playcount';
                 items.push({ id: 'statssource', label: 'Playback statistics source', ok: !mismatch, level: 'recommended',
                     problem: 'wrong component',
                     detail: mismatch
-                        ? 'Set to ' + (context.statsSourceIs2003 ? 'Playcount 2003' : 'foo_playcount') +
-                          ', which is not installed. Switch it under General.'
-                        : 'Reads ' + (context.statsSourceIs2003 ? 'Playcount 2003' : 'foo_playcount') + ' fields.' });
+                        ? 'Set to ' + sourceName + ', which is not installed. Switch it under General.'
+                        : 'Reads ' + sourceName + ' fields.' });
             }
 
             var fluent = hasFont('Segoe Fluent Icons');

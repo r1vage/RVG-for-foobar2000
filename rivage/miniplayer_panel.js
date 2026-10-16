@@ -281,7 +281,7 @@ function scheduleMetadataRefresh(kind, delay, expectedTrackKey) {
 }
 
 function ratingStorageName() {
-    return PlaybackStatsSource.isPlaycount2003() ? "Playcount 2003" : "Playback Statistics";
+    return PlaybackStatsSource.isPlaycount2003() ? PlaybackStatsSource.name2003() : "Playback Statistics";
 }
 
 function setRating(value) {
@@ -293,16 +293,13 @@ function setRating(value) {
     nextValue = Math.round(clampNumber(value, 0, 5));
     try {
         if (PlaybackStatsSource.isPlaycount2003()) {
-            command = nextValue
-                ? "Playcount 2003/Rating/Set Rating to " + nextValue
-                : "Playcount 2003/Rating/Clear";
+            ok = PlaybackStatsSource.setRating2003(new FbMetadbHandleList(target), nextValue);
         } else {
             command = nextValue
                 ? "Playback Statistics/Rating/" + nextValue
                 : "Playback Statistics/Rating/<not set>";
+            ok = fb.RunContextCommandWithMetadb(command, new FbMetadbHandleList(target), 8);
         }
-
-        ok = fb.RunContextCommandWithMetadb(command, new FbMetadbHandleList(target), 8);
         if (!ok) throw new Error(ratingStorageName() + " did not expose the rating command.");
 
         // Optimistic; the title-format field stays authoritative and is re-read.

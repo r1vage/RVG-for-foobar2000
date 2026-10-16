@@ -2,6 +2,12 @@
 
 All notable changes to RVG (skin for foobar2000) are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Ultimate Playcount support.** RVG now also works with Ultimate Playcount, a newer take on Playcount 2003 that doesn't lose plays when a track's tags change while it's playing. You don't have to switch: Playcount 2003 and foo_playcount keep working as before. If you have Ultimate Playcount installed, the play counts, dates and star ratings use it automatically.
+
 ## [1.0.1] - 2026-10-11
 
 ### Added
