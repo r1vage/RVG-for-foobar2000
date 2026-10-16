@@ -20,7 +20,7 @@ RVG is a UWP inspired, panel-based foobar2000 skin built for JSPlitter. It is a 
   - [foo_ui_columns](https://www.foobar2000.org/components/view/foo_ui_columns)
   - [foo_lastfm_playcount_sync*](https://marc2k3.github.io/component/lastfm-playcount-sync/)
   - [foo_enhanced_playcount*](https://www.foobar2000.org/components/view/foo_enhanced_playcount) 
-  - either [foo_playcount*](https://www.foobar2000.org/components/view/foo_playcount), [2003_playcount*](https://marc2k3.github.io/component/playcount-2003/) or Ultimate Playcount\* (`foo_ultimate_playcount`) for playback statistics. Ultimate Playcount uses the same `%2003_*%` fields as Playcount 2003 and is picked automatically when installed.
+  - either [foo_playcount*](https://www.foobar2000.org/components/view/foo_playcount), [2003_playcount*](https://marc2k3.github.io/component/playcount-2003/) or Ultimate Playcount\* (`foo_ultimate_playcount`) for playback statistics. Ultimate Playcount works like Playcount 2003 but with `%upc_*%` fields, and is picked automatically when installed.
   - [foo_vis_milk2*](https://www.foobar2000.org/components/view/foo_vis_milk2)
   - [foo_stop_after_queue*](https://www.foobar2000.org/components/view/foo_stop_after_queue)
   - [foo_stop_after_track*](https://www.foobar2000.org/components/view/foo_stop_after_track)
@@ -58,7 +58,7 @@ Open **RVG Settings › Global settings** for the settings that affect several p
 - **Global theme:** **Artwork Mica — blurred** (the default), Accent dark, Match foobar2000, RVG dark, RVG light, or the artwork-palette modes. When Mica is selected, blur-radius, tint-strength and acrylic-noise controls appear directly below it.
 - **Shared accent:** when Global theme is **Accent dark**, choose Artwork, RVG blue, or a custom colour.
 - **Last.fm API key and username:** shared by the Last.fm and Last.fm Charts panels.
-- **Playback statistics source:** `foo_playcount` fields or `Playcount 2003` fields (also provided by Ultimate Playcount). Ultimate Playcount can also keep a local, per-album "loved" flag (`%2003_loved%`, *Ultimate Playcount › Love / Unlove*); RVG's love button still uses Last.fm.
+- **Playback statistics source:** `foo_playcount`, `Ultimate Playcount` (`%upc_*%`) or `Playcount 2003` (`%2003_*%`) fields; only installed ones are listed. Ultimate Playcount can also keep a local, per-album "loved" flag (`%upc_loved%`, *Ultimate Playcount › Love / Unlove*); RVG's love button still uses Last.fm.
 - **Default track source:** choose whether panels follow Now Playing, the selected track, or a fallback between them.
 - **Allow panel resizing:** enables the draggable layout dividers. Enable, resize, disable to save the positions.
 - **Maintain `> History` playlist:** controls RVG's automatic play-history playlist.
@@ -218,7 +218,7 @@ All fonts come from **Preferences › Display › Columns UI › Colours and fon
 - Last.fm panels show a setup/empty state until credentials are entered.
 - Missing optional components only disable the features that depend on them; the rest of the layout can still run.
 - Playback timeline requires **Enhanced Playback Statistics** (`foo_enhanced_playcount`) for `%played_times%` / `%lastfm_played_times%` history fields.
-  Its **Date added** range mode takes the first field that holds a real date: `%added%` / `%2003_added%` (whichever the Global settings stats source prefers), then the other of the two, then `%lastfm_added%`.
+  Its **Date added** range mode takes the first field that holds a real date: `%added%` / `%upc_added%` or `%2003_added%` (whichever the Global settings stats source prefers), then the other of the two, then `%lastfm_added%`.
 - Windows 10 may use Segoe MDL2 Assets instead of Segoe Fluent Icons.
 
 ## Credits

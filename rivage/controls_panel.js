@@ -376,8 +376,7 @@ const tfo = Object.freeze({
     genre: fb.TitleFormat("%genre%"),
 
     trackGain: fb.TitleFormat("%__replaygain_track_gain%"),
-    ratingPlaybackStatistics: fb.TitleFormat("%rating%"),
-    ratingPlaycount2003: fb.TitleFormat("%2003_rating%")
+    ratingPlaybackStatistics: fb.TitleFormat("%rating%")
 });
 
 let trackContextOverride = TrackContext.normaliseOverride(window.GetProperty(PROPERTY_PREFIX + "Track context override", ""));
@@ -891,7 +890,7 @@ function refreshCache(explicitMetadb = null) {
     cache.trackGain = String(evaluate(tfo.trackGain) || "");
 
     cache.rating = PlaybackStatsSource.isPlaycount2003() ?
-        parseRating(evaluate(tfo.ratingPlaycount2003)) :
+        parseRating(evaluate(PlaybackStatsSource.tf2003("rating"))) :
         parseRating(evaluate(tfo.ratingPlaybackStatistics));
 }
 

@@ -90,7 +90,7 @@ var foo_playcount = utils.CheckComponent("foo_playcount", true);
 // statistics backend selectable via the global "Playback statistics field
 // source" setting (shared/playback_stats_source.js). See ratingCanWrite()/
 // writeRatingCommand() below and their one call site in WSHplaylist.js.
-// Ultimate Playcount (foo_ultimate_playcount) exposes the same fields and Rating menu.
+// Ultimate Playcount (foo_ultimate_playcount) is its own source with the same Rating menu.
 var foo_playcount_2003 = utils.CheckComponent("foo_playcount_2003", true) || utils.CheckComponent("foo_ultimate_playcount", true);
 clipboard = {
 	selection: null

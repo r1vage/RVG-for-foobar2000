@@ -846,7 +846,7 @@ function CompactSongInfo(owner) {
     this.time_field_value = function (field) {
         var mode = this.get_time_mode(field);
         var suffix = mode === 1 ? '_ago' : (mode === 2 ? '_ago2' : '');
-        return this.owner.tf('[%2003_' + field + suffix + '%]') || 'N/A';
+        return this.owner.tf('[%' + PlaybackStatsSource.prefix2003() + field + suffix + '%]') || 'N/A';
     };
 
     this.add_time_row = function (rows, label, field) {
@@ -1153,11 +1153,12 @@ function CompactSongInfo(owner) {
         // reads only its own GetOtherInfo section; values are never borrowed.
 
         if (PlaybackStatsSource.isPlaycount2003()) {
+            var p = PlaybackStatsSource.prefix2003();
             rows = [];
-            this.add_rating_row(rows, 'Rating', this.owner.tf('[%2003_rating%]'));
-            this.add_row(rows, 'Loved', this.owner.tf('[%2003_loved%]'));
+            this.add_rating_row(rows, 'Rating', this.owner.tf('[%' + p + 'rating%]'));
+            this.add_row(rows, 'Loved', this.owner.tf('[%' + p + 'loved%]'));
             this.add_time_row(rows, 'Added', 'added');
-            this.add_row(rows, 'Play count', this.owner.tf('[%2003_playcount%]'));
+            this.add_row(rows, 'Play count', this.owner.tf('[%' + p + 'playcount%]'));
             this.add_time_row(rows, 'First played', 'first_played');
             this.add_time_row(rows, 'Last played', 'last_played');
             this.add_card('PLAYBACK STATISTICS', rows, 'stats_left');

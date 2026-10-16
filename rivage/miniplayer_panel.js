@@ -175,8 +175,7 @@ var trackKey = "";
 var tfo = {
     title: fb.TitleFormat("%title%"),
     artist: fb.TitleFormat("%artist%"),
-    ratingPlaybackStatistics: fb.TitleFormat("%rating%"),
-    ratingPlaycount2003: fb.TitleFormat("%2003_rating%")
+    ratingPlaybackStatistics: fb.TitleFormat("%rating%")
 };
 
 // text is Design 1's combined line; title/artist are Design 2's two.
@@ -241,7 +240,7 @@ function refreshCache() {
     cache.artist = artist || "";
     cache.loved = RivageCommands.evaluateLoved(handle);
     ratingFormatter = PlaybackStatsSource.isPlaycount2003()
-        ? tfo.ratingPlaycount2003 : tfo.ratingPlaybackStatistics;
+        ? PlaybackStatsSource.tf2003("rating") : tfo.ratingPlaybackStatistics;
     cache.rating = parseRating(evaluateWithHandle(ratingFormatter));
 }
 

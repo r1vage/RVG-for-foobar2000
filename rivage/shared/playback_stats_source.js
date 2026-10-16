@@ -9,6 +9,7 @@ if (typeof PlaybackStatsSource === 'undefined') {
         var UPDATE = 'RIVAGE.PLAYBACK_STATS_SOURCE.UPDATE.V2';
         var SOURCE_FOO_PLAYCOUNT = 'foo_playcount';
         var SOURCE_PLAYCOUNT_2003 = 'playcount2003';
+        var SOURCE_ULTIMATE = 'ultimate_playcount';
 
         // Narrow failure reporting. The empty catches here guard broadcasts,
         // retry-timer schedules, or consumer callbacks - each a real failure
@@ -32,47 +33,40 @@ if (typeof PlaybackStatsSource === 'undefined') {
             }
         }
 
-        // Ultimate Playcount exposes the same %2003_*% fields and Rating menu as
-        // Playcount 2003, so both back the one 'playcount2003' source; it wins when both exist.
+        // Ultimate Playcount works like Playcount 2003 (same field names, _ago forms,
+        // Rating menu and loved flag) but under the upc_ prefix instead of 2003_.
         var hasUltimate = hasComponent('foo_ultimate_playcount');
         var has2003 = hasComponent('foo_playcount_2003');
-        var playcount2003Available = hasUltimate || has2003;
-        var NAME_2003 = hasUltimate ? 'Ultimate Playcount' : 'Playcount 2003';
-        var DLL_2003 = hasUltimate ? 'foo_ultimate_playcount' : 'foo_playcount_2003';
-        var RATING_ROOTS_2003 = hasUltimate && has2003 ? ['Ultimate Playcount', 'Playcount 2003'] : [NAME_2003];
-
-        // Runs "<root>/Rating/Set Rating to N" (or ".../Rating/Clear") on the first
-        // %2003_*% component that has it; returns whether one ran.
-        function setRating2003(handles, value) {
-            var item = value ? 'Set Rating to ' + value : 'Clear';
-            for (var i = 0; i < RATING_ROOTS_2003.length; i++) {
-                if (fb.RunContextCommandWithMetadb(RATING_ROOTS_2003[i] + '/Rating/' + item, handles, 8)) return true;
-            }
-            return false;
-        }
 
         // Titleformat fields per backend, so no panel hard-codes them.
+        function prefixedFields(prefix) {
+            return {
+                plays: '%' + prefix + 'playcount%', first: '%' + prefix + 'first_played%',
+                last: '%' + prefix + 'last_played%', added: '%' + prefix + 'added%', rating: '%' + prefix + 'rating%'
+            };
+        }
         var FIELDS = {};
         FIELDS[SOURCE_FOO_PLAYCOUNT] = {
             plays: '%play_count%', first: '%first_played%', last: '%last_played%',
             added: '%added%', rating: '%rating%'
         };
-        FIELDS[SOURCE_PLAYCOUNT_2003] = {
-            plays: '%2003_playcount%', first: '%2003_first_played%', last: '%2003_last_played%',
-            added: '%2003_added%', rating: '%2003_rating%'
-        };
+        FIELDS[SOURCE_PLAYCOUNT_2003] = prefixedFields('2003_');
+        FIELDS[SOURCE_ULTIMATE] = prefixedFields('upc_');
 
         function isUsableSource(value) {
             return value === SOURCE_FOO_PLAYCOUNT ||
-                (value === SOURCE_PLAYCOUNT_2003 && playcount2003Available);
+                (value === SOURCE_PLAYCOUNT_2003 && has2003) ||
+                (value === SOURCE_ULTIMATE && hasUltimate);
         }
+
+        // First run (or a removed component): Ultimate Playcount, then Playcount 2003
+        // when foo_playcount is missing, else foo_playcount.
+        var defaultSource = hasUltimate ? SOURCE_ULTIMATE
+            : (has2003 && !hasComponent('foo_playcount') ? SOURCE_PLAYCOUNT_2003 : SOURCE_FOO_PLAYCOUNT);
 
         function normaliseStoredSource(value) {
-            return isUsableSource(value) ? value : SOURCE_FOO_PLAYCOUNT;
+            return isUsableSource(value) ? value : defaultSource;
         }
-
-        var defaultSource = playcount2003Available && !hasComponent('foo_playcount')
-            ? SOURCE_PLAYCOUNT_2003 : SOURCE_FOO_PLAYCOUNT;
         var storedSource = window.GetProperty(PROPERTY_PREFIX + 'Data source', defaultSource);
         var dataSource = normaliseStoredSource(storedSource);
         if (dataSource !== storedSource) {
@@ -100,11 +94,11 @@ if (typeof PlaybackStatsSource === 'undefined') {
             var choices = [
                 { value: SOURCE_FOO_PLAYCOUNT, label: 'Playback Statistics (foo_playcount)' }
             ];
-            if (playcount2003Available) {
-                choices.push({
-                    value: SOURCE_PLAYCOUNT_2003,
-                    label: NAME_2003 + ' (' + DLL_2003 + ')'
-                });
+            if (hasUltimate) {
+                choices.push({ value: SOURCE_ULTIMATE, label: 'Ultimate Playcount (foo_ultimate_playcount)' });
+            }
+            if (has2003) {
+                choices.push({ value: SOURCE_PLAYCOUNT_2003, label: 'Playcount 2003 (foo_playcount_2003)' });
             }
 
             var entry = {
@@ -115,10 +109,39 @@ if (typeof PlaybackStatsSource === 'undefined') {
                 choiceValueType: 'string',
                 choices: choices
             };
-            entry.hint = playcount2003Available
-                ? NAME_2003 + ' reads the %2003_*% fields.'
-                : 'Install foo_playcount_2003 or foo_ultimate_playcount to enable the %2003_*% fields.';
+            entry.hint = hasUltimate || has2003
+                ? 'Ultimate Playcount reads the %upc_*% fields; Playcount 2003 reads %2003_*%.'
+                : 'Install foo_ultimate_playcount or foo_playcount_2003 for more choices.';
             return [entry];
+        }
+
+        // Field prefix of the Playcount 2003-style component: the active one, or
+        // the installed one while foo_playcount is selected.
+        function prefix2003() {
+            if (dataSource === SOURCE_ULTIMATE) return 'upc_';
+            if (dataSource === SOURCE_PLAYCOUNT_2003) return '2003_';
+            return hasUltimate ? 'upc_' : '2003_';
+        }
+
+        var tf2003Cache = {};
+        // Compiled %<prefix><name>%, e.g. tf2003('first_played_ago'); follows source switches.
+        function tf2003(name) {
+            var key = prefix2003() + name;
+            return tf2003Cache[key] || (tf2003Cache[key] = fb.TitleFormat('%' + key + '%'));
+        }
+
+        function name2003() {
+            return dataSource === SOURCE_ULTIMATE ? 'Ultimate Playcount' : 'Playcount 2003';
+        }
+
+        // Runs "<component>/Rating/Set Rating to N" (or ".../Rating/Clear"); false if it didn't run.
+        function setRating2003(handles, value) {
+            return !!fb.RunContextCommandWithMetadb(
+                name2003() + '/Rating/' + (value ? 'Set Rating to ' + value : 'Clear'), handles, 8);
+        }
+
+        function isPlaycount2003() {
+            return dataSource === SOURCE_PLAYCOUNT_2003 || dataSource === SOURCE_ULTIMATE;
         }
 
         function broadcast() {
@@ -145,18 +168,20 @@ if (typeof PlaybackStatsSource === 'undefined') {
         }
 
         return {
-            isPlaycount2003: function () {
-                return dataSource === SOURCE_PLAYCOUNT_2003;
-            },
-            // 'Ultimate Playcount' or 'Playcount 2003': the component behind the %2003_*% fields.
-            name2003: function () { return NAME_2003; },
+            // True for Playcount 2003 and Ultimate Playcount: same fields bar the prefix,
+            // the _ago date forms, the Rating menu and a loved flag.
+            isPlaycount2003: isPlaycount2003,
+            // 'Ultimate Playcount' or 'Playcount 2003'.
+            name2003: name2003,
+            prefix2003: prefix2003,
+            tf2003: tf2003,
             setRating2003: setRating2003,
             // { plays, first, last, added, rating } titleformat strings for the active
             // backend. A copy, so callers may keep it; compare it to spot a switch.
             // history: the other places a play can be recorded, for "smart" views
             // that take the highest count and the latest date (as the Playback
             // statistics panel's Smart play history does). Enhanced Playback
-            // Statistics' own last-played is left out under Playcount 2003.
+            // Statistics' own last-played is left out under Playcount 2003 / Ultimate Playcount.
             fields: function () {
                 var f = FIELDS[dataSource] || FIELDS[SOURCE_FOO_PLAYCOUNT];
                 return {
@@ -164,7 +189,7 @@ if (typeof PlaybackStatsSource === 'undefined') {
                     history: {
                         plays: '$if2(%lastfm_play_count%,$if2(%lastfm_playcount%,$if2(%scrobbled%,%last.fm scrobbled%)))',
                         last: '$if2(%lastfm_last_played%,$if2(%last_scrobble%,%last.fm last scrobble%))',
-                        enhancedLast: dataSource === SOURCE_PLAYCOUNT_2003 ? '' : '%last_played_enhanced%'
+                        enhancedLast: isPlaycount2003() ? '' : '%last_played_enhanced%'
                     }
                 };
             },

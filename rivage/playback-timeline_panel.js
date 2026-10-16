@@ -240,6 +240,7 @@ function resolveAddedTime(handle) {
 
     if (!handle) return 0;
 
+    var tfo2003Added = PlaybackStatsSource.tf2003('added');
     order = prefer2003
         ? [tfo2003Added, tfoAdded, tfoLastfmAdded]
         : [tfoAdded, tfo2003Added, tfoLastfmAdded];
@@ -492,7 +493,6 @@ function applyMySetting(settingId, value) {
 var tfoPlayedTimes = fb.TitleFormat('%played_times%');
 var tfoLastfmPlayedTimes = fb.TitleFormat('%lastfm_played_times%');
 var tfoAdded = fb.TitleFormat('%added%');
-var tfo2003Added = fb.TitleFormat('%2003_added%');
 var tfoLastfmAdded = fb.TitleFormat('%lastfm_added%');
 var tfoTitle = fb.TitleFormat('$if2(%title%,Unknown title)');
 var tfoArtist = fb.TitleFormat('$if2(%artist%,$if2(%album artist%,Unknown artist))');

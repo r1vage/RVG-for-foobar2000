@@ -380,10 +380,6 @@ function applyMySetting(settingId, value) {
 }
 
 var statsTfo = {
-    local2003FirstAgo: fb.TitleFormat("%2003_first_played_ago%"),
-    local2003FirstAgo2: fb.TitleFormat("%2003_first_played_ago2%"),
-    local2003LastAgo: fb.TitleFormat("%2003_last_played_ago%"),
-    local2003LastAgo2: fb.TitleFormat("%2003_last_played_ago2%"),
     enhancedFirst: fb.TitleFormat("%first_played_enhanced%"),
     enhancedLast: fb.TitleFormat("%last_played_enhanced%"),
     lastfmAdded: fb.TitleFormat("%lastfm_added%"),
@@ -416,16 +412,16 @@ function localPlayedValueForHandle(handle) {
 // Playcount 2003 also offers "ago" forms of the dates (modes 1 and 2).
 function localFirstValueForHandle(handle, mode) {
     if (PlaybackStatsSource.isPlaycount2003()) {
-        if (mode === 1) return evaluateForHandle(statsTfo.local2003FirstAgo, handle);
-        if (mode === 2) return evaluateForHandle(statsTfo.local2003FirstAgo2, handle);
+        if (mode === 1) return evaluateForHandle(PlaybackStatsSource.tf2003("first_played_ago"), handle);
+        if (mode === 2) return evaluateForHandle(PlaybackStatsSource.tf2003("first_played_ago2"), handle);
     }
     return evaluateForHandle(localStatsFormats().first, handle);
 }
 
 function localLastValueForHandle(handle, mode) {
     if (PlaybackStatsSource.isPlaycount2003()) {
-        if (mode === 1) return evaluateForHandle(statsTfo.local2003LastAgo, handle);
-        if (mode === 2) return evaluateForHandle(statsTfo.local2003LastAgo2, handle);
+        if (mode === 1) return evaluateForHandle(PlaybackStatsSource.tf2003("last_played_ago"), handle);
+        if (mode === 2) return evaluateForHandle(PlaybackStatsSource.tf2003("last_played_ago2"), handle);
     }
     return evaluateForHandle(localStatsFormats().last, handle);
 }
