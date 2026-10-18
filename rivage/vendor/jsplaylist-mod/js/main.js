@@ -2555,7 +2555,7 @@ function on_mouse_lbtn_up(x, y) {
 	p.list.buttonclicked = false;
 	cScrollBar.timerID1 && window.ClearTimeout(cScrollBar.timerID1);
 	cScrollBar.timerID1 = false;
-	cScrollBar.timerID2 && window.ClearTimeout(cScrollBar.timerID2);
+	cScrollBar.timerID2 && window.ClearInterval(cScrollBar.timerID2);
 	cScrollBar.timerID2 = false;
 
 	// after a cover column resize, update cover image cache
@@ -3225,7 +3225,18 @@ full_repaint();
 };
 
 //=================================================// Keyboard Callbacks
+var g_key_repeat_moved = false;
 function on_key_up(vkey) {
+g_key_repeat = null;
+// repeat ticks only move focus (selecting on a huge playlist is slow); select the final row once here
+if (g_key_repeat_moved) {
+	g_key_repeat_moved = false;
+	var fid = p.list.focusedTrackId, apl = plman.ActivePlaylist;
+	if (fid >= 0 && fid < p.list.count) {
+		plman.ClearPlaylistSelection(apl);
+		plman.SetPlaylistSelectionSingle(apl, fid, true);
+	};
+};
 
 
 // after a cover column resize, update cover image and empty rows to show the whole cover if low tracks count in group
@@ -3247,6 +3258,13 @@ if (vkey == VK_SHIFT) {
 };
 
 function on_key_down(vkey) {
+if (g_key_repeat && p.list.keypressed && (vkey == VK_UP || vkey == VK_DOWN || vkey == VK_PGUP || vkey == VK_PGDN)) {
+	if (new Date().getTime() - g_key_repeat.last >= g_key_repeat.ms) {
+		g_key_repeat.fn();
+		g_key_repeat.last = new Date().getTime();
+	};
+	return true;
+};
 var mask = GetKeyboardMask();
 var act_pls = plman.ActivePlaylist;
 
@@ -3372,19 +3390,18 @@ var act_pls = plman.ActivePlaylist;
 							cScrollBar.timerID1 && window.ClearTimeout(cScrollBar.timerID1);
 							cScrollBar.timerID1 = false;
 							cScrollBar.timerID2 && window.ClearInterval(cScrollBar.timerID2);
-							cScrollBar.timerID2 = window.SetInterval(function () {
+							startKeyRepeat(50, function () {
 								p.list.scrollItems(1, scrollstep);
-							}, 50);
+							});
 						}, 400);
 					} else {
 						plman.SetPlaylistFocusItem(act_pls, new_focus_id);
-						plman.ClearPlaylistSelection(act_pls);
-						plman.SetPlaylistSelectionSingle(act_pls, new_focus_id, true);
+						g_key_repeat_moved = true;
 						cScrollBar.timerID1 = window.SetTimeout(function () {
 							cScrollBar.timerID1 && window.ClearTimeout(cScrollBar.timerID1);
 							cScrollBar.timerID1 = false;
 							cScrollBar.timerID2 && window.ClearInterval(cScrollBar.timerID2);
-							cScrollBar.timerID2 = window.SetInterval(function () {
+							startKeyRepeat(50, function () {
 								new_focus_id = (p.list.focusedTrackId > 0) ? p.list.focusedTrackId - scrollstep : 0;
 								// if new track focused id is in a collapsed group, set the 1st track of the group as the focused track (= group focused)
 								var grpId = p.list.getGroupIdfromTrackId(new_focus_id);
@@ -3396,9 +3413,8 @@ var act_pls = plman.ActivePlaylist;
 									};
 								};
 								plman.SetPlaylistFocusItem(act_pls, new_focus_id);
-								plman.ClearPlaylistSelection(act_pls);
-								plman.SetPlaylistSelectionSingle(act_pls, new_focus_id, true);
-							}, 50);
+								g_key_repeat_moved = true;
+							});
 						}, 400);
 					};
 				};
@@ -3442,7 +3458,7 @@ var act_pls = plman.ActivePlaylist;
 						cScrollBar.timerID1 && window.ClearTimeout(cScrollBar.timerID1);
 						cScrollBar.timerID1 = false;
 						cScrollBar.timerID2 && window.ClearInterval(cScrollBar.timerID2);
-						cScrollBar.timerID2 = window.SetInterval(function () {
+						startKeyRepeat(50, function () {
 							new_focus_id = (p.list.focusedTrackId < p.list.count - 1) ? p.list.focusedTrackId + 1 : p.list.count - 1;
 							// if new track focused id is in a collapsed group, set the last track of the group as the focused track (= group focused)
 							var grpId = p.list.getGroupIdfromTrackId(new_focus_id);
@@ -3454,9 +3470,8 @@ var act_pls = plman.ActivePlaylist;
 								};
 							};
 							plman.SetPlaylistFocusItem(act_pls, new_focus_id);
-							plman.ClearPlaylistSelection(act_pls);
-							plman.SetPlaylistSelectionSingle(act_pls, new_focus_id, true);
-						}, 50);
+							g_key_repeat_moved = true;
+						});
 					}, 400);
 				};
 				break;
@@ -3474,24 +3489,22 @@ var act_pls = plman.ActivePlaylist;
 							cScrollBar.timerID1 && window.ClearTimeout(cScrollBar.timerID1);
 							cScrollBar.timerID1 = false;
 							cScrollBar.timerID2 && window.ClearInterval(cScrollBar.timerID2);
-							cScrollBar.timerID2 = window.SetInterval(function () {
+							startKeyRepeat(60, function () {
 								p.list.scrollItems(1, scrollstep);
-							}, 60);
+							});
 						}, 400);
 					} else {
 						plman.SetPlaylistFocusItem(act_pls, new_focus_id);
-						plman.ClearPlaylistSelection(act_pls);
-						plman.SetPlaylistSelectionSingle(act_pls, new_focus_id, true);
+						g_key_repeat_moved = true;
 						cScrollBar.timerID1 = window.SetTimeout(function () {
 							cScrollBar.timerID1 && window.ClearTimeout(cScrollBar.timerID1);
 							cScrollBar.timerID1 = false;
 							cScrollBar.timerID2 && window.ClearInterval(cScrollBar.timerID2);
-							cScrollBar.timerID2 = window.SetInterval(function () {
+							startKeyRepeat(60, function () {
 								new_focus_id = (p.list.focusedTrackId > scrollstep) ? p.list.focusedTrackId - scrollstep : 0;
 								plman.SetPlaylistFocusItem(act_pls, new_focus_id);
-								plman.ClearPlaylistSelection(act_pls);
-								plman.SetPlaylistSelectionSingle(act_pls, new_focus_id, true);
-							}, 60);
+								g_key_repeat_moved = true;
+							});
 						}, 400);
 					};
 				};
@@ -3510,12 +3523,11 @@ var act_pls = plman.ActivePlaylist;
 						cScrollBar.timerID1 && window.ClearTimeout(cScrollBar.timerID1);
 						cScrollBar.timerID1 = false;
 						cScrollBar.timerID2 && window.ClearInterval(cScrollBar.timerID2);
-						cScrollBar.timerID2 = window.SetInterval(function () {
+						startKeyRepeat(60, function () {
 							new_focus_id = (p.list.focusedTrackId < p.list.count - scrollstep) ? p.list.focusedTrackId + scrollstep : p.list.count - 1;
 							plman.SetPlaylistFocusItem(act_pls, new_focus_id);
-							plman.ClearPlaylistSelection(act_pls);
-							plman.SetPlaylistSelectionSingle(act_pls, new_focus_id, true);
-						}, 60);
+							g_key_repeat_moved = true;
+						});
 					}, 400);
 				};
 				break;
@@ -4420,3 +4432,10 @@ function on_script_unload() {
 		console.log("JSPlaylist: update_statistics failed on unload -> " + e);
 	};
 };
+
+// Key repeat is driven by the OS auto-repeat key_down events, not a timer: nothing keeps running once the
+// events stop, and events that piled up behind a slow step arrive right after it ends and are skipped.
+var g_key_repeat = null;
+function startKeyRepeat(ms, fn) {
+	g_key_repeat = { fn: fn, ms: ms, last: new Date().getTime() };
+}
