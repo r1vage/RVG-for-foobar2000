@@ -2,7 +2,7 @@
 
 ![RVG for foobar2000](https://i.ibb.co/V0LXzcSz/rvg-for-foobar2000.webp)
 
-**Version 1.0.1** · **Author: RivaGe**
+**Version 1.0.2** · **Author: RivaGe**
 
 RVG is a UWP inspired, panel-based foobar2000 skin built for JSPlitter. It is a very distant descendant of Br3tt's [Curacao](https://www.deviantart.com/br3tt/art/Curacao-v1-0a-Released-104322264) skin I've been using since 2008. The point of it is to be extremely adaptive and customizable - you can add basically any panels and they will be picked up by the skin's panel management engine. Although I've tried to optimize it, this is not a friendly skin for weak computers.
 
@@ -41,7 +41,7 @@ RVG is a UWP inspired, panel-based foobar2000 skin built for JSPlitter. It is a 
 2. Extract the package so this folder exists: `<foobar2000 profile>\jsplitter\rivage\`.
 3. Keep the folder names as they are; script includes depend on it.
 4. Import Columns UI .fcl file.
-5. Start foobar2000 and **right** click on the top right settings icon to open **RVG Settings**. The release row should show **RVG skin for foobar2000, Version 1.0.1, Author: RivaGe**.
+5. Start foobar2000 and **right** click on the top right settings icon to open **RVG Settings**. The release row should show **RVG skin for foobar2000, Version 1.0.2, Author: RivaGe**.
 6. Disable toolbars for a better look.
 7. Add Last.fm credentials only if you use the Last.fm-backed panels or features.
 8. You can freely copy, move, add and rename panels in Preferences > Columns UI > Layout.

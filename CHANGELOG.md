@@ -2,18 +2,18 @@
 
 All notable changes to RVG (skin for foobar2000) are documented here.
 
-## [Unreleased]
-
-### Fixed
-
-- Holding Up or Down in the Playlist for a few seconds no longer gets stuck scrolling and freezes foobar2000 on very large playlists. Page Up and Page Down are fixed too. The row you stop on is selected when you let go of the key.
-- The Search button works again in foobar2000 2.26 and newer, where the menu item is called "Search" instead of "Search...".
+## [1.0.2] - 2026-10-21
 
 ### Added
 
 - Right-click the Stop button in the Player to turn "Stop after current" on or off. The square turns red while it's on, like the Stop after current custom button.
 - **Ultimate Playcount support.** RVG now also works with Ultimate Playcount, a newer take on Playcount 2003 that doesn't lose plays when a track's tags change while it's playing. You don't have to switch: Playcount 2003 and foo_playcount keep working as before. If you have Ultimate Playcount installed, the play counts, dates and star ratings use it automatically.
 - The Playlist's Rating and Plays columns, sorting by them, and the "unrated / rated / never played / played recently" auto-playlists now follow your playback statistics source. Before, they always used foo_playcount, even with Playcount 2003 selected.
+
+### Fixed
+
+- Holding Up or Down in the Playlist for a few seconds no longer gets stuck scrolling and freezes foobar2000 on very large playlists. Page Up and Page Down are fixed too. The row you stop on is selected when you let go of the key.
+- The Search button works again in foobar2000 2.26 and newer, where the menu item is called "Search" instead of "Search...".
 
 ## [1.0.1] - 2026-10-11
 
