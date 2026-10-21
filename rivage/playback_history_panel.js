@@ -41,10 +41,15 @@ var MINIMUM_CONFIRMED_PLAYBACK_SECONDS = 60;
 // come up short of its exact length.
 var TRACK_END_SLACK_SECONDS = 2;
 
-// on_playback_time is documented as a one-second callback. A much larger
-// positive jump is treated as an unreported seek/discontinuity rather than
-// listened time. Normal seeks are reset explicitly in on_playback_seek.
+// on_playback_time is documented as a one-second callback, but while foobar2000
+// is in the background Windows can hold those callbacks back: the next one then
+// jumps ahead, or the held-back ones arrive in a burst. Progress is therefore
+// credited up to the real playing time that has passed, so an unreported jump
+// adds no more than the time actually heard. Normal seeks are reset explicitly
+// in on_playback_seek.
 var MAX_CONTINUOUS_PLAYBACK_DELTA_SECONDS = 5;
+// Callback timing jitter allowed on top of the real time that passed.
+var PLAYBACK_CLOCK_SLACK_SECONDS = 0.5;
 
 var PLAYBACK_STOP = {
     INVOKED_BY_USER: 0,
@@ -718,8 +723,19 @@ function beginActiveTrack(handle) {
     }
 
     location = currentPlayingPlaylistLocation();
+    var length = 0;
+    try { length = Number(handle.Length); } catch (e) { length = 0; }
+    var now = Date.now();
+    var paused = false;
+    try { paused = !!fb.IsPaused; } catch (e) { paused = false; }
 
     activeTrack = {
+        length: isFinite(length) && length > 0 ? length : 0,
+        // Real-time clock (ms) of the last observation, shifted forward over pauses.
+        clock: now,
+        pausedAt: paused ? now : 0,
+        // Seconds of real playing time not yet matched by position progress.
+        unmatchedSeconds: 0,
         handle: handle,
         timestamp: makeTimestamp(new Date()),
         text: evaluateTrackText(handle),
@@ -743,13 +759,47 @@ function observePlaybackPosition(time) {
 
     delta = position - activeTrack.lastPosition;
     activeTrack.lastPosition = position;
+    activeTrack.unmatchedSeconds += takePlayingSeconds();
 
     // Seeks are handled separately, so a positive delta here represents
     // playback progress rather than time jumped over by the user or foo_skip.
-    if (delta > 0 && delta <= MAX_CONTINUOUS_PLAYBACK_DELTA_SECONDS) {
-        activeTrack.playedSeconds += delta;
-        recordListeningDelta(delta);
+    if (delta > 0) {
+        var credit = Math.min(delta, activeTrack.unmatchedSeconds + PLAYBACK_CLOCK_SLACK_SECONDS);
+        creditPlayback(credit);
+        activeTrack.unmatchedSeconds = Math.max(0, activeTrack.unmatchedSeconds - credit);
+    } else {
+        // No progress (stalled stream, restart): don't bank that time.
+        activeTrack.unmatchedSeconds = 0;
     }
+}
+
+function creditPlayback(seconds) {
+    activeTrack.playedSeconds += seconds;
+    recordListeningDelta(seconds);
+}
+
+// Real playing time since the last observation, excluding pauses; restarts the clock.
+function takePlayingSeconds() {
+    var now = activeTrack.pausedAt || Date.now();
+    var seconds = Math.max(0, (now - activeTrack.clock) / 1000);
+    activeTrack.clock = now;
+    return seconds;
+}
+
+// No time callbacks at all for a while (foobar2000 in the background) before
+// a seek or the end of the track: count that real playing time as heard, up to
+// the end of the track.
+function catchUpMissedPlayback() {
+    if (!activeTrack) return;
+    var now = activeTrack.pausedAt || Date.now();
+    var gap = Math.max(0, (now - activeTrack.clock) / 1000);
+    if (gap <= MAX_CONTINUOUS_PLAYBACK_DELTA_SECONDS) return;
+    var credit = activeTrack.length > 0
+        ? Math.min(gap, Math.max(0, activeTrack.length - activeTrack.lastPosition))
+        : gap;
+    creditPlayback(credit);
+    activeTrack.lastPosition += credit;
+    activeTrack.clock = now;
 }
 
 function captureFinalPlaybackProgress(requireCurrentHandle) {
@@ -800,6 +850,7 @@ function addCommittedEntry(track) {
 }
 
 function finaliseActiveTrack(shouldRepaint) {
+    catchUpMissedPlayback();
     var completedTrack = activeTrack;
 
     activeTrack = null;
@@ -2204,8 +2255,21 @@ function on_playback_time(time) {
 function on_playback_seek(time) {
     if (!activeTrack) return;
 
+    catchUpMissedPlayback();
     time = Number(time);
     if (isFinite(time) && time >= 0) activeTrack.lastPosition = time;
+    takePlayingSeconds();
+    activeTrack.unmatchedSeconds = 0;
+}
+
+function on_playback_pause(state) {
+    if (!activeTrack) return;
+    var now = Date.now();
+    if (state && !activeTrack.pausedAt) activeTrack.pausedAt = now;
+    if (!state && activeTrack.pausedAt) {
+        activeTrack.clock += now - activeTrack.pausedAt;
+        activeTrack.pausedAt = 0;
+    }
 }
 
 function on_playback_stop(reason) {
