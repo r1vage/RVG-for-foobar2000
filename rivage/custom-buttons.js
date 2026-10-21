@@ -286,7 +286,7 @@ var TOPBAR_MENU_COMMANDS = Object.freeze({
     modeLight: ["View/Mode/Light", "View/Colour mode/Light", "View/Light mode"],
     statusBar: ["View/Show status bar", "View/Status Bar", "View/Status bar"],
     refacets: ["Library/ReFacets", "Library/Facets/ReFacets", "Library/Refresh facets"],
-    search: ["Library/Search...", "View/Search...", "Edit/Search...", "File/Search..."],
+    search: ["Library/Search", "Library/Search...", "View/Search", "View/Search...", "Edit/Search", "Edit/Search...", "File/Search", "File/Search..."],
     console: ["View/Console", "View/Console...", "File/Console"]
 });
 

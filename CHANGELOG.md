@@ -7,6 +7,7 @@ All notable changes to RVG (skin for foobar2000) are documented here.
 ### Fixed
 
 - Holding Up or Down in the Playlist for a few seconds no longer gets stuck scrolling and freezes foobar2000 on very large playlists. Page Up and Page Down are fixed too. The row you stop on is selected when you let go of the key.
+- The Search button works again in foobar2000 2.26 and newer, where the menu item is called "Search" instead of "Search...".
 
 ### Added
 
