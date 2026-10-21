@@ -308,6 +308,31 @@ function write(gr, text, font, colour, x, y, w, h, align, valign, wrap) {
 		(valign == DWRITE_PARAGRAPH_ALIGNMENT_FAR) ? DT_BOTTOM : DT_TOP;
 	gr.GdiDrawText(text, font, colour, x, y, w, h, flags);
 }
+// Same row layout as write(..., WRAP), but the first `sung` characters are overdrawn in sungColour.
+function write_karaoke(gr, text, sung, font, sungColour, restColour, x, y, w, h, align, valign) {
+	write(gr, text, font, restColour, x, y, w, h, align, valign, DWRITE_WORD_WRAPPING_WRAP);
+	if (sung <= 0 || w <= 0 || h <= 0) return;
+	var rows = hard_wrap_text(text, font, Math.max(1, Math.floor(w))).split('\n');
+	var rowH = wrapped_line_height(font);
+	var contentH = rows.length * rowH;
+	var startY = y;
+	if (valign == DWRITE_PARAGRAPH_ALIGNMENT_CENTER) startY = y + (h - contentH) / 2;
+	else if (valign == DWRITE_PARAGRAPH_ALIGNMENT_FAR) startY = y + h - contentH;
+	var pos = 0;
+	for (var ri = 0; ri < rows.length; ri++) {
+		var row = rows[ri];
+		var at = text.indexOf(row, pos);
+		if (at < 0) at = pos;
+		pos = at + row.length;
+		var take = Math.min(row.length, sung - at);
+		if (take <= 0) break;
+		var rx = x;
+		if (align == DWRITE_TEXT_ALIGNMENT_CENTER) rx = x + (w - text_w(row, font)) / 2;
+		else if (align == DWRITE_TEXT_ALIGNMENT_TRAILING) rx = x + w - text_w(row, font);
+		gr.GdiDrawText(row.substring(0, take), font, sungColour, rx, startY + ri * rowH, w, rowH,
+			DT_NOPREFIX | DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+	}
+}
 function centre_msg(gr, text, font, colour) {
 	write(gr, text, font, colour, lm, 0, ww - lm - rm, wh,
 		DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_WRAP);
@@ -345,11 +370,51 @@ function parse_lrc(text) {
 			lastIndex = tagRe.lastIndex;
 		}
 		if (!times.length) continue; // non-timed line (metadata tag or plain text) - ignored for synced view
-		var txt = line.slice(lastIndex).replace(/^\s+/, '');
-		for (var k = 0; k < times.length; k++) lines.push({ t: Math.max(0, times[k]), text: txt });
+		var kw = parse_karaoke_words(line.slice(lastIndex), offset);
+		for (var k = 0; k < times.length; k++) {
+			var entry = { t: Math.max(0, times[k]), text: kw.text };
+			if (kw.words) entry.words = kw.words;
+			lines.push(entry);
+		}
 	}
 	lines.sort(function (a, b) { return a.t - b.t; });
 	return lines;
+}
+// Enhanced LRC word stamps "<mm:ss.xx>": returns stripped text plus [{ t: ms, i: char offset }].
+function parse_karaoke_words(raw, offset) {
+	var wordRe = /<(\d{1,3}):(\d{2}(?:[.:]\d{1,3})?)>/g;
+	var text = '', words = [], last = 0, m;
+	while ((m = wordRe.exec(raw))) {
+		text += raw.slice(last, m.index);
+		words.push({ t: Math.max(0, Math.round((parseInt(m[1], 10) * 60 + parseFloat(m[2].replace(':', '.'))) * 1000) + offset), i: text.length });
+		last = wordRe.lastIndex;
+	}
+	text += raw.slice(last);
+	var lead = text.length - text.replace(/^\s+/, '').length;
+	text = text.slice(lead);
+	for (var w = 0; w < words.length; w++) words[w].i = Math.max(0, words[w].i - lead);
+	return { text: text, words: words.length ? words : null };
+}
+function karaoke_line_text(line) {
+	if (!line.words) return line.text;
+	var out = '', last = 0;
+	for (var i = 0; i < line.words.length; i++) {
+		var wd = line.words[i];
+		out += line.text.slice(last, wd.i) + '<' + ms_to_lrc_tag(wd.t).slice(1, -1) + '>';
+		last = wd.i;
+	}
+	return out + line.text.slice(last);
+}
+// Number of characters of the line already sung at ms, interpolated inside the current word.
+function karaoke_sung_chars(line, ms) {
+	var words = line.words, n = line.text.length;
+	if (!words || ms < words[0].t) return 0;
+	for (var i = 0; i < words.length; i++) {
+		var a = words[i], b = words[i + 1];
+		if (!b) return n;
+		if (ms < b.t) return a.i + Math.round((b.i - a.i) * (ms - a.t) / Math.max(1, b.t - a.t));
+	}
+	return n;
 }
 function lrc_to_plain(lines) {
 	var out = [];
@@ -364,7 +429,7 @@ function generate_lrc(lines, meta) {
 		if (meta.al) out.push('[al:' + meta.al + ']');
 	}
 	var sorted = (lines || []).slice().sort(function (a, b) { return a.t - b.t; });
-	for (var i = 0; i < sorted.length; i++) out.push(ms_to_lrc_tag(sorted[i].t) + sorted[i].text);
+	for (var i = 0; i < sorted.length; i++) out.push(ms_to_lrc_tag(sorted[i].t) + karaoke_line_text(sorted[i]));
 	return out.join('\n');
 }
 
@@ -997,7 +1062,12 @@ function anim_frame_interval_ms() {
 }
 // Visibility is part of timer liveness so hidden panels do not keep re-arming animation ticks.
 function anim_timer_should_run() {
-	return VisiblePaintWork.isVisible() && (scroll_anim_running || active_fade_running || continuous_scroll_should_tick());
+	return VisiblePaintWork.isVisible() && (scroll_anim_running || active_fade_running || continuous_scroll_should_tick() || karaoke_should_tick());
+}
+function karaoke_should_tick() {
+	if (state != STATE.READY || !current_data || !current_data.synced || !playback_is_advancing()) return false;
+	var line = current_data.lines[last_painted_idx];
+	return !!(line && line.words);
 }
 function stop_visual_anim_timer() {
 	anim_loop_running = false;
@@ -1485,6 +1555,7 @@ function draw_synced(gr, top) {
 		}
 		last_painted_idx = idx;
 	}
+	if (lines[idx].words) ensure_visual_anim_timer();
 
 	if (continuous) {
 		var stable_centres = build_stable_line_centres(lines, avail_w, gap);
@@ -1500,7 +1571,10 @@ function draw_synced(gr, top) {
 
 			var active = i == idx;
 			var font = active ? f_active : f_inactive;
-			write(gr, lines[i].text, font, active ? active_line_paint_colour(i) : inactive_line_colour(),
+			if (active && lines[i].words)
+				write_karaoke(gr, lines[i].text, karaoke_sung_chars(lines[i], playbackMs), font, active_line_paint_colour(i), inactive_line_colour(),
+					lm, y, avail_w, drawH, align, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+			else write(gr, lines[i].text, font, active ? active_line_paint_colour(i) : inactive_line_colour(),
 				lm, y, avail_w, drawH, align, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_WRAP);
 			if (opt_click_to_seek) add_link('line_' + i, lm, y, avail_w, drawH);
 		}
@@ -1530,7 +1604,10 @@ function draw_synced(gr, top) {
 		var dy = dcy - dh / 2;
 		if (dy + dh < top || dy > wh) continue;
 
-		write(gr, lines[di].text, dfont, dactive ? active_line_paint_colour(di) : inactive_line_colour(),
+		if (dactive && lines[di].words)
+			write_karaoke(gr, lines[di].text, karaoke_sung_chars(lines[di], playbackMs), dfont, active_line_paint_colour(di), inactive_line_colour(),
+				lm, dy, avail_w, dh, align, DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+		else write(gr, lines[di].text, dfont, dactive ? active_line_paint_colour(di) : inactive_line_colour(),
 			lm, dy, avail_w, dh, align, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_WRAP);
 		if (opt_click_to_seek) add_link('line_' + di, lm, dy, avail_w, dh);
 	}
