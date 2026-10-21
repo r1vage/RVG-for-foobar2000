@@ -1171,6 +1171,9 @@ function drawSolidTransportIcon(gr, id, x, y, w, h, colour) {
     return false;
 }
 
+// Same red as the Custom buttons "Stop after current" toggle (custom-buttons.js).
+const STOP_AFTER_CURRENT_COLOUR = 0xFFE81123 | 0;
+
 class SquareButton {
     constructor(options) {
         this.id = options.id;
@@ -1181,6 +1184,7 @@ class SquareButton {
         this.enabled = options.enabled || (() => true);
         this.rightEnabled = options.rightEnabled || null;
         this.checked = options.checked || (() => false);
+        this.alert = options.alert || (() => false);
         this.font = options.font || (() => fonts.transportIcon);
 
         this.x = 0;
@@ -1314,6 +1318,7 @@ class SquareButton {
             // the shared accent for their glyphs in every icon style.
             iconColour = theme.accentHover;
         }
+        if (enabled && this.alert()) iconColour = STOP_AFTER_CURRENT_COLOUR;
 
         if (monochrome) {
             ui.withAntialias(gr, () => {
@@ -1397,10 +1402,14 @@ function createButtons() {
         new SquareButton({
             id: "stop",
             glyph: GLYPHS.stop,
-            tooltip: "Stop",
+            tooltip: () => RivageCommands.stopAfterCurrentIsChecked()
+                ? "Stop\nRight-click: stop after current (on)"
+                : "Stop\nRight-click: stop after current",
             font: () => fonts.transportIcon,
             enabled: () => fb.IsPlaying || fb.IsPaused,
-            onClick: () => fb.Stop()
+            alert: () => RivageCommands.stopAfterCurrentIsChecked(),
+            onClick: () => fb.Stop(),
+            onRightClick: () => RivageCommands.toggleStopAfterCurrent({ panelTitle: RivageUI.copy.popupTitle("Player"), reportMissing: true })
         }),
         new SquareButton({
             id: "next",
