@@ -59,12 +59,13 @@ var RivageCommands = typeof RivageCommands !== "undefined" ? RivageCommands : (f
         deleteFiles: "Delete files"
     });
 
-    // %lfm_loved% comes first: evaluateLovedHandle skips it under Ultimate Playcount.
+    // stale: Ultimate Playcount also serves these names (its compatibility fields), from its
+    // saved copy of Last.fm's loved mark - evaluateLovedHandle skips them under it.
     var lovedFormatters = [
-        fb.TitleFormat("%lfm_loved%"),
-        fb.TitleFormat("%lfm_love%"), // foo_scrobble 2.x, set by its Last.fm/Love
-        fb.TitleFormat("%SMP_LOVED%"),
-        fb.TitleFormat("%LASTFM_LOVED%")
+        { tf: fb.TitleFormat("%lfm_loved%"), stale: true },
+        { tf: fb.TitleFormat("%lfm_love%") }, // foo_scrobble 2.x, set by its Last.fm/Love
+        { tf: fb.TitleFormat("%SMP_LOVED%") },
+        { tf: fb.TitleFormat("%LASTFM_LOVED%"), stale: true } // = %lastfm_loved%
     ];
 
     // Ultimate Playcount / Playcount 2003's own loved mark, when one is the stats source.
@@ -236,11 +237,13 @@ var RivageCommands = typeof RivageCommands !== "undefined" ? RivageCommands : (f
         if (!metadb) return false;
 
         if (source && isLovedValue(source.EvalWithMetadb(metadb))) return true;
-        // Under Ultimate Playcount, %lfm_loved% is its saved copy of Last.fm's loved mark,
-        // which can be out of date and which no love/unlove command here can clear.
-        for (i = ultimateLoveCommand(true) ? 1 : 0; i < lovedFormatters.length; i++) {
+        // Under Ultimate Playcount, the stale ones can be out of date and no love/unlove
+        // command here can clear them.
+        var ultimate = !!ultimateLoveCommand(true);
+        for (i = 0; i < lovedFormatters.length; i++) {
+            if (ultimate && lovedFormatters[i].stale) continue;
             try {
-                if (isLovedValue(lovedFormatters[i].EvalWithMetadb(metadb))) return true;
+                if (isLovedValue(lovedFormatters[i].tf.EvalWithMetadb(metadb))) return true;
             } catch (e) {}
         }
         return false;
