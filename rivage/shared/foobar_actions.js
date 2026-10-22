@@ -59,6 +59,7 @@ var RivageCommands = typeof RivageCommands !== "undefined" ? RivageCommands : (f
         deleteFiles: "Delete files"
     });
 
+    // %lfm_loved% comes first: evaluateLovedHandle skips it under Ultimate Playcount.
     var lovedFormatters = [
         fb.TitleFormat("%lfm_loved%"),
         fb.TitleFormat("%lfm_love%"), // foo_scrobble 2.x, set by its Last.fm/Love
@@ -235,7 +236,9 @@ var RivageCommands = typeof RivageCommands !== "undefined" ? RivageCommands : (f
         if (!metadb) return false;
 
         if (source && isLovedValue(source.EvalWithMetadb(metadb))) return true;
-        for (i = 0; i < lovedFormatters.length; i++) {
+        // Under Ultimate Playcount, %lfm_loved% is its saved copy of Last.fm's loved mark,
+        // which can be out of date and which no love/unlove command here can clear.
+        for (i = ultimateLoveCommand(true) ? 1 : 0; i < lovedFormatters.length; i++) {
             try {
                 if (isLovedValue(lovedFormatters[i].EvalWithMetadb(metadb))) return true;
             } catch (e) {}
