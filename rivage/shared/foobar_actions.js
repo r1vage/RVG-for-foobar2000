@@ -61,9 +61,22 @@ var RivageCommands = typeof RivageCommands !== "undefined" ? RivageCommands : (f
 
     var lovedFormatters = [
         fb.TitleFormat("%lfm_loved%"),
+        fb.TitleFormat("%lfm_love%"), // foo_scrobble 2.x, set by its Last.fm/Love
         fb.TitleFormat("%SMP_LOVED%"),
         fb.TitleFormat("%LASTFM_LOVED%")
     ];
+
+    // Ultimate Playcount / Playcount 2003's own loved mark, when one is the stats source.
+    // Not every panel loads PlaybackStatsSource.
+    function sourceLovedFormatter() {
+        return typeof PlaybackStatsSource !== "undefined" && PlaybackStatsSource.isPlaycount2003() ?
+            PlaybackStatsSource.tf2003("loved") : null;
+    }
+
+    function ultimateLoveCommand(love) {
+        return typeof PlaybackStatsSource !== "undefined" && PlaybackStatsSource.isUltimate() ?
+            PlaybackStatsSource.name2003() + "/" + (love ? "Love" : "Unlove") : "";
+    }
 
     function optionTitle(options) {
         return options && options.panelTitle ? String(options.panelTitle) : DEFAULT_TITLE;
@@ -212,13 +225,16 @@ var RivageCommands = typeof RivageCommands !== "undefined" ? RivageCommands : (f
 
     function isLovedValue(value) {
         var normalised = String(value || "").trim().toLowerCase();
-        return normalised === "1" || normalised === "true" || normalised === "yes" || normalised === "loved";
+        // Any positive number counts (a -1 "hated" mark does not).
+        return parseFloat(normalised) > 0 || normalised === "true" || normalised === "yes" || normalised === "loved";
     }
 
     function evaluateLovedHandle(metadb) {
         var i;
+        var source = sourceLovedFormatter();
         if (!metadb) return false;
 
+        if (source && isLovedValue(source.EvalWithMetadb(metadb))) return true;
         for (i = 0; i < lovedFormatters.length; i++) {
             try {
                 if (isLovedValue(lovedFormatters[i].EvalWithMetadb(metadb))) return true;
@@ -254,6 +270,8 @@ var RivageCommands = typeof RivageCommands !== "undefined" ? RivageCommands : (f
         wasLoved = evaluateLovedHandle(metadb);
         commands = wasLoved ? COMMANDS.lastfmUnlove : COMMANDS.lastfmLove;
         ok = tryContextCommands(commands, metadb, options);
+        // Keep Ultimate Playcount's own mark in step, so the Playlist hearts agree.
+        if (ultimateLoveCommand(!wasLoved) && tryContextCommands([ultimateLoveCommand(!wasLoved)], metadb, options)) ok = true;
 
         if (!ok) {
             showPopup(
@@ -294,7 +312,7 @@ var RivageCommands = typeof RivageCommands !== "undefined" ? RivageCommands : (f
 
     function showLovedTracks() {
         try {
-            fb.ShowLibrarySearchUI("%lfm_loved% IS 1 OR %SMP_LOVED% IS 1 OR %LASTFM_LOVED% IS 1");
+            fb.ShowLibrarySearchUI("%lfm_loved% IS 1 OR %lfm_love% IS 1 OR %SMP_LOVED% IS 1 OR %LASTFM_LOVED% IS 1");
             return true;
         } catch (e) {
             return false;
@@ -319,6 +337,7 @@ var RivageCommands = typeof RivageCommands !== "undefined" ? RivageCommands : (f
         toggleStopAfterQueue: toggleStopAfterQueue,
         getLastfmActionHandle: getLastfmActionHandle,
         evaluateLoved: evaluateLoved,
+        evaluateLovedHandle: evaluateLovedHandle,
         tryContextCommands: tryContextCommands,
         toggleLoved: toggleLoved,
         openLastfmPreferences: openLastfmPreferences,

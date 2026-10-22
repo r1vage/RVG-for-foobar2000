@@ -7,6 +7,7 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\album_accent_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\settings_protocol.js");
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\playback_stats_source.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\foobar_actions.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\track_context.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\miniplayer_protocol.js");
@@ -3705,6 +3706,12 @@ function on_notify_data(name, info) {
     if (consumeSharedState(name, info)) return;
     if (consumeMeasureRequest(name, info)) return;
     if (TrackContext.onNotifyData(name, info, false)) return;
+    // The Love button reads the stats source's own loved mark too.
+    if (SettingsRegistry.consume(name, info, 'global', function (id, value) {
+        PlaybackStatsSource.applySetting(id, value);
+        TrackContext.applySetting(id, value);
+    })) return;
+    if (PlaybackStatsSource.onNotifyData(name, info, false)) return;
 
     if (name === SHARED_ALBUM_ACCENT_UPDATE && SharedAccentProtocol.isColour(info)) {
         var changed = adoptSharedAlbumAccent(info);
@@ -3735,6 +3742,8 @@ startButtonStatePolling();
 SharedAccentProtocol.request();
 TrackContext.onChange(refreshForTrackContextChange);
 TrackContext.requestSync();
+PlaybackStatsSource.onChange(refreshButtonStateSoon);
+PlaybackStatsSource.requestSync();
 
 // Adopt whatever the siblings already have, so a panel loaded (or reloaded)
 // mid-session joins the shared state instead of sitting on its own stale copy.

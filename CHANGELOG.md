@@ -14,6 +14,7 @@ All notable changes to RVG (skin for foobar2000) are documented here.
 - With Ultimate Playcount, Track information shows the Last.fm card next to Playback statistics again (scrobbles, first and last scrobble), even without Enhanced Playback Statistics installed.
 - The Playback statistics panel's Last.fm and Smart play history views use Ultimate Playcount's Last.fm numbers when it is your statistics source.
 - The Playlist's hearts work with Ultimate Playcount: they show its loved mark, and clicking one loves or unloves the track there (and on Last.fm, if "Sync to Last.fm" is on).
+- The Love custom button, the Mini Player heart and the Playlist hearts now agree. They all see tracks loved with foo_scrobble (right-click › Last.fm › Love) or in Ultimate Playcount, and the Love button updates Ultimate Playcount too.
 
 ## [1.0.2] - 2026-10-21
 

@@ -233,7 +233,7 @@ oItem = function (playlist, row_index, type, handle, track_index, group_index, t
 					// present, otherwise from the Last.fm sync component, otherwise from
 					// foo_playcount's local flag. Nothing is ever written to file tags.
 					if (typeof(this.mood) == "undefined") {
-						this.mood = parseInt(loved_tf.EvalWithMetadb(this.metadb), 10) || 0;
+						this.mood = RivageCommands.evaluateLovedHandle(this.metadb) ? 1 : (parseInt(loved_tf.EvalWithMetadb(this.metadb), 10) || 0);
 					};
 					columns.mood = true;
 					var loved_on = (this.mood != 0);

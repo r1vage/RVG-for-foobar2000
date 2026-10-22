@@ -268,11 +268,10 @@ var foo_lastfm_playcount_sync = utils.CheckComponent("foo_lastfm_playcount_sync"
 
 var loved_tf = null;
 function get_loved_tf() {
-	// The 2003-style sources keep their own loved flag. Not Ultimate Playcount's Last.fm
-	// one: its Love/Unlove can't change that, so a heart lit by it could never be cleared.
-	if (PlaybackStatsSource.isPlaycount2003()) {
-		return fb.TitleFormat("$if2(%" + PlaybackStatsSource.prefix2003() + "loved%,0)");
-	} else if (foo_enhanced_playcount) {
+	// The Loved column also asks RivageCommands.evaluateLovedHandle(), which covers the
+	// 2003-style sources' own mark and foo_scrobble. Not Ultimate Playcount's Last.fm mark:
+	// nothing here can clear it, so a heart lit by it could never be turned off.
+	if (foo_enhanced_playcount) {
 		// foo_enhanced_playcount exposes the Last.fm loved flag locally
 		return fb.TitleFormat("$if2(%lfm_loved%,0)");
 	} else if (foo_lastfm_playcount_sync) {
