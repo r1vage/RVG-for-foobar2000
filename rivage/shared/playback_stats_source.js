@@ -51,7 +51,17 @@ if (typeof PlaybackStatsSource === 'undefined') {
             added: '%added%', rating: '%rating%'
         };
         FIELDS[SOURCE_PLAYCOUNT_2003] = prefixedFields('2003_');
-        FIELDS[SOURCE_ULTIMATE] = prefixedFields('upc_');
+
+        // Ultimate Playcount's field prefix is its own preference, which scripts can't read.
+        var DEFAULT_UPC_PREFIX = 'upc_';
+        function normalisePrefix(value) {
+            value = String(value === undefined || value === null ? '' : value).replace(/^\s+|\s+$/g, '');
+            return /^\w+$/.test(value) ? value : DEFAULT_UPC_PREFIX;
+        }
+        var storedPrefix = window.GetProperty(PROPERTY_PREFIX + 'Ultimate Playcount prefix', DEFAULT_UPC_PREFIX);
+        var upcPrefix = normalisePrefix(storedPrefix);
+        if (upcPrefix !== storedPrefix) window.SetProperty(PROPERTY_PREFIX + 'Ultimate Playcount prefix', upcPrefix);
+        FIELDS[SOURCE_ULTIMATE] = prefixedFields(upcPrefix);
 
         function isUsableSource(value) {
             return value === SOURCE_FOO_PLAYCOUNT ||
@@ -81,6 +91,15 @@ if (typeof PlaybackStatsSource === 'undefined') {
         }
 
         function applyLocally(id, value) {
+            if (id === 'statsUpcPrefix') {
+                value = normalisePrefix(value);
+                if (value === upcPrefix) return true;
+                window.SetProperty(PROPERTY_PREFIX + 'Ultimate Playcount prefix', value);
+                upcPrefix = value;
+                FIELDS[SOURCE_ULTIMATE] = prefixedFields(upcPrefix);
+                if (dataSource === SOURCE_ULTIMATE) notifyChangeListeners();
+                return true;
+            }
             if (id !== 'statsDataSource') return false;
             if (!isUsableSource(value) || value === dataSource) return true;
 
@@ -110,17 +129,24 @@ if (typeof PlaybackStatsSource === 'undefined') {
                 choices: choices
             };
             entry.hint = hasUltimate || has2003
-                ? 'Ultimate Playcount reads the %upc_*% fields; Playcount 2003 reads %2003_*%.'
+                ? 'Ultimate Playcount reads the %' + upcPrefix + '*% fields; Playcount 2003 reads %2003_*%.'
                 : 'Install foo_ultimate_playcount or foo_playcount_2003 for more choices.';
-            return [entry];
+            if (!hasUltimate) return [entry];
+            return [entry, {
+                id: 'statsUpcPrefix',
+                label: 'Ultimate Playcount field prefix',
+                type: 'string',
+                value: upcPrefix,
+                hint: 'Same as Preferences > Tools > Ultimate Playcount > Field prefix. Letters, digits and _ only.'
+            }];
         }
 
         // Field prefix of the Playcount 2003-style component: the active one, or
         // the installed one while foo_playcount is selected.
         function prefix2003() {
-            if (dataSource === SOURCE_ULTIMATE) return 'upc_';
+            if (dataSource === SOURCE_ULTIMATE) return upcPrefix;
             if (dataSource === SOURCE_PLAYCOUNT_2003) return '2003_';
-            return hasUltimate ? 'upc_' : '2003_';
+            return hasUltimate ? upcPrefix : '2003_';
         }
 
         var tf2003Cache = {};
@@ -145,7 +171,7 @@ if (typeof PlaybackStatsSource === 'undefined') {
         }
 
         function broadcast() {
-            try { window.NotifyOthers(UPDATE, { dataSource: dataSource }); } catch (e) { reportFailure('the playback stats update could not be broadcast', e); }
+            try { window.NotifyOthers(UPDATE, { dataSource: dataSource, upcPrefix: upcPrefix }); } catch (e) { reportFailure('the playback stats update could not be broadcast', e); }
         }
 
         function requestSync() {
@@ -160,6 +186,7 @@ if (typeof PlaybackStatsSource === 'undefined') {
             }
             if (name === UPDATE) {
                 if (!isAuthority && info && typeof info === 'object') {
+                    if (info.upcPrefix !== undefined) applyLocally('statsUpcPrefix', info.upcPrefix);
                     applyLocally('statsDataSource', info.dataSource);
                 }
                 return true;
@@ -182,17 +209,33 @@ if (typeof PlaybackStatsSource === 'undefined') {
             // that take the highest count and the latest date (as the Playback
             // statistics panel's Smart play history does). Enhanced Playback
             // Statistics' own last-played is left out under Playcount 2003 / Ultimate Playcount.
+            // lastfm: { plays, first, last } scrobble fields - Ultimate Playcount's own
+            // under it, else Enhanced Playback Statistics'.
+            // source changes with Ultimate Playcount's prefix too, so a prefix edit reads as a switch.
             fields: function () {
                 var f = FIELDS[dataSource] || FIELDS[SOURCE_FOO_PLAYCOUNT];
+                var ultimate = dataSource === SOURCE_ULTIMATE;
+                var lastfm = ultimate ? {
+                    plays: '%' + upcPrefix + 'lastfm_playcount%',
+                    first: '%' + upcPrefix + 'lastfm_first_played%',
+                    last: '%' + upcPrefix + 'lastfm_last_played%'
+                } : {
+                    plays: '$if2(%lastfm_play_count%,$if2(%lastfm_playcount%,$if2(%scrobbled%,%last.fm scrobbled%)))',
+                    first: '%lastfm_first_played%',
+                    last: '%lastfm_last_played%'
+                };
                 return {
-                    source: dataSource, plays: f.plays, first: f.first, last: f.last, added: f.added, rating: f.rating,
+                    source: ultimate ? dataSource + ':' + upcPrefix : dataSource,
+                    plays: f.plays, first: f.first, last: f.last, added: f.added, rating: f.rating,
+                    lastfm: lastfm,
                     history: {
-                        plays: '$if2(%lastfm_play_count%,$if2(%lastfm_playcount%,$if2(%scrobbled%,%last.fm scrobbled%)))',
-                        last: '$if2(%lastfm_last_played%,$if2(%last_scrobble%,%last.fm last scrobble%))',
+                        plays: lastfm.plays,
+                        last: ultimate ? lastfm.last : '$if2(%lastfm_last_played%,$if2(%last_scrobble%,%last.fm last scrobble%))',
                         enhancedLast: isPlaycount2003() ? '' : '%last_played_enhanced%'
                     }
                 };
             },
+            isUltimate: function () { return dataSource === SOURCE_ULTIMATE; },
             onChange: function (fn) {
                 if (typeof fn === 'function') changeListeners.push(fn);
             },

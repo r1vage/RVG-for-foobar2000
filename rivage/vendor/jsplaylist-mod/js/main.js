@@ -268,7 +268,11 @@ var foo_lastfm_playcount_sync = utils.CheckComponent("foo_lastfm_playcount_sync"
 
 var loved_tf = null;
 function get_loved_tf() {
-	if (foo_enhanced_playcount) {
+	// The 2003-style sources keep their own loved flag. Not Ultimate Playcount's Last.fm
+	// one: its Love/Unlove can't change that, so a heart lit by it could never be cleared.
+	if (PlaybackStatsSource.isPlaycount2003()) {
+		return fb.TitleFormat("$if2(%" + PlaybackStatsSource.prefix2003() + "loved%,0)");
+	} else if (foo_enhanced_playcount) {
 		// foo_enhanced_playcount exposes the Last.fm loved flag locally
 		return fb.TitleFormat("$if2(%lfm_loved%,0)");
 	} else if (foo_lastfm_playcount_sync) {
@@ -281,7 +285,7 @@ loved_tf = get_loved_tf();
 
 // Is there anything that can actually toggle loved state?
 function loved_can_write() {
-	return foo_lastfm_playcount_sync || foo_playcount || foo_enhanced_playcount;
+	return PlaybackStatsSource.isUltimate() || foo_lastfm_playcount_sync || foo_playcount || foo_enhanced_playcount;
 };
 
 // Is the component backing the CURRENTLY SELECTED rating source (per the
@@ -314,15 +318,17 @@ function toggle_loved(metadb, currently_loved) {
 
 	var action = currently_loved ? "Unlove" : "Love";
 
-	// Last.fm side (also updates the local %lfm_loved% cache used for reading)
-	if (properties.lovedSyncLastfm && foo_lastfm_playcount_sync) {
-		try {
-			fb.RunContextCommandWithMetadb("Last.fm Playcount Sync/" + action, metadb, 8);
-		} catch (e) {};
+	// Last.fm side, through whichever installed component has a love command
+	// (Last.fm Playcount Sync, foo_scrobble, ...; see shared\foobar_actions.js)
+	if (properties.lovedSyncLastfm) {
+		RivageCommands.tryContextCommands(currently_loved ? RivageCommands.COMMANDS.lastfmUnlove : RivageCommands.COMMANDS.lastfmLove, metadb);
 	};
 
-	// Local side via foo_playcount's rating store, so the heart survives without network
-	if (foo_playcount) {
+	// Local side: Ultimate Playcount's own loved mark when it is the source,
+	// else foo_playcount's rating store, so the heart survives without network
+	if (PlaybackStatsSource.isUltimate()) {
+		fb.RunContextCommandWithMetadb(PlaybackStatsSource.name2003() + "/" + action, metadb, 8);
+	} else if (foo_playcount) {
 		try {
 			fb.RunContextCommandWithMetadb("Playback Statistics/Rating/" + (currently_loved ? "<not set>" : "5"), metadb, 8);
 		} catch (e) {};
@@ -2151,6 +2157,7 @@ on_init();
 // of sitting on this instance's own possibly-stale persisted value. Columns
 // map their stats fields through stats_column_tf(), so a switch rebuilds them.
 PlaybackStatsSource.onChange(function () {
+	loved_tf = get_loved_tf();
 	p.list.setItems(false);
 	full_repaint();
 });

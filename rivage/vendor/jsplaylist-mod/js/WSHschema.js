@@ -246,7 +246,8 @@ function settings_schema() {
 		{ id: "loved.alwaysPink", type: "toggle", label: "Always pink hearts", get: function () { return properties.lovedAlwaysPink; },
 			set: function (v) { sset("CUSTOM.Loved Always Pink", "lovedAlwaysPink", v); } },
 		{ id: "loved.readingFrom", type: "info", label: "Reading from", get: function () {
-			return foo_enhanced_playcount ? "foo_enhanced_playcount"
+			return PlaybackStatsSource.isPlaycount2003() ? PlaybackStatsSource.name2003()
+				 : foo_enhanced_playcount ? "foo_enhanced_playcount"
 				 : (foo_lastfm_playcount_sync ? "foo_lastfm_playcount_sync"
 				 : (foo_playcount ? "foo_playcount" : "none installed")); } }
 	]},

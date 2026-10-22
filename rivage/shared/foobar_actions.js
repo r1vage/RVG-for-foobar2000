@@ -37,13 +37,15 @@ var RivageCommands = typeof RivageCommands !== "undefined" ? RivageCommands : (f
             "Last.fm Playcount Sync/Love",
             "Last.fm Playcount Sync/Love track",
             "Last.fm Playcount Sync/Love tracks",
-            "Last.fm/Last.fm Love Track"
+            "Last.fm/Last.fm Love Track",
+            "Last.fm/Love" // foo_scrobble, with its "Enable Love and Unlove" option on
         ]),
         lastfmUnlove: Object.freeze([
             "Last.fm Playcount Sync/Unlove",
             "Last.fm Playcount Sync/Unlove track",
             "Last.fm Playcount Sync/Unlove tracks",
-            "Last.fm/Last.fm Unlove Track"
+            "Last.fm/Last.fm Unlove Track",
+            "Last.fm/Unlove"
         ]),
         lastfmImportLoved: "Library/Last.fm Playcount Sync/Import Last.fm loved tracks",
 

@@ -1186,12 +1186,22 @@ function CompactSongInfo(owner) {
             this.add_card('PLAYBACK STATISTICS', rows, 'stats_left');
         }
 
-        if (object_has_keys(enhanced_stats)) {
+        if (object_has_keys(enhanced_stats) && !PlaybackStatsSource.isUltimate()) {
             rows = [];
             this.add_row(rows, 'Scrobbled', get_value(enhanced_stats, ['Scrobbled']));
             this.add_row(rows, 'First scrobble', get_value(enhanced_stats, ['First scrobble']) || 'N/A');
             this.add_row(rows, 'Last scrobble', get_value(enhanced_stats, ['Last scrobble']) || 'N/A');
             this.add_card('ENHANCED PLAYBACK STATISTICS', rows, 'stats_right');
+        } else {
+            // Ultimate Playcount has no Properties section; read the active source's Last.fm fields.
+            var lastfm = PlaybackStatsSource.fields().lastfm;
+            rows = [];
+            this.add_row(rows, 'Scrobbled', this.owner.tf('[' + lastfm.plays + ']'));
+            if (rows.length) {
+                this.add_row(rows, 'First scrobble', this.owner.tf('[' + lastfm.first + ']') || 'N/A');
+                this.add_row(rows, 'Last scrobble', this.owner.tf('[' + lastfm.last + ']') || 'N/A');
+                this.add_card('LAST.FM STATISTICS', rows, 'stats_right');
+            }
         }
 
         if (this.owner.enhanced_lastfm_mode != ENHANCED_LASTFM_HIDDEN) {

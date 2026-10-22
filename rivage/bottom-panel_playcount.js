@@ -383,16 +383,13 @@ var statsTfo = {
     enhancedFirst: fb.TitleFormat("%first_played_enhanced%"),
     enhancedLast: fb.TitleFormat("%last_played_enhanced%"),
     lastfmAdded: fb.TitleFormat("%lastfm_added%"),
-    lastfmFirstDirect: fb.TitleFormat("%lastfm_first_played%"),
-    lastfmLastDirect: fb.TitleFormat("%lastfm_last_played%"),
-    lastfmPlayed: fb.TitleFormat("$if2(%lastfm_play_count%,$if2(%lastfm_playcount%,$if2(%scrobbled%,$if2(%last.fm scrobbled%,))))"),
     lastfmFirstLegacy: fb.TitleFormat("$if2(%first_scrobble%,$if2(%last.fm first scrobble%,))"),
     lastfmLastLegacy: fb.TitleFormat("$if2(%last_scrobble%,$if2(%last.fm last scrobble%,))")
 };
 
-// Plays / first / last for the active backend, from PlaybackStatsSource.fields();
-// recompiled only when the backend changes.
-var localStatsTfo = { source: null, played: null, first: null, last: null };
+// Plays / first / last (local and Last.fm) for the active backend, from
+// PlaybackStatsSource.fields(); recompiled only when the backend changes.
+var localStatsTfo = { source: null, played: null, first: null, last: null, lastfm: null };
 
 function localStatsFormats() {
     var fields = PlaybackStatsSource.fields();
@@ -401,6 +398,11 @@ function localStatsFormats() {
         localStatsTfo.played = fb.TitleFormat(fields.plays);
         localStatsTfo.first = fb.TitleFormat(fields.first);
         localStatsTfo.last = fb.TitleFormat(fields.last);
+        localStatsTfo.lastfm = {
+            played: fb.TitleFormat(fields.lastfm.plays),
+            first: fb.TitleFormat(fields.lastfm.first),
+            last: fb.TitleFormat(fields.lastfm.last)
+        };
     }
     return localStatsTfo;
 }
@@ -537,9 +539,14 @@ function pickLargerPlayCount(first, second) {
     return first >= second ? first : second;
 }
 
+function lastfmPlayedValueForHandle(handle) {
+    return evaluateForHandle(localStatsFormats().lastfm.played, handle);
+}
+
+// Ultimate Playcount has its own Last.fm dates; the other components' fallbacks stay out of it.
 function evaluateLastfmFirstForHandle(handle) {
-    var value = validTimestamp(evaluateForHandle(statsTfo.lastfmFirstDirect, handle));
-    if (value.length) return value;
+    var value = validTimestamp(evaluateForHandle(localStatsFormats().lastfm.first, handle));
+    if (value.length || PlaybackStatsSource.isUltimate()) return value;
 
     value = validTimestamp(evaluateForHandle(statsTfo.lastfmAdded, handle));
     if (value.length) return value;
@@ -548,8 +555,8 @@ function evaluateLastfmFirstForHandle(handle) {
 }
 
 function evaluateLastfmLastForHandle(handle) {
-    var value = validTimestamp(evaluateForHandle(statsTfo.lastfmLastDirect, handle));
-    if (value.length) return value;
+    var value = validTimestamp(evaluateForHandle(localStatsFormats().lastfm.last, handle));
+    if (value.length || PlaybackStatsSource.isUltimate()) return value;
     return evaluateForHandle(statsTfo.lastfmLastLegacy, handle);
 }
 
@@ -598,7 +605,7 @@ function makeStatsFromValues(playedValue, firstValue, lastValue) {
 
 function makeLastfmStats(handle) {
     return makeStatsFromValues(
-        evaluateForHandle(statsTfo.lastfmPlayed, handle),
+        lastfmPlayedValueForHandle(handle),
         evaluateLastfmFirstForHandle(handle),
         evaluateLastfmLastForHandle(handle)
     );
@@ -608,7 +615,7 @@ function makeHistoryStats(handle) {
     return makeStatsFromValues(
         pickLargerPlayCount(
             localPlayedValueForHandle(handle),
-            evaluateForHandle(statsTfo.lastfmPlayed, handle)
+            lastfmPlayedValueForHandle(handle)
         ),
         evaluateHistoryFirstForHandle(handle),
         evaluateHistoryLastForHandle(handle)

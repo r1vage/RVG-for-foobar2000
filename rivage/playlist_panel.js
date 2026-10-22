@@ -25,6 +25,7 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\album_accent_protocol.js");
 // main.js can synchronously receive playback-statistics state while it is being included.
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\settings_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\playback_stats_source.js");
+include(fb.ProfilePath + "jsplitter\\rivage\\shared\\foobar_actions.js");
 
 var SETTINGS_PANEL_ID = "playlist";
 var SETTINGS_PANEL_LABEL = "Playlist";
