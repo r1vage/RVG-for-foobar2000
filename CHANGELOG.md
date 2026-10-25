@@ -2,12 +2,17 @@
 
 All notable changes to RVG (skin for foobar2000) are documented here.
 
-## [Unreleased]
+## [1.0.3] - 2026-10-25
 
 ### Added
 
+- **Ultimate Playcount is out.** [Ultimate Playcount](https://github.com/r1vage/ultimate-playcount) can now take the place of both Playcount 2003 and Enhanced Playback Statistics. It keeps your local plays, Last.fm play counts, play dates and loved marks in one place. Turn on its "Also provide Enhanced Playback Statistics fields" option and Rewind and the Playback timeline keep working without Enhanced Playback Statistics.
 - If you changed Ultimate Playcount's field prefix, enter the same prefix in RVG Settings › General (next to the playback statistics source) and everything keeps working.
 - Clicking a heart in the Playlist can now love or unlove the track on Last.fm through foo_scrobble, not only through Last.fm Playcount Sync. Turn on "Love" and "Unlove" in foo_scrobble's preferences first.
+
+### Changed
+
+- The health check in RVG Settings no longer asks for Enhanced Playback Statistics when Ultimate Playcount is installed, or for Last.fm Playcount Sync when foo_scrobble is.
 
 ### Fixed
 

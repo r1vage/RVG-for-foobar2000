@@ -2,7 +2,7 @@
 
 ![RVG for foobar2000](https://i.ibb.co/V0LXzcSz/rvg-for-foobar2000.webp)
 
-**Version 1.0.2** · **Author: RivaGe**
+**Version 1.0.3** · **Author: RivaGe**
 
 RVG is a UWP inspired, panel-based foobar2000 skin built for JSPlitter. It is a very distant descendant of Br3tt's [Curacao](https://www.deviantart.com/br3tt/art/Curacao-v1-0a-Released-104322264) skin I've been using since 2008. The point of it is to be extremely adaptive and customizable - you can add basically any panels and they will be picked up by the skin's panel management engine. Although I've tried to optimize it, this is not a friendly skin for weak computers.
 
@@ -18,9 +18,9 @@ RVG is a UWP inspired, panel-based foobar2000 skin built for JSPlitter. It is a 
 - **Required and recommended\* components:**
 
   - [foo_ui_columns](https://www.foobar2000.org/components/view/foo_ui_columns)
-  - [foo_lastfm_playcount_sync*](https://marc2k3.github.io/component/lastfm-playcount-sync/)
-  - [foo_enhanced_playcount*](https://www.foobar2000.org/components/view/foo_enhanced_playcount) 
-  - either [foo_playcount*](https://www.foobar2000.org/components/view/foo_playcount), [2003_playcount*](https://marc2k3.github.io/component/playcount-2003/) or Ultimate Playcount\* (`foo_ultimate_playcount`) for playback statistics. Ultimate Playcount works like Playcount 2003 but with `%upc_*%` fields, and is picked automatically when installed.
+  - [foo_lastfm_playcount_sync*](https://marc2k3.github.io/component/lastfm-playcount-sync/) or foo_scrobble 2\* with its "Love" and "Unlove" option on, for the Last.fm love button and hearts
+  - [foo_enhanced_playcount*](https://www.foobar2000.org/components/view/foo_enhanced_playcount) - not needed with Ultimate Playcount when its "Also provide Enhanced Playback Statistics fields" option is on
+  - either [foo_playcount*](https://www.foobar2000.org/components/view/foo_playcount), [2003_playcount*](https://marc2k3.github.io/component/playcount-2003/) or [Ultimate Playcount*](https://github.com/r1vage/ultimate-playcount) (`foo_ultimate_playcount`) for playback statistics. Ultimate Playcount works like Playcount 2003 but with `%upc_*%` fields, and is picked automatically when installed. It also keeps Last.fm play counts, dates and loved marks, so it can replace foo_enhanced_playcount.
   - [foo_vis_milk2*](https://www.foobar2000.org/components/view/foo_vis_milk2)
   - [foo_stop_after_queue*](https://www.foobar2000.org/components/view/foo_stop_after_queue)
   - [foo_stop_after_track*](https://www.foobar2000.org/components/view/foo_stop_after_track)
@@ -41,7 +41,7 @@ RVG is a UWP inspired, panel-based foobar2000 skin built for JSPlitter. It is a 
 2. Extract the package so this folder exists: `<foobar2000 profile>\jsplitter\rivage\`.
 3. Keep the folder names as they are; script includes depend on it.
 4. Import Columns UI .fcl file.
-5. Start foobar2000 and **right** click on the top right settings icon to open **RVG Settings**. The release row should show **RVG skin for foobar2000, Version 1.0.2, Author: RivaGe**.
+5. Start foobar2000 and **right** click on the top right settings icon to open **RVG Settings**. The release row should show **RVG skin for foobar2000, Version 1.0.3, Author: RivaGe**.
 6. Disable toolbars for a better look.
 7. Add Last.fm credentials only if you use the Last.fm-backed panels or features.
 8. You can freely copy, move, add and rename panels in Preferences > Columns UI > Layout.
@@ -58,7 +58,8 @@ Open **RVG Settings › Global settings** for the settings that affect several p
 - **Global theme:** **Artwork Mica — blurred** (the default), Accent dark, Match foobar2000, RVG dark, RVG light, or the artwork-palette modes. When Mica is selected, blur-radius, tint-strength and acrylic-noise controls appear directly below it.
 - **Shared accent:** when Global theme is **Accent dark**, choose Artwork, RVG blue, or a custom colour.
 - **Last.fm API key and username:** shared by the Last.fm and Last.fm Charts panels.
-- **Playback statistics source:** `foo_playcount`, `Ultimate Playcount` (`%upc_*%`) or `Playcount 2003` (`%2003_*%`) fields; only installed ones are listed. Ultimate Playcount can also keep a local, per-album "loved" flag (`%upc_loved%`, *Ultimate Playcount › Love / Unlove*); RVG's love button still uses Last.fm.
+- **Playback statistics source:** `foo_playcount`, `Ultimate Playcount` (`%upc_*%`) or `Playcount 2003` (`%2003_*%`) fields; only installed ones are listed. With Ultimate Playcount, the Playlist hearts and the love button also use its own loved mark (`%upc_loved%`, *Ultimate Playcount › Love / Unlove*) and send the love to Last.fm too.
+- **Ultimate Playcount field prefix:** if you changed the prefix in *Preferences › Tools › Ultimate Playcount*, enter the same one here.
 - **Default track source:** choose whether panels follow Now Playing, the selected track, or a fallback between them.
 - **Allow panel resizing:** enables the draggable layout dividers. Enable, resize, disable to save the positions.
 - **Maintain `> History` playlist:** controls RVG's automatic play-history playlist.
@@ -126,7 +127,7 @@ Mica then paints those semantic surfaces at partial opacity over the blurred cov
 - **Playback statistics** — Shows local plays, Last.fm scrobbles, first/last played, and combined history. Main settings: one/two-card layout, source, date detail, accent, and text size.
 - **Playback history** — Keeps a compact visual list of recent qualified plays plus listening totals by periods. Clicking on tracks in the log jumps to the song in the playlist.
 - **Playback timeline** — Plots listens for the current track over time with zoom/pan, density, markers, and summary stats. Main settings: Local vs Last.fm history, whether the range starts at the first listen or the date added, marker/density style, track source, and accent.
-- **Rewind** — Your listening over a period (last 12 months, a month, a year or all time): plays, listening time, streaks and their change from the period before, top artists, albums, tracks and genres with rank changes, new artists, plays per month and when you listen, plus a calendar heatmap and a **Current artist** view that follows the playing (or selected) track. Click an artist to see just that artist; click anything else to select it in your playlist. Right-click to play, queue or add to a playlist; middle-click queues. Reads Enhanced Playback Statistics' play timestamps (Last.fm scrobbles by default, or local plays) and keeps up with new plays by itself. Main settings: play history source, list size (5-20), comparison, featured-artist folding, week start, accent.
+- **Rewind** — Your listening over a period (last 12 months, a month, a year or all time): plays, listening time, streaks and their change from the period before, top artists, albums, tracks and genres with rank changes, new artists, plays per month and when you listen, plus a calendar heatmap and a **Current artist** view that follows the playing (or selected) track. Click an artist to see just that artist; click anything else to select it in your playlist. Right-click to play, queue or add to a playlist; middle-click queues. Reads Enhanced Playback Statistics' play timestamps, or Ultimate Playcount's with its Enhanced Playback Statistics fields on (Last.fm scrobbles by default, or local plays) and keeps up with new plays by itself. Main settings: play history source, list size (5-20), comparison, featured-artist folding, week start, accent.
 - **Track information** — Compact metadata/statistics info panel with toggleable blocks.
 
 ### Last.fm, lyrics, and discovery
@@ -217,7 +218,7 @@ All fonts come from **Preferences › Display › Columns UI › Colours and fon
 
 - Last.fm panels show a setup/empty state until credentials are entered.
 - Missing optional components only disable the features that depend on them; the rest of the layout can still run.
-- Playback timeline requires **Enhanced Playback Statistics** (`foo_enhanced_playcount`) for `%played_times%` / `%lastfm_played_times%` history fields.
+- Playback timeline requires **Enhanced Playback Statistics** (`foo_enhanced_playcount`), or Ultimate Playcount with "Also provide Enhanced Playback Statistics fields" on, for `%played_times%` / `%lastfm_played_times%` history fields.
   Its **Date added** range mode takes the first field that holds a real date: `%added%` / `%upc_added%` or `%2003_added%` (whichever the Global settings stats source prefers), then the other of the two, then `%lastfm_added%`.
 - Windows 10 may use Segoe MDL2 Assets instead of Segoe Fluent Icons.
 
