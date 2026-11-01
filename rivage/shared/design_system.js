@@ -22,7 +22,7 @@ var RVG_RELEASE = {
     name: 'RVG',
     fullName: 'RVG skin for foobar2000',
     author: 'RivaGe',
-    version: '1.0.3'
+    version: '1.0.4'
 };
 
 var RivageUI = (function (existing) {
