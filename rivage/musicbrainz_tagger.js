@@ -12,6 +12,7 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\visible_paint_work.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\mica_backdrop.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\cache_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\musicbrainz_gate.js");
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\serial_request_queue.js');
 
 const PANEL_VERSION = '1.4.0';
 
@@ -23,15 +24,8 @@ window.DefineScript(RivageUI.copy.popupTitle('MusicBrainz tagger'), {
 // Narrow failure reporting. Most empty catches in this file guard drawing
 // calls and host reads that are expected to fail and stay silent on purpose.
 // Repeats are counted and re-logged only at powers of ten.
-var reportedFailures = {};
-function reportFailure(what, err) {
-    var message = '[RVG MusicBrainz] ' + what +
-        (err === undefined || err === null ? '' : ': ' + err);
-    var seen = (reportedFailures[message] || 0) + 1;
-    reportedFailures[message] = seen;
-    if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-    try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-}
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+var reportFailure = RivageFailure.reporter('[RVG MusicBrainz] ');
 
 const PROP = 'RVG MusicBrainz Tagger.';
 const SETTINGS_PANEL_ID = 'musicbrainz_tagger';
@@ -208,12 +202,20 @@ let initTimer = 0;
 let selectionTimer = 0;
 let initialLoadPending = true;
 
-let requestQueue = [];
-let requestContexts = new Map();
-let requestTimer = 0;
-let lastRequestAt = 0;
-let blockedUntil = 0;
-let requestWatchdog = 0;
+const requests = SerialRequestQueue.create({
+    intervalMs: MB_MIN_INTERVAL_MS,
+    timeoutMs: REQUEST_TIMEOUT_MS,
+    headers: requestHeaders,
+    isActive: function () { return scriptActive; },
+    generation: function () { return generation; },
+    // The one-per-second rule MusicBrainz enforces covers every panel together.
+    extraWait: function (now) { return MusicBrainzGate.wait(MB_MIN_INTERVAL_MS, now); },
+    onSent: function (context) {
+        MusicBrainzGate.announce(requests.blockedUntil());
+        setNetworkDebug('requesting', context.kind, context.url, 0);
+    },
+    onFailure: handleRequestFailure
+});
 let networkDebug = { state: 'idle', kind: '', at: 0, httpStatus: 0, detail: '' };
 
 let cache = null;
@@ -437,6 +439,25 @@ function commonValue(values) {
     return best;
 }
 
+// Ordered by disc/track then path so the pairing follows the album order the
+// files already claim, not the order they happen to sit in the playlist.
+function sortForPairing(order) {
+    order.sort(function (a, b) {
+        if (a.disc !== b.disc) return a.disc - b.disc;
+        if (a.track !== b.track) return a.track - b.track;
+        if (a.path !== b.path) return a.path < b.path ? -1 : 1;
+        return a.srcIndex - b.srcIndex;
+    });
+    // A repeated disc + track (a multi-disc album without disc tags) would interleave
+    // the discs, and the release lists them one after the other. Folders keep them apart.
+    if (new Set(order.map(function (o) { return o.disc + ':' + o.track; })).size < order.length) {
+        order.sort(function (a, b) {
+            if (a.path !== b.path) return a.path < b.path ? -1 : 1;
+            return a.srcIndex - b.srcIndex;
+        });
+    }
+}
+
 function readSelection() {
     let handles = null;
     try {
@@ -464,8 +485,6 @@ function readSelection() {
         return null;
     }
 
-    // Ordered by disc/track then path so the pairing follows the album order the
-    // files already claim, not the order they happen to sit in the playlist.
     const order = [];
     for (let i = 0; i < count; i++) {
         const parts = String(sortKeys[i] || '').split('\u0001');
@@ -479,12 +498,7 @@ function readSelection() {
             title: cleanSpaces(titles[i])
         });
     }
-    order.sort(function (a, b) {
-        if (a.disc !== b.disc) return a.disc - b.disc;
-        if (a.track !== b.track) return a.track - b.track;
-        if (a.path !== b.path) return a.path < b.path ? -1 : 1;
-        return a.srcIndex - b.srcIndex;
-    });
+    sortForPairing(order);
 
     const album = commonValue(albums);
     const artist = commonValue(artists);
@@ -495,7 +509,9 @@ function readSelection() {
         album: album,
         artist: artist,
         tagMbid: firstUuid(commonValue(albumIds)),
-        signature: album + '\u0001' + artist + '\u0001' + count + '\u0001' + (order.length ? order[0].path : '')
+        // Every path in selection order: pairs point into handles by index, so a
+        // reordered or swapped selection must count as a new one. '|' cannot occur in a path.
+        signature: order.map(function (o) { return o.srcIndex + ':' + o.path; }).join('|')
     };
 }
 
@@ -528,95 +544,17 @@ function refreshSelection(allowAutoSearch) {
     rebuildRows();
 }
 
-function enqueueRequest(context) {
-    if (!scriptActive) return;
-    requestQueue.push(context);
-    pumpRequestQueue();
-}
-
-function isTransientHttpStatus(status) {
-    return status === 0 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
-}
-
-function transientRetryDelay(retries) {
-    const exponential = RETRY_BASE_MS * Math.pow(2, Math.max(0, Number(retries || 0)));
-    return Math.min(exponential, RETRY_MAX_DELAY_MS) + Math.floor(Math.random() * (RETRY_JITTER_MS + 1));
-}
-
-function pumpRequestQueue() {
-    if (!scriptActive) return;
-    clearTimer(requestTimer);
-    requestTimer = 0;
-
-    while (requestQueue.length && requestQueue[0].generation !== generation) requestQueue.shift();
-    if (!requestQueue.length) return;
-    // Strictly serial: one in-flight request keeps the one-per-second rule
-    // MusicBrainz enforces authoritative for the whole panel.
-    if (requestContexts.size) return;
-
-    const now = Date.now();
-    const wait = Math.max(
-        Math.max(0, MB_MIN_INTERVAL_MS - (now - lastRequestAt)),
-        Math.max(0, blockedUntil - now),
-        MusicBrainzGate.wait(MB_MIN_INTERVAL_MS, now)
-    );
-    if (wait > 0) {
-        requestTimer = window.SetTimeout(pumpRequestQueue, wait);
-        return;
-    }
-
-    const context = requestQueue.shift();
-    if (context.generation !== generation) {
-        pumpRequestQueue();
-        return;
-    }
-
-    try {
-        const taskId = utils.HTTPRequestAsync(0, context.url, requestHeaders());
-        lastRequestAt = Date.now();
-        requestContexts.set(taskId, context);
-        armRequestWatchdog(taskId);
-        MusicBrainzGate.announce(blockedUntil);
-        setNetworkDebug('requesting', context.kind, context.url, 0);
-    } catch (e) {
-        // Deferred, or a host that throws for every URL would recurse through
-        // the whole queue on one stack.
-        const detail = String(e);
-        window.SetTimeout(function () { handleRequestFailure(context, 0, detail); }, 0);
-    }
-}
-
-// A request the host never settles would hold the serial queue forever, so
-// give up on it and treat it like a dropped connection.
-function armRequestWatchdog(taskId) {
-    clearTimer(requestWatchdog);
-    requestWatchdog = window.SetTimeout(function () {
-        requestWatchdog = 0;
-        if (!scriptActive) return;
-        const context = requestContexts.get(taskId);
-        if (!context) return;
-        requestContexts.delete(taskId);
-        if (context.generation !== generation) {
-            pumpRequestQueue();
-            return;
-        }
-        handleRequestFailure(context, 0, 'No response after ' + Math.round(REQUEST_TIMEOUT_MS / 1000) + ' s');
-    }, REQUEST_TIMEOUT_MS);
-}
-
 function handleRequestFailure(context, status, detail) {
     if (context.generation !== generation) return;
 
-    if (isTransientHttpStatus(status) && Number(context.retries || 0) < MAX_TRANSIENT_RETRIES) {
-        const delay = transientRetryDelay(context.retries);
-        blockedUntil = Math.max(blockedUntil, Date.now() + delay);
-        MusicBrainzGate.announce(blockedUntil);
-        requestQueue.unshift(Object.assign({}, context, { retries: Number(context.retries || 0) + 1 }));
+    if (SerialRequestQueue.isTransient(status) && Number(context.retries || 0) < MAX_TRANSIENT_RETRIES) {
+        const delay = SerialRequestQueue.retryDelay(context.retries, RETRY_BASE_MS, RETRY_MAX_DELAY_MS, RETRY_JITTER_MS);
+        MusicBrainzGate.announce(requests.block(delay));
         setNetworkDebug('retrying', context.kind, 'Retry in ' + Math.round(delay / 1000) + ' s.', status);
         statusText = 'MusicBrainz is rate limiting or unavailable; retrying\u2026';
         statusIsError = false;
         window.Repaint();
-        pumpRequestQueue();
+        requests.retry(context);
         return;
     }
 
@@ -624,7 +562,7 @@ function handleRequestFailure(context, status, detail) {
     // The tagged release is a bonus candidate, so losing it must not cancel the
     // search that was queued behind it.
     if (context.kind === 'tag-release') {
-        pumpRequestQueue();
+        requests.pump();
         return;
     }
 
@@ -638,21 +576,13 @@ function handleRequestFailure(context, status, detail) {
     }
     statusIsError = true;
     rebuildRows();
-    pumpRequestQueue();
+    requests.pump();
 }
 
 function on_http_request_done(taskId, success, responseText, status) {
     if (!scriptActive) return;
-    const context = requestContexts.get(taskId);
+    const context = requests.take(taskId);
     if (!context) return;
-    requestContexts.delete(taskId);
-    clearTimer(requestWatchdog);
-    requestWatchdog = 0;
-
-    if (context.generation !== generation) {
-        pumpRequestQueue();
-        return;
-    }
     if (!success) {
         handleRequestFailure(context, Number(status || 0), responseText);
         return;
@@ -664,7 +594,7 @@ function on_http_request_done(taskId, success, responseText, status) {
         return;
     }
 
-    blockedUntil = 0;
+    requests.unblock();
     setNetworkDebug('completed', context.kind, 'HTTP ' + status, status);
 
     try {
@@ -678,7 +608,7 @@ function on_http_request_done(taskId, success, responseText, status) {
         statusIsError = true;
         rebuildRows();
     }
-    pumpRequestQueue();
+    requests.pump();
 }
 
 function luceneQuote(value) {
@@ -696,16 +626,13 @@ function buildSearchQuery(terms) {
 
 function abortRequests() {
     generation++;
-    requestQueue = [];
-    requestContexts.clear();
-    clearTimer(requestTimer);
-    requestTimer = 0;
-    blockedUntil = 0;
+    requests.clear();
+    requests.unblock();
+    busy = false;
 }
 
 function resetToReleases() {
     abortRequests();
-    busy = false;
     view = 'releases';
     candidates = [];
     chosenRelease = null;
@@ -744,7 +671,7 @@ function startSearch(terms) {
     // The tagged release is looked up first so it always heads the list, rather
     // than being merged back in after the search has already been ranked.
     if (selection.tagMbid) {
-        enqueueRequest({
+        requests.enqueue({
             kind: 'tag-release',
             generation: generation,
             retries: 0,
@@ -752,7 +679,7 @@ function startSearch(terms) {
             url: MB_ROOT + '/release/' + selection.tagMbid + '?inc=' + INC_BRIEF + '&fmt=json'
         });
     }
-    enqueueRequest({
+    requests.enqueue({
         kind: 'search',
         generation: generation,
         retries: 0,
@@ -873,7 +800,7 @@ function chooseRelease(mbid) {
     busy = true;
     statusText = 'Loading the full track list\u2026';
     statusIsError = false;
-    enqueueRequest({
+    requests.enqueue({
         kind: 'release',
         generation: generation,
         retries: 0,
@@ -896,6 +823,11 @@ function handleReleaseResponse(context, data) {
 }
 
 function currentValues(info, tagName) {
+    return rawValues(info, tagName).map(cleanSpaces).filter(Boolean);
+}
+
+// As stored, for undo to put back exactly.
+function rawValues(info, tagName) {
     if (!info) return [];
     let idx = -1;
     try {
@@ -908,7 +840,7 @@ function currentValues(info, tagName) {
     try {
         const n = info.MetaValueCount(idx);
         for (let i = 0; i < n; i++) {
-            const value = cleanSpaces(info.MetaValue(idx, i));
+            const value = String(info.MetaValue(idx, i));
             if (value) out.push(value);
         }
     } catch (e) { }
@@ -930,8 +862,12 @@ function resolveTagName(info, def, path) {
     if (!def.fbTag) return def.tag;
     try {
         if (info) {
-            if (info.MetaFind(def.tag) >= 0) return def.tag;
-            if (info.MetaFind(def.fbTag) >= 0) return def.fbTag;
+            const hasTag = info.MetaFind(def.tag) >= 0;
+            const hasFb = info.MetaFind(def.fbTag) >= 0;
+            // Both present: on ID3 only the foobar name is the frame foobar displays.
+            if (hasTag && hasFb) return usesId3Names(path) ? def.fbTag : def.tag;
+            if (hasTag) return def.tag;
+            if (hasFb) return def.fbTag;
         }
     } catch (e) { }
     if (tagStyle === 'picard') return def.tag;
@@ -1066,7 +1002,7 @@ function buildFields(release, aligned) {
                     sampleTo = displayValues(to);
                 }
             }
-            perTrack.push({ tagName: tagName, from: from, to: to, willChange: willChange });
+            perTrack.push({ tagName: tagName, from: from, raw: rawValues(info, tagName), to: to, willChange: willChange });
             if (usedNames.indexOf(tagName) < 0) usedNames.push(tagName);
         }
 
@@ -1158,9 +1094,9 @@ function performWrite() {
             payload[srcIndex][entry.tagName] = entry.to.length === 1 ? entry.to[0] : entry.to;
             // A restore of an absent tag is a blank value, which is exactly how
             // UpdateFileInfoFromJSON clears one.
-            undoPayload[srcIndex][entry.tagName] = entry.from.length === 0
+            undoPayload[srcIndex][entry.tagName] = entry.raw.length === 0
                 ? ''
-                : (entry.from.length === 1 ? entry.from[0] : entry.from);
+                : (entry.raw.length === 1 ? entry.raw[0] : entry.raw);
         }
     }
 
@@ -1197,13 +1133,14 @@ function performUndo() {
         undoState.handles.UpdateFileInfoFromJSON(JSON.stringify(undoState.payload));
         statusText = 'Restored ' + plural(undoState.values, 'tag value') + '.';
         statusIsError = false;
+        undoState = null;
+        lastWriteSummary = 'undone';
     } catch (e) {
+        // undoState stays: it is the only copy of the old tags, so undo can be tried again.
         reportFailure('the previous tags could not be restored', e);
         statusText = 'Undo failed: ' + debugSnippet(e, 140);
         statusIsError = true;
     }
-    undoState = null;
-    lastWriteSummary = 'undone';
     rebuildRows();
 }
 
@@ -1576,7 +1513,11 @@ function paintPairRow(gr, row, y) {
     const mbTitle = pair.mb
         ? cleanSpaces((pair.mb.track || {}).title || ((pair.mb.track || {}).recording || {}).title)
         : '(no matching track)';
+    const titleField = fields.find(function (f) { return f.def.id === 'title'; });
+    const retitled = !!titleField && !!titleField.perTrack[row.index]
+        && titleField.perTrack[row.index].willChange;
 
+    if (retitled) gr.FillSolidRect(0, y + scaleUi(4), scaleUi(3), row.height - scaleUi(8), colours.accent);
     drawText(gr, String(row.index + 1), fonts.tiny, colours.textTertiary,
         PAD, y, numberW, row.height,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
@@ -1586,7 +1527,7 @@ function paintPairRow(gr, row, y) {
     drawText(gr, ARROW, fonts.small, colours.textTertiary,
         PAD + numberW + half, y, scaleUi(26), row.height,
         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    drawText(gr, mbTitle, fonts.small, pair.mb ? colours.text : colours.error,
+    drawText(gr, mbTitle, fonts.small, pair.mb ? (retitled ? colours.accent : colours.text) : colours.error,
         PAD + numberW + half + scaleUi(26), y, half, row.height,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 }
@@ -2197,12 +2138,9 @@ function on_script_unload() {
     generation++;
     clearTimer(initTimer);
     clearTimer(selectionTimer);
-    clearTimer(requestTimer);
     initTimer = 0;
     selectionTimer = 0;
-    requestTimer = 0;
-    requestQueue = [];
-    requestContexts.clear();
+    requests.clear();
     undoState = null;
     saveCacheFile();
 }

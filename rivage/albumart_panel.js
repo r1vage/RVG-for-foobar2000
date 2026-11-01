@@ -7,15 +7,8 @@ window.DefineScript('RVG Album Art', { author: 'marc2003; adapted by RivaGe', ve
 // have a graceful fallback, and stay silent on purpose. This is for the few
 // that mean something is actually broken and would otherwise leave no
 // trace. Repeats are counted and re-logged only at powers of ten.
-var reportedFailures = {};
-function reportFailure(what, err) {
-	var message = '[RVG Album Art] ' + what +
-		(err === undefined || err === null ? '' : ': ' + err);
-	var seen = (reportedFailures[message] || 0) + 1;
-	reportedFailures[message] = seen;
-	if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-	try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-}
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+var reportFailure = RivageFailure.reporter('[RVG Album Art] ');
 
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\dynamic_theme_protocol.js');
@@ -38,7 +31,6 @@ const DT_NOPREFIX = 0x00000800;
 const ASPECT_CROP = 0;
 const ASPECT_CROP_TOP = 1;
 const ASPECT_STRETCH = 2;
-const ASPECT_CENTRE = 3;
 const ART_NAMES = ['Front', 'Back', 'Disc', 'Icon', 'Artist'];
 const ASPECT_NAMES = ['Crop (focus on centre)', 'Crop (focus on top)', 'Stretch', 'Centre'];
 

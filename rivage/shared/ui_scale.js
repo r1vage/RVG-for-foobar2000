@@ -23,15 +23,8 @@ if (typeof RivageScale === 'undefined') {
         // Narrow failure reporting. The catches here guard config file I/O,
         // which has no other trace. Repeats are counted and re-logged only at
         // powers of ten.
-        var reportedFailures = {};
-        function reportFailure(what, err) {
-            var message = '[RivageScale] ' + what +
-                (err === undefined || err === null ? '' : ': ' + err);
-            var seen = (reportedFailures[message] || 0) + 1;
-            reportedFailures[message] = seen;
-            if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-            try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-        }
+        include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+        var reportFailure = RivageFailure.reporter('[RivageScale] ');
 
         function normaliseMode(value) {
             var text = String(value === undefined || value === null ? MODE_AUTO : value).toLowerCase();

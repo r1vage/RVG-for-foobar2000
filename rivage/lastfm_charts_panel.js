@@ -1217,16 +1217,6 @@ function on_paint(gr) {
     drawBody(gr, margin, y, Math.max(1, ww - margin * 2), availableH);
 }
 
-function openUrl(url) {
-    url = trimText(url);
-    if (!/^https?:\/\//i.test(url)) return;
-    try {
-        new ActiveXObject('WScript.Shell').Run(url);
-    } catch (e) {
-        console.log('Last.fm Charts: could not open ' + url);
-    }
-}
-
 function setChartType(chartType) {
     chartType = validChartType(chartType);
     if (chartType === opt_chart_type) return;
@@ -1332,7 +1322,7 @@ function on_mouse_lbtn_up(x, y, mask) {
     if (hit && hit.id === downId && hitActionKey(hit) === downActionKey) {
         if (hit.kind === 'chartType') setChartType(hit.data);
         else if (hit.kind === 'period') setPeriod(hit.data);
-        else if (hit.kind === 'url') openUrl(hit.data);
+        else if (hit.kind === 'url') RivageLibraryActions.openUrl(hit.data);
     }
     if (downId) {
         cancelPressedAction();

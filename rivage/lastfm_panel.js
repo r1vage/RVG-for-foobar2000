@@ -20,14 +20,8 @@ window.DefineScript('RVG Last.fm', { author: 'RivaGe', version: '2.9.0', feature
 // already cleared) and stay silent on purpose. This is for the few that mean
 // something is actually broken and would otherwise leave no trace. Repeats
 // are counted and re-logged only at powers of ten.
-var reported_failures = {};
-function report_failure(what, err) {
-	var message = '[RVG Last.fm] ' + what + (err === undefined || err === null ? '' : ': ' + err);
-	var seen = (reported_failures[message] || 0) + 1;
-	reported_failures[message] = seen;
-	if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-	try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-}
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+var report_failure = RivageFailure.reporter('[RVG Last.fm] ');
 
 var DT_LEFT = 0x00000000;
 var DT_RIGHT = 0x00000002;
@@ -427,17 +421,6 @@ function link_at(x, y) {
 	}
 	return null;
 }
-function open_url(url) {
-	url = String(url || '');
-	if (!/^https?:\/\//i.test(url)) return false;
-	try {
-		new ActiveXObject('WScript.Shell').Run(url);
-		return true;
-	} catch (e) {
-		console.log('Last.fm panel: could not open ' + url);
-		return false;
-	}
-}
 
 // ActiveX XMLHTTP can otherwise remain pending indefinitely on a bad connection.
 var API_TIMEOUT_MS = 15000;
@@ -455,6 +438,7 @@ function invalidate_track_requests() {
 	request_token++;
 	cancel_requests('track');
 }
+function http_noop() { }
 function api(method, params, token, done) {
 	var url = BASE_URL + API_KEY + '&method=' + method;
 	for (var k in params) {
@@ -480,7 +464,8 @@ function api(method, params, token, done) {
 		if (!http) return null;
 		var dead = http;
 		http = null;
-		try { dead.onreadystatechange = null; } catch (e) { report_failure('the XMLHTTP callback could not be released', e); }
+		// The COM property rejects null (type mismatch); an empty top-level function holds no request state.
+		try { dead.onreadystatechange = http_noop; } catch (e) { report_failure('the XMLHTTP callback could not be released', e); }
 		return dead;
 	}
 	function unregister() {
@@ -1414,7 +1399,7 @@ function on_mouse_lbtn_up(x, y, mask) {
 		} else if (l.url.indexOf('@period:') == 0) {
 			set_chart_period(l.url.substring(8));
 		} else {
-			open_url(l.url);
+			RivageLibraryActions.openUrl(l.url);
 		}
 	}
 	if (down_id) { down_id = ''; window.Repaint(); }

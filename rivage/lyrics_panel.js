@@ -1,8 +1,7 @@
 ﻿window.DrawMode = 1;
 try { window.EraseOnRepaint = false; } catch (e) {}
 
-// LRCLIB is the primary source. Musixmatch is an optional unofficial fallback
-// and must remain explicitly opt-in because its anonymous-token API may change.
+// LRCLIB is the only online source.
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\settings_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\ui_scale.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\design_system.js');
@@ -21,14 +20,8 @@ window.DefineScript(RivageUI.copy.popupTitle('Lyrics'), { author: 'RivaGe', vers
 // mean something is actually broken and would otherwise leave no trace.
 // Repeats are counted and re-logged only at powers of ten, so a failure that
 // recurs on every request reports itself without flooding the console.
-var reported_failures = {};
-function report_failure(what, err) {
-	var message = '[RVG Lyrics] ' + what + (err === undefined || err === null ? '' : ': ' + err);
-	var seen = (reported_failures[message] || 0) + 1;
-	reported_failures[message] = seen;
-	if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-	try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-}
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+var report_failure = RivageFailure.reporter('[RVG Lyrics] ');
 
 var DT_LEFT = 0x00000000;
 var DT_RIGHT = 0x00000002;
@@ -69,8 +62,6 @@ var DWRITE_WORD_WRAPPING_WRAP = 0;
 var SaveMode = { Off: 'off', File: 'file', Tag: 'tag', Both: 'both' };
 var Align = { Left: 'left', Center: 'center' };
 
-var opt_musixmatch_enabled = window.GetProperty('lyrics.musixmatch_enabled', false);
-var opt_musixmatch_warned = window.GetProperty('lyrics.musixmatch_warned', false);
 var opt_save_mode = window.GetProperty('lyrics.save_mode', SaveMode.File);
 var opt_tag_field_plain = window.GetProperty('lyrics.tag_field_plain', 'UNSYNCEDLYRICS');
 var opt_tag_field_synced = window.GetProperty('lyrics.tag_field_synced', 'SYNCEDLYRICS');
@@ -355,8 +346,9 @@ function parse_lrc(text) {
 	var raw = (text || '').split(/\r?\n/);
 	var tagRe = /\[(\d{1,3}):(\d{2}(?:[.:]\d{1,3})?)\]/g;
 	var offset = 0;
-	var offsetMatch = (text || '').match(/\[offset:\s*(-?\d+)\]/i);
-	if (offsetMatch) offset = parseInt(offsetMatch[1], 10) || 0;
+	var offsetMatch = (text || '').match(/\[offset:\s*([+-]?\d+)\]/i);
+	// A positive [offset:] makes lyrics appear sooner.
+	if (offsetMatch) offset = -parseInt(offsetMatch[1], 10) || 0;
 
 	for (var i = 0; i < raw.length; i++) {
 		var line = raw[i];
@@ -527,7 +519,8 @@ function read_file_lyrics(handle) {
 	if (!path) return null;
 	try {
 		if (!utils.FileExists(path)) return null;
-		var text = utils.ReadTextFile(path);
+		// 0 = detect: older .lrc files are often not UTF-8.
+		var text = utils.ReadTextFile(path, 0);
 		if (!text) return null;
 		var lines = parse_lrc(text);
 		return { synced: !!lines.length, lines: lines, plain: lines.length ? lrc_to_plain(lines) : text, source: 'file' };
@@ -580,12 +573,7 @@ function build_query(params) {
 	}
 	return parts.join('&');
 }
-function merge_obj(a, b) {
-	var o = {}, k;
-	for (k in a) o[k] = a[k];
-	for (k in b) o[k] = b[k];
-	return o;
-}
+function http_noop() {}
 function http_get(url, headers, token, done) {
 	var http = null, watchdog = null, finished = false;
 
@@ -595,7 +583,8 @@ function http_get(url, headers, token, done) {
 		if (!http) return;
 		var dead = http;
 		http = null;
-		try { dead.onreadystatechange = null; } catch (e) {}
+		// The COM property rejects null (type mismatch); an empty top-level function holds no request state.
+		try { dead.onreadystatechange = http_noop; } catch (e) {}
 	}
 	function cancel() {
 		if (finished) return;
@@ -708,154 +697,20 @@ function lrclib_item_to_data(item) {
 		source: 'lrclib', meta: { ar: item.artistName, ti: item.trackName, al: item.albumName }
 	};
 }
-function norm(s) { return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+function norm(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/\p{M}+/gu, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim(); }
+// Results get saved to disk, so only the same artist and title will do; another song is worse than none.
 function pick_best_lrclib_match(list, fields) {
 	if (!list || !list.length) return null;
 	var wantArtist = norm(fields.artist), wantTitle = norm(fields.title);
-	var exactSynced = null, exactAny = null, anySynced = null, anyAny = null;
+	if (!wantTitle) return null;
+	var exactSynced = null, exactAny = null;
 	for (var i = 0; i < list.length; i++) {
 		var it = list[i];
-		var isExact = norm(it.artistName) == wantArtist && norm(it.trackName) == wantTitle;
-		var isSynced = !!it.syncedLyrics;
-		var hasLyrics = !!(it.syncedLyrics || it.plainLyrics || it.instrumental);
-		if (isExact && isSynced && !exactSynced) exactSynced = it;
-		if (isExact && hasLyrics && !exactAny) exactAny = it;
-		if (isSynced && !anySynced) anySynced = it;
-		if (hasLyrics && !anyAny) anyAny = it;
+		if (norm(it.artistName) != wantArtist || norm(it.trackName) != wantTitle) continue;
+		if (it.syncedLyrics && !exactSynced) exactSynced = it;
+		if ((it.syncedLyrics || it.plainLyrics || it.instrumental) && !exactAny) exactAny = it;
 	}
-	return exactSynced || exactAny || anySynced || anyAny;
-}
-
-var MXM_BASE = 'https://apic-desktop.musixmatch.com/ws/1.1';
-var MXM_APP_ID = 'web-desktop-app-v1.0';
-var MXM_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
-
-// The anonymous Musixmatch token is kept in a cache file in the profile, not in
-// a panel property: properties travel with layout (.fcl) exports, and this one
-// had no setting to clear it before sharing a layout.
-var MXM_TOKEN_DIR = fb.ProfilePath + 'jsplitter_lyrics_cache\\';
-var MXM_TOKEN_FILE = MXM_TOKEN_DIR + 'musixmatch_token.txt';
-
-function mxm_read_token() {
-	try {
-		if (!utils.FileExists(MXM_TOKEN_FILE)) return '';
-		return String(utils.ReadTextFile(MXM_TOKEN_FILE) || '').trim();
-	} catch (e) { return ''; }
-}
-function mxm_write_token(value) {
-	try {
-		utils.CreateFolder(MXM_TOKEN_DIR);
-		utils.WriteTextFile(MXM_TOKEN_FILE, value || '');
-		return true;
-	} catch (e) { report_failure('Musixmatch token could not be cached', e); return false; }
-}
-// Earlier versions stored the token in the lyrics.mxm_token property: move it
-// to the cache file once and empty the property.
-(function mxm_migrate_token() {
-	var old = '';
-	try { old = String(window.GetProperty('lyrics.mxm_token', '') || ''); } catch (e) { old = ''; }
-	if (!old) return;
-	if (!mxm_read_token()) mxm_write_token(old);
-	try { window.SetProperty('lyrics.mxm_token', ''); } catch (e2) {}
-})();
-
-function mxm_get_token(token, cb) {
-	var cached = mxm_read_token();
-	if (cached) { cb(cached); return; }
-	var url = MXM_BASE + '/token.get?' + build_query({ app_id: MXM_APP_ID, format: 'json' });
-	http_get(url, { 'User-Agent': MXM_UA }, token, function (status, text) {
-		var t = null;
-		if (status == 200) {
-			try {
-				var json = JSON.parse(text);
-				var body = json && json.message && json.message.body;
-				if (body && body.user_token) t = body.user_token;
-			} catch (e) { report_failure('Musixmatch token response was malformed', e); }
-		}
-		// Losing the cache is not fatal, but it means a fresh token fetch per request.
-		if (t) mxm_write_token(t);
-		cb(t);
-	});
-}
-function mxm_call(method, params, token, cb) {
-	mxm_get_token(token, function (userToken) {
-		if (!userToken) { cb(null); return; }
-		var p = merge_obj(params, { usertoken: userToken, app_id: MXM_APP_ID, format: 'json' });
-		var url = MXM_BASE + '/' + method + '?' + build_query(p);
-		http_get(url, { 'User-Agent': MXM_UA }, token, function (status, text) {
-			if (status != 200) { cb(null); return; }
-			var json = null;
-			try { json = JSON.parse(text); }
-			catch (e) { report_failure('Musixmatch ' + method + ' returned malformed JSON', e); }
-			var hdr = json && json.message && json.message.header;
-			if (!hdr || hdr.status_code != 200) {
-				// A rejected cached token must not poison future requests.
-				if (hdr && (hdr.status_code == 401 || hdr.status_code == 400)) {
-					mxm_write_token('');
-				}
-				cb(null);
-				return;
-			}
-			cb(json.message.body);
-		});
-	});
-}
-function mxm_search(fields, token, cb) {
-	mxm_call('track.search', { q_track: fields.title, q_artist: fields.artist, page_size: 10, s_track_rating: 'desc' }, token, function (body) {
-		var list = body && body.track_list;
-		if (!list || !list.length) { cb([]); return; }
-		var out = [];
-		for (var i = 0; i < list.length; i++) if (list[i] && list[i].track) out.push(list[i].track);
-		cb(out);
-	});
-}
-// Do not persist Musixmatch's appended footer/id lines into user files or tags.
-function strip_mxm_watermark(text) {
-	if (!text) return '';
-	var raw = String(text).split(/\r?\n/);
-	var out = [];
-	for (var i = 0; i < raw.length; i++) {
-		var line = raw[i];
-		if (/^\s*\*{3,}.*\*{3,}\s*$/.test(line)) continue;   // *** ... NOT for Commercial use ... ***
-		if (/^\s*\(\d{6,}\)\s*$/.test(line)) continue;        // (1409622382653)
-		out.push(line);
-	}
-	while (out.length && !/\S/.test(out[out.length - 1])) out.pop();
-	return out.join('\n');
-}
-
-function mxm_lyrics_for_track(trackObj, token, cb) {
-	var meta = { ar: trackObj.artist_name, ti: trackObj.track_name, al: trackObj.album_name };
-
-	function fetch_plain() {
-		if (!trackObj.has_lyrics) { cb(null); return; }
-		mxm_call('track.lyrics.get', { track_id: trackObj.track_id }, token, function (body) {
-			var ly = strip_mxm_watermark(body && body.lyrics && body.lyrics.lyrics_body);
-			cb(ly ? { synced: false, lines: [], plain: ly, source: 'musixmatch', meta: meta } : null);
-		});
-	}
-
-	if (trackObj.has_subtitles) {
-		mxm_call('track.subtitle.get', { track_id: trackObj.track_id, subtitle_format: 'lrc' }, token, function (body) {
-			var lrcText = body && body.subtitle && body.subtitle.subtitle_body;
-			var lines = lrcText ? parse_lrc(lrcText) : [];
-			// Anonymous tokens can report subtitles but return an empty body; fall back to plain lyrics.
-			if (!lines.length) { fetch_plain(); return; }
-			cb({ synced: true, lines: lines, plain: lrc_to_plain(lines), source: 'musixmatch', meta: meta });
-		});
-	} else fetch_plain();
-}
-function musixmatch_fetch(fields, token, cb) {
-	mxm_search(fields, token, function (list) {
-		if (!list.length) { cb(null); return; }
-		var wantArtist = norm(fields.artist), wantTitle = norm(fields.title);
-		var i, best = null;
-		for (i = 0; i < list.length; i++) {
-			if (norm(list[i].artist_name) == wantArtist && norm(list[i].track_name) == wantTitle) { best = list[i]; break; }
-		}
-		if (!best) best = list[0];
-		mxm_lyrics_for_track(best, token, cb);
-	});
+	return exactSynced || exactAny;
 }
 
 var STATE = { NO_TRACK: 0, LOADING: 1, READY: 2, NOT_FOUND: 3 };
@@ -1160,7 +1015,7 @@ function apply_data(data) {
 	window.Repaint(true);
 }
 
-// Preserve LRCLIB plain text as fallback while allowing the opt-in source to upgrade it to synced lyrics.
+// Prefer synced or instrumental results; otherwise keep the exact match's plain text over a search hit.
 function fetch_online(fields, token, cb) {
 	lrclib_get(fields, token, function (item) {
 		if (!request_is_current(token)) return;
@@ -1173,14 +1028,7 @@ function fetch_online(fields, token, cb) {
 			var searched = best ? lrclib_item_to_data(best) : null;
 			if (searched && (searched.synced || searched.instrumental)) { cb(searched); return; }
 
-			var lrclib_fallback = exact || searched;
-			if (!opt_musixmatch_enabled) { cb(lrclib_fallback); return; }
-
-			musixmatch_fetch(fields, token, function (mxm_data) {
-				if (!request_is_current(token)) return;
-				if (mxm_data && mxm_data.synced) { cb(mxm_data); return; }
-				cb(lrclib_fallback || mxm_data);
-			});
+			cb(exact || searched);
 		});
 	});
 }
@@ -1238,16 +1086,14 @@ function load_lyrics_for_track(handle, forceOnline) {
 	var token = request_token;
 
 	var localData = null;
-	if (!forceOnline) {
-		var tagData = read_tag_lyrics(handle);
-		if (tagData && (tagData.synced || tagData.plain)) localData = tagData;
-		if (!localData || !localData.synced) {
-			var fileData = read_file_lyrics(handle);
-			if (fileData && (fileData.synced || fileData.plain) && (!localData || (fileData.synced && !localData.synced))) localData = fileData;
-		}
+	var tagData = read_tag_lyrics(handle);
+	if (tagData && (tagData.synced || tagData.plain)) localData = tagData;
+	if (!localData || !localData.synced) {
+		var fileData = read_file_lyrics(handle);
+		if (fileData && (fileData.synced || fileData.plain) && (!localData || (fileData.synced && !localData.synced))) localData = fileData;
 	}
-	if (localData && localData.synced) { apply_data(localData); return; }
 	if (localData) apply_data(localData);
+	if (localData && localData.synced && !forceOnline) return;
 	if (localData && !forceOnline && upgrade_attempted[key]) return;
 
 	if (!opt_auto_fetch && !forceOnline) {
@@ -1258,8 +1104,11 @@ function load_lyrics_for_track(handle, forceOnline) {
 	mark_upgrade_attempted(key);
 	fetch_online(fields, token, function (data) {
 		if (!request_is_current(token)) return;
-		if (data) { apply_data(data); save_lyrics(handle, data); }
-		else if (!localData) set_state(STATE.NOT_FOUND);
+		if (!data) { if (!localData) set_state(STATE.NOT_FOUND); return; }
+		// Never replace saved lyrics unasked unless this is an upgrade to synced; "Save lyrics now" still can.
+		var better = !localData || (data.synced && !localData.synced);
+		if (better || forceOnline) apply_data(data);
+		if (better) save_lyrics(handle, data);
 	});
 }
 function refresh_active_source(force) {
@@ -1340,45 +1189,17 @@ function run_manual_search(query) {
 				synced: !!it.syncedLyrics, instrumental: !!it.instrumental, data: lrclib_item_to_data(it)
 			});
 		}
-		function finish_search() {
-			if (!request_is_current(token)) return;
-			search_overlay = { query: query, loading: false, results: results };
-			clamp_search_scroll();
-			window.Repaint();
-		}
-		if (opt_musixmatch_enabled) {
-			mxm_search(fields, token, function (mxList) {
-				if (!request_is_current(token)) return;
-				for (var j = 0; j < mxList.length; j++) {
-					var t = mxList[j];
-					results.push({
-						source: 'musixmatch', artist: t.artist_name, title: t.track_name, album: t.album_name,
-						synced: !!t.has_subtitles, track: t
-					});
-				}
-				finish_search();
-			});
-		} else finish_search();
+		search_overlay = { query: query, loading: false, results: results };
+		clamp_search_scroll();
+		window.Repaint();
 	});
 }
 function pick_search_result(r) {
 	if (!current_handle_ref) return;
 	var handle = current_handle_ref;
 	invalidate_online_requests();
-	if (r.data) {
-		apply_data(r.data);
-		save_lyrics(handle, r.data);
-		return;
-	}
-	if (r.track) {
-		var token = request_token;
-		set_state(STATE.LOADING);
-		mxm_lyrics_for_track(r.track, token, function (data) {
-			if (!request_is_current(token)) return;
-			if (data) { apply_data(data); save_lyrics(handle, data); }
-			else set_state(STATE.NOT_FOUND);
-		});
-	}
+	apply_data(r.data);
+	save_lyrics(handle, r.data);
 }
 function open_manual_search() {
 	var seed = current_fields ? (current_fields.artist + ' - ' + current_fields.title) : '';
@@ -1450,7 +1271,7 @@ function paint_search_button(gr) {
 
 function paint_source_icon(gr) {
 	if (!opt_show_source_badge || !current_data) return;
-	var web = current_data.source == 'lrclib' || current_data.source == 'musixmatch';
+	var web = current_data.source == 'lrclib';
 	var glyph = (web && current_data.saved_to_tag) ? SOURCE_SAVED_GLYPH : (web ? SOURCE_WEB_GLYPH : SOURCE_LOCAL_GLYPH);
 	var side = _scale(18);
 	var font = getIconFont(_scale(12));
@@ -1654,7 +1475,7 @@ function draw_search_overlay(gr) {
 			if (hot) gr.FillSolidRect(lm - _scale(4), rowTop, ww - lm - rm + _scale(8), row_h - _scale(2), RGBA(chan(col.accent, 0), chan(col.accent, 1), chan(col.accent, 2), 40));
 			write(gr, r.artist + ' \u2014 ' + r.title, f_body, hot ? active_line_colour() : col.on_surface, lm, rowTop, ww - lm - rm, lh(f_body),
 				DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-			var tag = (r.source == 'musixmatch' ? 'Musixmatch' : 'LRCLIB') + (r.instrumental ? ' \u00B7 instrumental' : (r.synced ? ' \u00B7 synced' : ' \u00B7 plain')) + (r.album ? ' \u00B7 ' + r.album : '');
+			var tag = 'LRCLIB' +(r.instrumental ? ' \u00B7 instrumental' : (r.synced ? ' \u00B7 synced' : ' \u00B7 plain')) + (r.album ? ' \u00B7 ' + r.album : '');
 			write(gr, tag, f_small, col.on_surface_var, lm, rowTop + lh(f_body), ww - lm - rm, lh(f_small),
 				DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
 			search_links.push({ id: id, x: lm, y: rowTop, w: ww - lm - rm, h: row_h, index: i });
@@ -1873,31 +1694,6 @@ function apply_accent_mode(mode, customColour) {
 	window.Repaint();
 }
 function set_accent_mode(mode) { apply_accent_mode(mode); }
-function try_toggle_musixmatch() {
-	if (opt_musixmatch_enabled) {
-		persist_properties([{ name: 'lyrics.musixmatch_enabled', next: false, previous: true }]);
-		opt_musixmatch_enabled = false;
-		return;
-	}
-	var warnNow = !opt_musixmatch_warned;
-	if (warnNow) {
-		var msg = 'Musixmatch support uses an UNOFFICIAL method (the same free ' +
-			'anonymous token flow their own apps use, not a paid/official API). ' +
-			'It can stop working at any time if Musixmatch changes their internal ' +
-			'endpoints, and it sits outside their published terms of service.\n\n' +
-			'Enable it anyway?';
-		var result = 0;
-		try { result = utils.MessageBox(window.ID, msg, window.Name, MB_YESNO | MB_ICONWARNING); } catch (e) { return; }
-		if (result != IDYES) return;
-	}
-	var changes = [];
-	if (warnNow) changes.push({ name: 'lyrics.musixmatch_warned', next: true, previous: opt_musixmatch_warned });
-	changes.push({ name: 'lyrics.musixmatch_enabled', next: true, previous: opt_musixmatch_enabled });
-	persist_properties(changes);
-	if (warnNow) opt_musixmatch_warned = true;
-	opt_musixmatch_enabled = true;
-}
-
 var SETTINGS_PANEL_ID = 'lyrics';
 var SETTINGS_PANEL_LABEL = 'Lyrics';
 
@@ -1934,7 +1730,6 @@ function getMySettings() {
 				{ value: AccentMode.Custom, label: 'Custom colour…' }
 			] },
 		{ id: 'inactiveColour', label: 'Inactive line colour', type: 'colour', value: inactive_line_colour() },
-		{ id: 'musixmatch', label: 'Enable Musixmatch (unofficial)', type: 'bool', value: opt_musixmatch_enabled, hint: 'Uses an unofficial method and may stop working without notice.' },
 		{ id: 'showTitle', label: 'Show track title', type: 'bool', value: opt_show_title },
 		{ id: 'showSourceBadge', label: 'Show lyric source icon', type: 'bool', value: opt_show_source_badge },
 		{ id: 'showSearchButton', label: 'Show search button', type: 'bool', value: opt_show_search_button },
@@ -2027,9 +1822,6 @@ function applyMySetting(settingId, value) {
 			persist_properties([{ name: 'lyrics.colour_inactive', next: next, previous: opt_colour_inactive }]);
 			opt_colour_inactive = next;
 			window.Repaint();
-			return;
-		case 'musixmatch':
-			if (!!value != opt_musixmatch_enabled) try_toggle_musixmatch();
 			return;
 		case 'showTitle':
 			next = !!value;

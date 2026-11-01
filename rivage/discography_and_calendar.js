@@ -15,6 +15,7 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\visible_paint_work.js");
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\cache_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\musicbrainz_gate.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\serial_request_queue.js');
 
 const PANEL_VERSION = '3.5.0';
 
@@ -28,15 +29,8 @@ window.DefineScript(RivageUI.copy.popupTitle('Discography'), {
 // expected to fail and stay silent on purpose. This is for the few that
 // mean something is actually broken and would otherwise leave no trace.
 // Repeats are counted and re-logged only at powers of ten.
-var reportedFailures = {};
-function reportFailure(what, err) {
-    var message = '[RVG Discography] ' + what +
-        (err === undefined || err === null ? '' : ': ' + err);
-    var seen = (reportedFailures[message] || 0) + 1;
-    reportedFailures[message] = seen;
-    if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-    try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-}
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+var reportFailure = RivageFailure.reporter('[RVG Discography] ');
 
 // -----------------------------------------------------------------------------
 // Constants and persistent settings
@@ -274,12 +268,17 @@ const LIBRARY_RETRY_DELAY_MS = 1500;
 let generation = 0;
 let activeFetch = null;
 let calendarRun = null;
-let requestContexts = new Map();
-let requestQueue = [];
-let requestTimer = 0;
-let lastRequestAt = 0;
-let mbBlockedUntil = 0;
-let requestWatchdog = 0;
+const requests = SerialRequestQueue.create({
+    intervalMs: REQUEST_INTERVAL_MS,
+    timeoutMs: REQUEST_TIMEOUT_MS,
+    headers: requestHeaders,
+    isActive: function () { return scriptActive; },
+    generation: function () { return generation; },
+    // The one-per-second rule MusicBrainz enforces covers every panel together.
+    extraWait: function (now) { return MusicBrainzGate.wait(REQUEST_INTERVAL_MS, now); },
+    onSent: function () { MusicBrainzGate.announce(requests.blockedUntil()); },
+    onFailure: handleRequestFailure
+});
 let consecutiveTransientErrors = 0;
 let retryAttempt = 0;
 let retryAt = 0;
@@ -646,13 +645,11 @@ function fnv1a(text) {
 
 function cancelNetworkWork() {
     generation++;
-    requestQueue = [];
+    requests.clear();
     activeFetch = null;
     calendarRun = null;
     // Whatever the run already fetched is kept; a cancel must never cost pages.
     saveCalendarCacheFile(true);
-    clearTimer(requestTimer);
-    requestTimer = 0;
 }
 
 // -----------------------------------------------------------------------------
@@ -1975,15 +1972,6 @@ function refreshCalendarCacheDebug(state, error) {
     };
 }
 
-function selectedSecondaryTypeValues() {
-    const values = [];
-    for (let i = 0; i < SECONDARY_TYPE_DEFS.length; i++) {
-        const def = SECONDARY_TYPE_DEFS[i];
-        if (releaseTypeFilters.secondary[def.key]) values.push(def.label);
-    }
-    return values;
-}
-
 function describeArtistCacheDebug() {
     const debug = artistCacheDebug;
     if (debug.state !== 'valid') {
@@ -2118,9 +2106,9 @@ function describeNetworkDebug() {
         live.push('calendar refresh ' + (calendarRun.completed + calendarRun.failed) +
             '/' + calendarRun.pending.length + ' query groups, ' + calendarRun.rows.length + ' rows in current group');
     }
-    if (requestQueue.length) live.push(requestQueue.length + ' queued request(s)');
-    if (requestContexts.size) live.push(requestContexts.size + ' HTTP request(s) in flight');
-    if (mbBlockedUntil > now) live.push('cooldown ' + formatRetrySeconds(mbBlockedUntil - now));
+    if (requests.queuedCount()) live.push(requests.queuedCount() + ' queued request(s)');
+    if (requests.inFlightCount()) live.push(requests.inFlightCount() + ' HTTP request(s) in flight');
+    if (requests.blockedUntil() > now) live.push('cooldown ' + formatRetrySeconds(requests.blockedUntil() - now));
     if (retryAttempt > 0 && retryAt > now) {
         live.push('retry ' + retryAttempt + '/' + MAX_TRANSIENT_RETRIES + ' in ' + formatRetrySeconds(retryAt - now));
     }
@@ -2151,25 +2139,8 @@ function requestHeaders() {
     });
 }
 
-function enqueueRequest(context) {
-    if (!scriptActive) return;
-    requestQueue.push(context);
-    pumpRequestQueue();
-}
-
 function formatRetrySeconds(ms) {
     return (Math.max(0, Number(ms || 0)) / 1000).toFixed(1) + ' s';
-}
-
-function isTransientHttpStatus(status) {
-    return status === 0 || status === 429 || status === 503;
-}
-
-function transientRetryDelay(retries, status) {
-    const base = status === 503 ? RETRY_BASE_503_MS : RETRY_BASE_OTHER_MS;
-    const exponential = base * Math.pow(2, Math.max(0, Number(retries || 0)));
-    const capped = Math.min(exponential, RETRY_MAX_DELAY_MS);
-    return capped + Math.floor(Math.random() * (RETRY_JITTER_MS + 1));
 }
 
 function recordRequestSuccess() {
@@ -2178,68 +2149,23 @@ function recordRequestSuccess() {
     retryAttempt = 0;
     retryAt = 0;
     lastTransientStatus = 0;
-    mbBlockedUntil = 0;
-}
-
-function pumpRequestQueue() {
-    if (!scriptActive) return;
-    clearTimer(requestTimer);
-    requestTimer = 0;
-
-    while (requestQueue.length && requestQueue[0].generation !== generation) {
-        requestQueue.shift();
-    }
-    if (!requestQueue.length) return;
-    // Keep MusicBrainz traffic strictly serial. This avoids piling up requests
-    // when a response is slow and makes the global cooldown authoritative.
-    if (requestContexts.size) return;
-
-    const now = Date.now();
-    const rateWait = Math.max(0, REQUEST_INTERVAL_MS - (now - lastRequestAt));
-    const cooldownWait = Math.max(0, mbBlockedUntil - now);
-    const wait = Math.max(rateWait, cooldownWait, MusicBrainzGate.wait(REQUEST_INTERVAL_MS, now));
-    if (wait > 0) {
-        requestTimer = window.SetTimeout(pumpRequestQueue, wait);
-        return;
-    }
-
-    const context = requestQueue.shift();
-    if (context.generation !== generation) {
-        pumpRequestQueue();
-        return;
-    }
-
-    try {
-        const taskId = utils.HTTPRequestAsync(0, context.url, requestHeaders());
-        lastRequestAt = Date.now();
-        requestContexts.set(taskId, context);
-        armRequestWatchdog(taskId);
-        MusicBrainzGate.announce(mbBlockedUntil);
-    } catch (e) {
-        handleRequestFailure(context, 0, String(e));
-    }
-
-    if (requestQueue.length) {
-        const nextWait = Math.max(REQUEST_INTERVAL_MS, Math.max(0, mbBlockedUntil - Date.now()));
-        requestTimer = window.SetTimeout(pumpRequestQueue, nextWait);
-    }
+    requests.unblock();
 }
 
 function retryRequest(context, status) {
-    if (!isTransientHttpStatus(status)) return null;
+    if (!SerialRequestQueue.isTransient(status)) return null;
 
     const retries = Number(context.retries || 0);
     consecutiveTransientErrors++;
     lastTransientStatus = status;
 
-    let delay = transientRetryDelay(retries, status);
+    let delay = SerialRequestQueue.retryDelay(retries, status === 503 ? RETRY_BASE_503_MS : RETRY_BASE_OTHER_MS, RETRY_MAX_DELAY_MS, RETRY_JITTER_MS);
     if (status === 503 && consecutiveTransientErrors >= CIRCUIT_BREAKER_FAILURES) {
         delay = Math.max(delay, CIRCUIT_BREAKER_COOLDOWN_MS);
     }
 
     const now = Date.now();
-    mbBlockedUntil = Math.max(mbBlockedUntil, now + delay);
-    MusicBrainzGate.announce(mbBlockedUntil);
+    MusicBrainzGate.announce(requests.block(delay));
 
     if (retries >= MAX_TRANSIENT_RETRIES) {
         retryAttempt = 0;
@@ -2248,30 +2174,10 @@ function retryRequest(context, status) {
     }
 
     const attempt = retries + 1;
-    const retry = Object.assign({}, context, { retries: attempt });
-    requestQueue.unshift(retry);
     retryAttempt = attempt;
-    retryAt = mbBlockedUntil;
-    pumpRequestQueue();
-    return { scheduled: true, delay: Math.max(0, mbBlockedUntil - now), attempt: attempt, max: MAX_TRANSIENT_RETRIES };
-}
-
-// A request the host never settles would hold the serial queue forever, so
-// give up on it and treat it like a dropped connection.
-function armRequestWatchdog(taskId) {
-    clearTimer(requestWatchdog);
-    requestWatchdog = window.SetTimeout(function () {
-        requestWatchdog = 0;
-        if (!scriptActive) return;
-        const context = requestContexts.get(taskId);
-        if (!context) return;
-        requestContexts.delete(taskId);
-        if (context.generation !== generation) {
-            pumpRequestQueue();
-            return;
-        }
-        handleRequestFailure(context, 0, 'No response after ' + Math.round(REQUEST_TIMEOUT_MS / 1000) + ' s');
-    }, REQUEST_TIMEOUT_MS);
+    retryAt = requests.blockedUntil();
+    requests.retry(context);
+    return { scheduled: true, delay: Math.max(0, requests.blockedUntil() - now), attempt: attempt, max: MAX_TRANSIENT_RETRIES };
 }
 
 function handleRequestFailure(context, status, detail) {
@@ -2305,7 +2211,7 @@ function handleRequestFailure(context, status, detail) {
     }
 
     if (retry && !retry.scheduled) {
-        const cooldown = Math.max(0, mbBlockedUntil - Date.now());
+        const cooldown = Math.max(0, requests.blockedUntil() - Date.now());
         const fallbackText = hasFallback ? '; cached data remains displayed' : '';
         const cooldownText = cooldown > 0 ? '; cooldown ' + formatRetrySeconds(cooldown) : '';
         setNetworkDebug('failed', context.kind, 'Transient failure limit reached after ' + MAX_TRANSIENT_RETRIES + ' retries' + cooldownText + '.', status);
@@ -2324,7 +2230,7 @@ function handleRequestFailure(context, status, detail) {
         return;
     }
 
-    if (requestQueue.length) pumpRequestQueue();
+    requests.pump();
 }
 
 function escapeLucene(text) {
@@ -2338,7 +2244,7 @@ function requestArtistSearch(artist, requestGeneration) {
     window.Repaint();
 
     const query = 'artist:"' + escapeLucene(artist) + '"';
-    enqueueRequest({
+    requests.enqueue({
         kind: 'artist-search',
         generation: requestGeneration,
         queryArtist: artist,
@@ -2364,7 +2270,7 @@ function beginReleaseFetch(mbid, requestGeneration) {
 }
 
 function requestReleasePage(offset, requestGeneration) {
-    enqueueRequest({
+    requests.enqueue({
         kind: 'release-groups',
         generation: requestGeneration,
         mbid: artistMbid,
@@ -2429,7 +2335,7 @@ function requestCalendarBucketPage(offset) {
     statusIsError = false;
     window.Repaint();
 
-    enqueueRequest({
+    requests.enqueue({
         kind: 'calendar-bucket',
         generation: calendarRun.generation,
         bucketKey: bucket.key,
@@ -2497,19 +2403,8 @@ function chooseArtistCandidate(queryArtist, artists) {
 
 function on_http_request_done(taskId, success, responseText, status) {
     if (!scriptActive) return;
-    const context = requestContexts.get(taskId);
+    const context = requests.take(taskId);
     if (!context) return;
-    requestContexts.delete(taskId);
-    clearTimer(requestWatchdog);
-    requestWatchdog = 0;
-
-    if (context.generation !== generation) {
-        // The stale request was the serial queue's active request. Once it is
-        // removed from requestContexts, immediately let the current generation
-        // proceed instead of leaving its queued work stranded.
-        pumpRequestQueue();
-        return;
-    }
     if (!success) {
         handleRequestFailure(context, Number(status || 0), responseText);
         return;
@@ -2522,9 +2417,6 @@ function on_http_request_done(taskId, success, responseText, status) {
     }
 
     recordRequestSuccess();
-    // If an independent request was queued while this one was in flight, it
-    // may now proceed. Pagination requests are enqueued below after processing.
-    pumpRequestQueue();
 
     if (context.kind === 'artist-search') {
         const candidate = chooseArtistCandidate(context.queryArtist, Array.isArray(data.artists) ? data.artists : []);
@@ -3832,13 +3724,10 @@ function on_script_unload() {
     clearTimer(initTimer);
     clearTimer(libraryTimer);
     clearTimer(libraryRetryTimer);
-    clearTimer(requestTimer);
     initTimer = 0;
     libraryTimer = 0;
     libraryRetryTimer = 0;
-    requestTimer = 0;
-    requestQueue = [];
-    requestContexts.clear();
+    requests.clear();
     activeFetch = null;
     calendarRun = null;
     saveCalendarCacheFile(true);

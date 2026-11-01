@@ -35,15 +35,8 @@ window.DefineScript(RivageUI.copy.popupTitle('Spectrum'), {
 // for the few that mean something is actually broken and would otherwise
 // leave no trace - several of these sites run every frame, so repeats are
 // counted and re-logged only at powers of ten.
-var reportedFailures = {};
-function reportFailure(what, err) {
-    var message = '[RVG Spectrum] ' + what +
-        (err === undefined || err === null ? '' : ': ' + err);
-    var seen = (reportedFailures[message] || 0) + 1;
-    reportedFailures[message] = seen;
-    if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-    try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-}
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+var reportFailure = RivageFailure.reporter('[RVG Spectrum] ');
 
 // Registry identity
 // Panel properties are saved per panel instance (see the SetProperty docs), so

@@ -27,15 +27,8 @@ window.DefineScript('RVG Bottom Bar Host', {
 // teardown, clearing an already-fired timer - and stay silent on purpose. This
 // is for the few that mean something is actually broken and would otherwise
 // leave no trace. Repeats are counted and re-logged only at powers of ten.
-var reportedFailures = {};
-function reportFailure(what, err) {
-    var message = '[RVG Bottom Bar Host] ' + what +
-        (err === undefined || err === null ? '' : ': ' + err);
-    var seen = (reportedFailures[message] || 0) + 1;
-    reportedFailures[message] = seen;
-    if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-    try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-}
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+var reportFailure = RivageFailure.reporter('[RVG Bottom Bar Host] ');
 
 var SLOT_COUNT = 4;
 var MAX_PRESETS = 4;

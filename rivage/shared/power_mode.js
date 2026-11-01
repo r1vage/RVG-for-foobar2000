@@ -18,15 +18,8 @@ if (typeof RivagePowerMode === 'undefined') {
         var SET = 'RIVAGE.POWER_MODE.SET.V1';
         var LOW_POWER_MAX_FPS = 20;
 
-        var reportedFailures = {};
-        function reportFailure(what, err) {
-            var message = '[RivagePowerMode] ' + what +
-                (err === undefined || err === null ? '' : ': ' + err);
-            var seen = (reportedFailures[message] || 0) + 1;
-            reportedFailures[message] = seen;
-            if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-            try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-        }
+        include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+        var reportFailure = RivageFailure.reporter('[RivagePowerMode] ');
 
         function readConfig() {
             var text;

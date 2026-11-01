@@ -92,15 +92,8 @@ if (typeof RivageBackdrop === 'undefined') {
         var childScanDepth = 0;
         var childScanSeen = null;
 
-        var reportedFailures = {};
-        function reportFailure(what, err) {
-            var message = '[RivageBackdrop] ' + what +
-                (err === undefined || err === null ? '' : ': ' + err);
-            var seen = (reportedFailures[message] || 0) + 1;
-            reportedFailures[message] = seen;
-            if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-            try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-        }
+        include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+        var reportFailure = RivageFailure.reporter('[RivageBackdrop] ');
 
         function clamp(value, minimum, maximum) {
             value = Number(value);

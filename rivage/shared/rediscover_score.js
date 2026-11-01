@@ -23,7 +23,6 @@ if (typeof RivageRediscover === 'undefined') {
         var SCAN_MAX_AGE_MS = 24 * 3600 * 1000;
         var CONFIG_DIRECTORY = fb.ProfilePath + 'jsplitter\\rivage\\config\\';
         var CONFIG_FILE = CONFIG_DIRECTORY + 'rediscover.json';
-        var LOVED = '$if2(%lfm_loved%,$if2(%smp_loved%,%lastfm_loved%))';
         var META = '[%album artist%]' + SEP + '[%album%]' + SEP + '[%artist%]' + SEP + '[%title%]' + SEP + '[%date%]';
 
         var GAP_CHOICES = [3, 6, 12, 24];
@@ -31,15 +30,8 @@ if (typeof RivageRediscover === 'undefined') {
         var DEFAULTS = { mode: 'albums', minPlays: 5, gapMonths: 12, ratingWeight: true, mixSize: 25 };
         var RANK_LIMIT = 100;
 
-        var reportedFailures = {};
-        function reportFailure(what, err) {
-            var message = '[RVG Rediscover] ' + what +
-                (err === undefined || err === null ? '' : ': ' + err);
-            var seen = (reportedFailures[message] || 0) + 1;
-            reportedFailures[message] = seen;
-            if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-            try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-        }
+        include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+        var reportFailure = RivageFailure.reporter('[RVG Rediscover] ');
 
         function fold(value) {
             var s = String(value || '').toLowerCase();
@@ -138,7 +130,7 @@ if (typeof RivageRediscover === 'undefined') {
                 // (scrobbles) count: highest play count, latest last-played.
                 var h = fields.history;
                 stats = fb.TitleFormat('[' + fields.plays + ']' + SEP + '[' + fields.last + ']' + SEP +
-                    '[' + fields.rating + ']' + SEP + '[' + LOVED + ']' + SEP +
+                    '[' + fields.rating + ']' + SEP + '[' + PlaybackStatsSource.lovedFields().join(']|[') + ']' + SEP +
                     '[' + h.plays + ']' + SEP + '[' + h.last + ']' + SEP + (h.enhancedLast ? '[' + h.enhancedLast + ']' : '')
                 ).EvalWithMetadbs(handles);
             } catch (e2) {
@@ -155,7 +147,7 @@ if (typeof RivageRediscover === 'undefined') {
                 var last = latestStamp([f[1], f[5], f[6]], now);
                 if (last === null) continue;
                 var rating = parseFloat(f[2]);
-                rows.push({ i: i, plays: plays, last: last, rating: isFinite(rating) ? rating : 0, loved: f[3] === '1' });
+                rows.push({ i: i, plays: plays, last: last, rating: isFinite(rating) ? rating : 0, loved: f[3].split('|').some(PlaybackStatsSource.isLovedValue) });
                 wanted.push(i);
             }
             // Tags only for tracks that have plays: usually a fraction of the library.

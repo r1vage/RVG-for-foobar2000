@@ -8,15 +8,8 @@ var RivageCommands = typeof RivageCommands !== "undefined" ? RivageCommands : (f
     // spellings until one works) that is expected to fail and stay silent on
     // purpose. This is for the few that mean a direct user action silently
     // did nothing. Repeats are counted and re-logged only at powers of ten.
-    var reportedFailures = {};
-    function reportFailure(what, err) {
-        var message = '[RivageCommands] ' + what +
-            (err === undefined || err === null ? '' : ': ' + err);
-        var seen = (reportedFailures[message] || 0) + 1;
-        reportedFailures[message] = seen;
-        if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-        try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-    }
+    include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+    var reportFailure = RivageFailure.reporter('[RivageCommands] ');
     var DEFAULT_TITLE = "RVG";
 
     var COMMANDS = Object.freeze({
@@ -32,7 +25,6 @@ var RivageCommands = typeof RivageCommands !== "undefined" ? RivageCommands : (f
         musicBrainz: "Tagging/Get tags from MusicBrainz (by artist & album)",
         musicBrainzByAlbumId: "Tagging/Get tags from MusicBrainz (by MB album ID)",
 
-        lastfmSong: "Run service/Last.fm Song",
         lastfmLove: Object.freeze([
             "Last.fm Playcount Sync/Love",
             "Last.fm Playcount Sync/Love track",
@@ -51,33 +43,18 @@ var RivageCommands = typeof RivageCommands !== "undefined" ? RivageCommands : (f
 
         replayGainTrack: "ReplayGain/Scan per-file track gain",
         replayGainAlbum: "ReplayGain/Scan as albums (by tags)",
-        replayGainRemove: "ReplayGain/Remove ReplayGain information from files",
 
         moveToMusic: "File operations/Move to/Move folder to my music",
         convertToV0: "Convert/v0 mp3 to my music",
-        convertSettings: "Convert/...",
-        deleteFiles: "Delete files"
+        convertSettings: "Convert/..."
     });
 
-    // stale: Ultimate Playcount also serves these names (its compatibility fields), from its
-    // saved copy of Last.fm's loved mark - evaluateLovedHandle skips them under it.
-    var lovedFormatters = [
-        { tf: fb.TitleFormat("%lfm_loved%"), stale: true },
-        { tf: fb.TitleFormat("%lfm_love%") }, // foo_scrobble 2.x, set by its Last.fm/Love
-        { tf: fb.TitleFormat("%SMP_LOVED%") },
-        { tf: fb.TitleFormat("%LASTFM_LOVED%"), stale: true } // = %lastfm_loved%
-    ];
+    // Compiled per field name: which fields count follows the stats source.
+    var lovedFormatters = {};
 
-    // Ultimate Playcount / Playcount 2003's own loved mark, when one is the stats source.
-    // Not every panel loads PlaybackStatsSource.
-    function sourceLovedFormatter() {
-        return typeof PlaybackStatsSource !== "undefined" && PlaybackStatsSource.isPlaycount2003() ?
-            PlaybackStatsSource.tf2003("loved") : null;
-    }
-
+    // The loved functions below need PlaybackStatsSource, which every panel using them loads.
     function ultimateLoveCommand(love) {
-        return typeof PlaybackStatsSource !== "undefined" && PlaybackStatsSource.isUltimate() ?
-            PlaybackStatsSource.name2003() + "/" + (love ? "Love" : "Unlove") : "";
+        return PlaybackStatsSource.isUltimate() ? PlaybackStatsSource.name2003() + "/" + (love ? "Love" : "Unlove") : "";
     }
 
     function optionTitle(options) {
@@ -225,25 +202,15 @@ var RivageCommands = typeof RivageCommands !== "undefined" ? RivageCommands : (f
         }
     }
 
-    function isLovedValue(value) {
-        var normalised = String(value || "").trim().toLowerCase();
-        // Any positive number counts (a -1 "hated" mark does not).
-        return parseFloat(normalised) > 0 || normalised === "true" || normalised === "yes" || normalised === "loved";
-    }
-
     function evaluateLovedHandle(metadb) {
-        var i;
-        var source = sourceLovedFormatter();
+        var fields, i;
         if (!metadb) return false;
 
-        if (source && isLovedValue(source.EvalWithMetadb(metadb))) return true;
-        // Under Ultimate Playcount, the stale ones can be out of date and no love/unlove
-        // command here can clear them.
-        var ultimate = !!ultimateLoveCommand(true);
-        for (i = 0; i < lovedFormatters.length; i++) {
-            if (ultimate && lovedFormatters[i].stale) continue;
+        fields = PlaybackStatsSource.lovedFields();
+        for (i = 0; i < fields.length; i++) {
             try {
-                if (isLovedValue(lovedFormatters[i].tf.EvalWithMetadb(metadb))) return true;
+                var tf = lovedFormatters[fields[i]] || (lovedFormatters[fields[i]] = fb.TitleFormat(fields[i]));
+                if (PlaybackStatsSource.isLovedValue(tf.EvalWithMetadb(metadb))) return true;
             } catch (e) {}
         }
         return false;
@@ -318,7 +285,7 @@ var RivageCommands = typeof RivageCommands !== "undefined" ? RivageCommands : (f
 
     function showLovedTracks() {
         try {
-            fb.ShowLibrarySearchUI("%lfm_loved% IS 1 OR %lfm_love% IS 1 OR %SMP_LOVED% IS 1 OR %LASTFM_LOVED% IS 1");
+            fb.ShowLibrarySearchUI(PlaybackStatsSource.lovedFields().map(function (field) { return field + " GREATER 0"; }).join(" OR "));
             return true;
         } catch (e) {
             return false;

@@ -61,13 +61,8 @@ const GLYPH = {
     clear: '\uE74D', console: '\uE756', find: '\uE721', chevron: '\uE76C', back: '\uE72B', timer: '\uE916'
 };
 
-const reported = {};
-function reportFailure(what, err) {
-    const text = '[RVG Quick switcher] ' + what + (err === undefined ? '' : ': ' + err);
-    if (reported[text]) return;
-    reported[text] = true;
-    try { console.log(text); } catch (e) { }
-}
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+var reportFailure = RivageFailure.reporter('[RVG Quick switcher] ');
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 

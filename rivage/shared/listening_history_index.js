@@ -473,7 +473,9 @@ if (typeof RivageListeningIndex === 'undefined') {
                 seconds += track.length;
                 bump(artists, track.artistKey, track.artist, '', trackIndex);
                 if (track.albumKey) bump(albums, track.albumKey, track.album, track.albumArtist, trackIndex);
-                bump(songs, String(trackIndex), track.title || '(untitled)', track.artist, trackIndex);
+                // Same artist + title counts as one song, whatever the capitalisation or file.
+                bump(songs, track.title ? track.artistKey + SEP + fold(track.title) : String(trackIndex),
+                    track.title || '(untitled)', track.artist, trackIndex);
                 for (var g = 0; g < track.genres.length; g++) {
                     bump(genres, track.genres[g].key, track.genres[g].label, '', trackIndex);
                 }

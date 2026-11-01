@@ -2,6 +2,31 @@
 
 All notable changes to RVG (skin for foobar2000) are documented here.
 
+## [Unreleased]
+
+### Added
+
+- The MusicBrainz tagger now marks the tracks whose title will change. In the track pairing list they get a coloured bar and the new title is shown in the accent colour, so you can see which ones are meant by "6 of 20".
+
+### Fixed
+
+- The MusicBrainz tagger could write titles and track numbers to the wrong files if you sorted the playlist and then selected the same album again. It now starts over from the release list whenever the selected tracks or their order change.
+- The MusicBrainz tagger's Search button no longer stays stuck on "Working" after you paste a release ID while a search is still running.
+- On MP3 files that have both spellings of a tag (for example ALBUMARTIST and ALBUM ARTIST), the MusicBrainz tagger now updates the one foobar2000 actually shows, so the new album artist, label or sort order appears.
+- Fixed a bug in the MusicBrainz tagger which could result in wrong titles on multi-disc albums.
+- Fixed a bug in the Lyrics panel which could save lyrics from a different song.
+- Fixed a bug in the Lyrics panel which could overwrite lyrics you already had.
+- Fixed a bug in the Live shows panel which could hide concerts for weeks after a failed lookup.
+- Fixed a bug in the MusicBrainz tagger where undo could change tags slightly or stop working after a failure.
+- Fixed older `.lrc` files showing as unreadable text in the Lyrics panel.
+- Fixed the Lyrics panel ignoring or reversing the timing offset in `.lrc` files.
+- Fixed the Playlist hearts, the Show loved tracks button and Rediscover disagreeing about which tracks are loved.
+- Track information now only opens web links from the file path row, not any program a playlist entry points to.
+
+### Removed
+
+- **Lyrics:** removed Musixmatch as a source.
+
 ## [1.0.3] - 2026-10-25
 
 ### Added

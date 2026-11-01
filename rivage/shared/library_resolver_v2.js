@@ -9,15 +9,8 @@ var RivageLibraryResolver = (typeof RivageLibraryResolver !== 'undefined') ? Riv
     // fast-path/optional-API probes with a working fallback below and stay
     // silent on purpose. This is for the one case with no fallback: a sort
     // that silently fails leaves the list in the wrong order with no trace.
-    var reportedFailures = {};
-    function reportFailure(what, err) {
-        var message = '[RivageLibraryResolver] ' + what +
-            (err === undefined || err === null ? '' : ': ' + err);
-        var seen = (reportedFailures[message] || 0) + 1;
-        reportedFailures[message] = seen;
-        if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-        try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-    }
+    include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+    var reportFailure = RivageFailure.reporter('[RivageLibraryResolver] ');
 
     function text(value) {
         return String(value == null ? '' : value).replace(/^\s+|\s+$/g, '');

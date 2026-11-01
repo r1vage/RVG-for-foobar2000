@@ -13,6 +13,7 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\library_actions_v2.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\visible_paint_work.js");
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\cache_protocol.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\serial_request_queue.js');
 
 const PANEL_VERSION = '2.4.1';
 
@@ -24,15 +25,8 @@ window.DefineScript(RivageUI.copy.popupTitle('Live shows'), {
 // Narrow failure reporting. Most empty catches in this file guard drawing
 // calls and host reads that are expected to fail and stay silent on purpose.
 // Repeats are counted and re-logged only at powers of ten.
-var reportedFailures = {};
-function reportFailure(what, err) {
-    var message = '[RVG Live Shows] ' + what +
-        (err === undefined || err === null ? '' : ': ' + err);
-    var seen = (reportedFailures[message] || 0) + 1;
-    reportedFailures[message] = seen;
-    if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-    try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-}
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+var reportFailure = RivageFailure.reporter('[RVG Live Shows] ');
 
 const PROP = 'RVG Live Shows.';
 const SETTINGS_PANEL_ID = 'live_shows';
@@ -175,12 +169,14 @@ let initialLoadPending = true;
 
 let sweepRun = null;
 let sweepForce = false;
-let requestQueue = [];
-let requestContexts = new Map();
-let requestTimer = 0;
-let lastRequestAt = 0;
-let blockedUntil = 0;
-let requestWatchdog = 0;
+const requests = SerialRequestQueue.create({
+    intervalMs: SOURCE.intervalMs,
+    timeoutMs: REQUEST_TIMEOUT_MS,
+    headers: requestHeaders,
+    isActive: function () { return scriptActive; },
+    generation: function () { return generation; },
+    onFailure: handleRequestFailure
+});
 let consecutiveTransientErrors = 0;
 let networkDebug = { state: 'idle', kind: '', at: 0, httpStatus: 0, detail: '' };
 
@@ -640,7 +636,7 @@ function storeCacheEntry(artist, shows, matchedMbid, verified, error, note) {
 }
 
 function entryFresh(entry) {
-    if (!entry || !(Number(entry.savedAt) > 0)) return false;
+    if (!entry || entry.error || !(Number(entry.savedAt) > 0)) return false;
     const lifetime = cacheDays * 24 * 60 * 60 * 1000 *
         (Array.isArray(entry.shows) && entry.shows.length ? 1 : EMPTY_CACHE_MULTIPLIER);
     return Date.now() - Number(entry.savedAt) < lifetime;
@@ -671,92 +667,19 @@ function requestHeaders() {
     });
 }
 
-function enqueueRequest(context) {
-    if (!scriptActive) return;
-    requestQueue.push(context);
-    pumpRequestQueue();
-}
-
-function isTransientHttpStatus(status) {
-    return status === 0 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
-}
-
-function transientRetryDelay(retries) {
-    const exponential = RETRY_BASE_MS * Math.pow(2, Math.max(0, Number(retries || 0)));
-    return Math.min(exponential, RETRY_MAX_DELAY_MS) + Math.floor(Math.random() * (RETRY_JITTER_MS + 1));
-}
-
-function pumpRequestQueue() {
-    if (!scriptActive) return;
-    clearTimer(requestTimer);
-    requestTimer = 0;
-
-    while (requestQueue.length && requestQueue[0].generation !== generation) requestQueue.shift();
-    if (!requestQueue.length) return;
-    // Strictly serial: one in-flight request keeps the global cooldown authoritative.
-    if (requestContexts.size) return;
-
-    const now = Date.now();
-    const wait = Math.max(
-        Math.max(0, currentSourceDef().intervalMs - (now - lastRequestAt)),
-        Math.max(0, blockedUntil - now)
-    );
-    if (wait > 0) {
-        requestTimer = window.SetTimeout(pumpRequestQueue, wait);
-        return;
-    }
-
-    const context = requestQueue.shift();
-    if (context.generation !== generation) {
-        pumpRequestQueue();
-        return;
-    }
-
-    try {
-        const taskId = utils.HTTPRequestAsync(0, context.url, requestHeaders());
-        lastRequestAt = Date.now();
-        requestContexts.set(taskId, context);
-        armRequestWatchdog(taskId);
-    } catch (e) {
-        // Deferred, or a host that throws for every URL would recurse through
-        // the whole sweep on one stack.
-        const detail = String(e);
-        window.SetTimeout(function () { handleRequestFailure(context, 0, detail); }, 0);
-    }
-}
-
-// A request the host never settles would hold the serial queue forever, so
-// give up on it and treat it like a dropped connection.
-function armRequestWatchdog(taskId) {
-    clearTimer(requestWatchdog);
-    requestWatchdog = window.SetTimeout(function () {
-        requestWatchdog = 0;
-        if (!scriptActive) return;
-        const context = requestContexts.get(taskId);
-        if (!context) return;
-        requestContexts.delete(taskId);
-        if (context.generation !== generation) {
-            pumpRequestQueue();
-            return;
-        }
-        handleRequestFailure(context, 0, 'No response after ' + Math.round(REQUEST_TIMEOUT_MS / 1000) + ' s');
-    }, REQUEST_TIMEOUT_MS);
-}
-
 function handleRequestFailure(context, status, detail) {
     if (context.generation !== generation) return;
 
-    if (isTransientHttpStatus(status) && Number(context.retries || 0) < MAX_TRANSIENT_RETRIES) {
+    if (SerialRequestQueue.isTransient(status) && Number(context.retries || 0) < MAX_TRANSIENT_RETRIES) {
         consecutiveTransientErrors++;
-        let delay = transientRetryDelay(context.retries);
+        let delay = SerialRequestQueue.retryDelay(context.retries, RETRY_BASE_MS, RETRY_MAX_DELAY_MS, RETRY_JITTER_MS);
         if (consecutiveTransientErrors >= CIRCUIT_BREAKER_FAILURES) delay = Math.max(delay, CIRCUIT_BREAKER_COOLDOWN_MS);
-        blockedUntil = Math.max(blockedUntil, Date.now() + delay);
-        requestQueue.unshift(Object.assign({}, context, { retries: Number(context.retries || 0) + 1 }));
+        requests.block(delay);
         setNetworkDebug('retrying', context.kind, 'Retry in ' + Math.round(delay / 1000) + ' s.', status);
         statusText = currentSourceDef().label + ' temporarily unavailable; retrying...';
         statusIsError = false;
         window.Repaint();
-        pumpRequestQueue();
+        requests.retry(context);
         return;
     }
 
@@ -770,21 +693,21 @@ function handleRequestFailure(context, status, detail) {
         window.Repaint();
         return;
     }
+    // Out of quota: every remaining artist would fail the same way.
+    if (status === 429) {
+        statusText = currentSourceDef().label + ' call limit reached (HTTP 429). The remaining artists are checked next time.';
+        statusIsError = true;
+        abortSweep();
+        window.Repaint();
+        return;
+    }
     finishArtist(context, [], '', false, debugSnippet(detail || ('HTTP ' + status), 160));
 }
 
 function on_http_request_done(taskId, success, responseText, status) {
     if (!scriptActive) return;
-    const context = requestContexts.get(taskId);
+    const context = requests.take(taskId);
     if (!context) return;
-    requestContexts.delete(taskId);
-    clearTimer(requestWatchdog);
-    requestWatchdog = 0;
-
-    if (context.generation !== generation) {
-        pumpRequestQueue();
-        return;
-    }
     if (!success) {
         handleRequestFailure(context, Number(status || 0), responseText);
         return;
@@ -797,7 +720,7 @@ function on_http_request_done(taskId, success, responseText, status) {
     }
 
     consecutiveTransientErrors = 0;
-    blockedUntil = 0;
+    requests.unblock();
     setNetworkDebug('completed', context.kind, 'HTTP ' + status, status);
 
     try {
@@ -810,7 +733,7 @@ function on_http_request_done(taskId, success, responseText, status) {
 }
 
 function requestTicketmasterAttraction(artist, index) {
-    enqueueRequest({
+    requests.enqueue({
         kind: 'tm-attraction',
         generation: generation,
         artist: artist,
@@ -875,7 +798,7 @@ function handleTicketmasterAttraction(context, data) {
         return;
     }
 
-    enqueueRequest({
+    requests.enqueue({
         kind: 'tm-events',
         generation: generation,
         artist: artist,
@@ -953,11 +876,8 @@ function startSweep(force) {
     }
 
     generation++;
-    requestQueue = [];
-    requestContexts.clear();
-    clearTimer(requestTimer);
-    requestTimer = 0;
-    blockedUntil = 0;
+    requests.clear();
+    requests.unblock();
     consecutiveTransientErrors = 0;
     sweepForce = !!force;
 
@@ -991,10 +911,7 @@ function startSweep(force) {
 function abortSweep() {
     generation++;
     sweepRun = null;
-    requestQueue = [];
-    requestContexts.clear();
-    clearTimer(requestTimer);
-    requestTimer = 0;
+    requests.clear();
     saveCacheFile(true);
 }
 
@@ -1027,7 +944,15 @@ function requestArtist(artist, index) {
 // exactly once per artist whatever the outcome.
 function finishArtist(context, shows, matchedMbid, verified, error, note) {
     if (context.generation !== generation) return;
-    storeCacheEntry(context.artist, shows, matchedMbid, verified, error, note);
+    // A failure keeps the shows already known; the error alone makes the next sweep retry.
+    const previous = error ? cacheEntry(context.artist.key) : null;
+    if (previous) {
+        previous.error = String(error);
+        cacheDirty = true;
+        saveCacheFile(false);
+    } else {
+        storeCacheEntry(context.artist, shows, matchedMbid, verified, error, note);
+    }
     if (sweepRun && sweepRun.generation === generation) {
         if (error) sweepRun.failed++;
         else sweepRun.fetched++;
@@ -1708,11 +1633,8 @@ function on_script_unload() {
     initialLoadPending = false;
     generation++;
     clearTimer(initTimer);
-    clearTimer(requestTimer);
     initTimer = 0;
-    requestTimer = 0;
-    requestQueue = [];
-    requestContexts.clear();
+    requests.clear();
     sweepRun = null;
     saveCacheFile(true);
 }

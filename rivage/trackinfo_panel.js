@@ -1677,7 +1677,7 @@ function CompactSongInfo(owner) {
         } else if (action.type == 'open_path') {
             if (utils.IsFile(action.path)) {
                 reveal_in_explorer(action.path);
-            } else if (/^[a-z]+:\/\//i.test(action.path)) {
+            } else if (/^https?:\/\/\S+$/i.test(action.path)) {
                 utils.Run(action.path);
             }
         }

@@ -15,15 +15,8 @@ if (typeof PlaybackStatsSource === 'undefined') {
         // retry-timer schedules, or consumer callbacks - each a real failure
         // with no other trace. Repeats are counted and re-logged only at
         // powers of ten.
-        var reportedFailures = {};
-        function reportFailure(what, err) {
-            var message = '[PlaybackStatsSource] ' + what +
-                (err === undefined || err === null ? '' : ': ' + err);
-            var seen = (reportedFailures[message] || 0) + 1;
-            reportedFailures[message] = seen;
-            if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-            try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-        }
+        include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+        var reportFailure = RivageFailure.reporter('[PlaybackStatsSource] ');
 
         function hasComponent(name) {
             try {
@@ -170,6 +163,24 @@ if (typeof PlaybackStatsSource === 'undefined') {
             return dataSource === SOURCE_PLAYCOUNT_2003 || dataSource === SOURCE_ULTIMATE;
         }
 
+        // The one rule for what counts as loved, in title-format field names. Ultimate
+        // Playcount also serves %lfm_loved% and %lastfm_loved% from its saved copy of
+        // Last.fm's mark, which can be out of date and no love/unlove command here can
+        // clear, so they are left out under it.
+        function lovedFields() {
+            var fields = isPlaycount2003() ? ['%' + prefix2003() + 'loved%'] : [];
+            if (dataSource !== SOURCE_ULTIMATE) fields.push('%lfm_loved%');
+            fields.push('%lfm_love%', '%smp_loved%'); // %lfm_love%: foo_scrobble 2.x
+            if (dataSource !== SOURCE_ULTIMATE) fields.push('%lastfm_loved%');
+            return fields;
+        }
+
+        function isLovedValue(value) {
+            var normalised = String(value || '').trim().toLowerCase();
+            // Any positive number counts (a -1 "hated" mark does not).
+            return parseFloat(normalised) > 0 || normalised === 'true' || normalised === 'yes' || normalised === 'loved';
+        }
+
         function broadcast() {
             try { window.NotifyOthers(UPDATE, { dataSource: dataSource, upcPrefix: upcPrefix }); } catch (e) { reportFailure('the playback stats update could not be broadcast', e); }
         }
@@ -203,6 +214,8 @@ if (typeof PlaybackStatsSource === 'undefined') {
             prefix2003: prefix2003,
             tf2003: tf2003,
             setRating2003: setRating2003,
+            lovedFields: lovedFields,
+            isLovedValue: isLovedValue,
             // { plays, first, last, added, rating } titleformat strings for the active
             // backend. A copy, so callers may keep it; compare it to spot a switch.
             // history: the other places a play can be recorded, for "smart" views

@@ -27,15 +27,8 @@ window.DefineScript('RVG Compact Queue', {
 // is for the few that mean something is actually broken and would otherwise
 // leave no trace. Repeats are counted and re-logged only at powers of ten, so
 // a per-row failure reports itself without flooding the console.
-var reportedFailures = {};
-function reportFailure(what, err) {
-    var message = '[RVG Compact Queue] ' + what +
-        (err === undefined || err === null ? '' : ': ' + err);
-    var seen = (reportedFailures[message] || 0) + 1;
-    reportedFailures[message] = seen;
-    if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-    try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-}
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+var reportFailure = RivageFailure.reporter('[RVG Compact Queue] ');
 
 var MF_STRING = 0x00000000;
 var MF_GRAYED = 0x00000001;

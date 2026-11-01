@@ -22,15 +22,8 @@ window.DefineScript('RVG Bottom Bar Presets', {
 // Narrow failure reporting. This is for the one empty catch that means a
 // direct user action (opening the panel properties dialog) silently did
 // nothing. Repeats are counted and re-logged only at powers of ten.
-var reportedFailures = {};
-function reportFailure(what, err) {
-    var message = '[RVG Bottom Bar Presets] ' + what +
-        (err === undefined || err === null ? '' : ': ' + err);
-    var seen = (reportedFailures[message] || 0) + 1;
-    reportedFailures[message] = seen;
-    if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-    try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-}
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+var reportFailure = RivageFailure.reporter('[RVG Bottom Bar Presets] ');
 
 var DT_CENTER = 0x00000001;
 var DT_VCENTER = 0x00000004;

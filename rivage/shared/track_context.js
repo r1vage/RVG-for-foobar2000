@@ -17,15 +17,8 @@ if (typeof TrackContext === 'undefined') {
         // retry-timer schedules, or consumer callbacks - each a real failure
         // with no other trace. Repeats are counted and re-logged only at
         // powers of ten.
-        var reportedFailures = {};
-        function reportFailure(what, err) {
-            var message = '[TrackContext] ' + what +
-                (err === undefined || err === null ? '' : ': ' + err);
-            var seen = (reportedFailures[message] || 0) + 1;
-            reportedFailures[message] = seen;
-            if (seen !== 1 && seen !== 10 && seen !== 100 && seen !== 1000) return;
-            try { console.log(seen === 1 ? message : message + ' (x' + seen + ')'); } catch (e) { }
-        }
+        include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
+        var reportFailure = RivageFailure.reporter('[TrackContext] ');
 
         function isGlobalMode(value) {
             return value === MODE_AUTO || value === MODE_NOW_PLAYING || value === MODE_SELECTION;
