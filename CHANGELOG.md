@@ -2,6 +2,25 @@
 
 All notable changes to RVG (skin for foobar2000) are documented here.
 
+## [1.0.5] - 2026-11-13
+
+### Added
+
+- **Spectrum:** new "JSplitter native analysis" option. When it is on, JSplitter analyses the sound instead of the panel. It is off by default and needs a JSplitter version that has the Visualization API.
+- **Lyrics:** new "Force redownload lyrics and save" in the right-click menu. It downloads the lyrics again and saves them over the ones you have. Synced lyrics are never replaced with plain text.
+- After you export your settings, RVG now reminds you that the file contains your API keys, so you can remove them before sharing it.
+
+### Changed
+
+- RVG Settings does less work in the background while it is open.
+
+### Fixed
+
+- The MusicBrainz tagger wrote track numbers like "A1" or "B2" for vinyl and cassette releases. It now writes plain numbers.
+- A Last.fm Charts section could show "loading" forever when Last.fm did not answer. It now gives up after 20 seconds.
+- The Last.fm panel showed big counts as "1000.0K" instead of "1M".
+- Importing settings now tells you how many settings were really imported, and how many panels were skipped because they were not loaded.
+
 ## [1.0.4] - 2026-11-01
 
 ### Added
