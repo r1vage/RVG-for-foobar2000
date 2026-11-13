@@ -135,6 +135,7 @@ var DEFAULTS = {
     bandCurve: 'log',
     bandPick: 'max',
     spectralSmooth: 1,
+    nativeAnalysis: false,
 
     // Ballistics
     fps: 30,
@@ -200,6 +201,7 @@ var PROPERTY_NAMES = {
     bandCurve: 'Band spacing',
     bandPick: 'Bin aggregation',
     spectralSmooth: 'Neighbour smoothing',
+    nativeAnalysis: 'JSplitter native analysis',
 
     fps: 'Refresh rate fps',
     attack: 'Attack',
@@ -538,6 +540,7 @@ function loadSettings() {
     settings.bandCurve = choiceValue(String(readProperty('bandCurve')), BAND_CURVE_CHOICES, DEFAULTS.bandCurve);
     settings.bandPick = choiceValue(String(readProperty('bandPick')), BAND_PICK_CHOICES, DEFAULTS.bandPick);
     settings.spectralSmooth = numberChoiceValue(readProperty('spectralSmooth'), SMOOTH_CHOICES, DEFAULTS.spectralSmooth);
+    settings.nativeAnalysis = !!readProperty('nativeAnalysis');
 
     settings.fps = numberChoiceValue(readProperty('fps'), FPS_CHOICES, DEFAULTS.fps);
     settings.attack = choiceValue(String(readProperty('attack')), BALLISTIC_CHOICES, DEFAULTS.attack);
@@ -906,6 +909,8 @@ function rebuildAnalyser() {
         analyser.bandCentre[i] = Math.sqrt(bandEdgeHz(i, count) * bandEdgeHz(i + 1, count));
     }
 
+    // Native first: the band gains depend on whether the native source really started.
+    rebuildNativeVis();
     rebuildBandBins();
     rebuildHistoryRing();
 }
@@ -922,6 +927,12 @@ function rebuildBandBins() {
     var i;
 
     if (!count || !analyser.bandLo) return;
+
+    // Measured against our peak-bin FFT (fft 2048, 48 kHz, 20 Hz-20 kHz): the native
+    // source reads ~1 dB/oct darker and ~2 dB quieter at 1 kHz, residual within 3.6 dB.
+    var native = !!nativeVis;
+    var tilt = settings.tiltDb - (native ? NATIVE_EXTRA_TILT_DB : 0);
+    var offset = native ? NATIVE_LEVEL_OFFSET_DB : 0;
 
     for (i = 0; i < count; i++) {
         var loHz = bandEdgeHz(i, count);
@@ -942,7 +953,7 @@ function rebuildBandBins() {
 
         var centre = Math.max(1, analyser.bandCentre[i]);
         var octaves = Math.log(centre / referenceHz) / Math.LN2;
-        analyser.bandGain[i] = settings.tiltDb * octaves;
+        analyser.bandGain[i] = tilt * octaves - offset;
     }
 }
 
@@ -1106,7 +1117,130 @@ function decayToSilence(dtMs) {
 
 var pcmReader = AudioPcmReader.create('Spectrum');
 
+// Optional JSplitter Visualization API source. It replaces only the PCM read
+// and FFT; band grouping, tilt, floor/ceiling, smoothing, ballistics, peaks and
+// drawing stay ours. The source returns many fine log-spaced bands, which are
+// grouped into our bands with the user's Band spacing and Bin aggregation. Its
+// own smoothing/peaks are off and its dB range is wide, so floor/ceiling still
+// apply. Data only reaches us through a Draw() callback, so on_paint pulls the
+// latest snapshot for the next tick.
+var NATIVE_MIN_DB = -140;
+var NATIVE_MAX_DB = 24;
+var NATIVE_EXTRA_TILT_DB = -1;
+var NATIVE_LEVEL_OFFSET_DB = -2;
+var NATIVE_FINE_BANDS = 1024; // ~0.7% wide each, finer than any band we draw
+var VIS_SOURCE_SPECTRUM = 1; // VisSourceType.Spectrum
+var nativeVis = null;
+var nativeLevels = null;
+var nativeLo = null; // per drawn band: first fine band
+var nativeHi = null; // per drawn band: one past the last fine band
+var nativeHasData = false;
+
+// Fine band k spans minHz * (maxHz / minHz)^(k / N) .. ^((k + 1) / N).
+function nativeFineIndex(hz) {
+    var t = Math.log(hz / settings.minHz) / Math.log(settings.maxHz / settings.minHz);
+    return t * NATIVE_FINE_BANDS;
+}
+
+function rebuildNativeBandMap() {
+    var count = analyser.bandCount;
+    nativeLo = new Int32Array(count);
+    nativeHi = new Int32Array(count);
+    for (var i = 0; i < count; i++) {
+        var lo = Math.max(0, Math.min(NATIVE_FINE_BANDS - 1, Math.floor(nativeFineIndex(bandEdgeHz(i, count)))));
+        var hi = Math.max(lo + 1, Math.min(NATIVE_FINE_BANDS, Math.ceil(nativeFineIndex(bandEdgeHz(i + 1, count)))));
+        nativeLo[i] = lo;
+        nativeHi[i] = hi;
+    }
+}
+
+function nativeVisAvailable() {
+    return typeof vis !== 'undefined' && !!vis && typeof vis.Create === 'function';
+}
+
+function useNativeAnalysis() {
+    return settings.nativeAnalysis && nativeVisAvailable();
+}
+
+function syncNativeUpdateInterval() {
+    if (!nativeVis) return;
+    try { vis.UpdateIntervalMs = Math.max(1, Math.round(frameIntervalMs())); } catch (e) { }
+}
+
+function rebuildNativeVis() {
+    // Dropping the last reference releases it; the host stops its analysis thread then.
+    nativeVis = null;
+    nativeHasData = false;
+    if (!useNativeAnalysis()) return;
+
+    nativeLevels = new Float64Array(NATIVE_FINE_BANDS);
+    rebuildNativeBandMap();
+    try {
+        nativeVis = vis.Create(VIS_SOURCE_SPECTRUM, {
+            fftSize: settings.fftSize,
+            bands: NATIVE_FINE_BANDS,
+            minFrequency: settings.minHz,
+            maxFrequency: settings.maxHz,
+            minDb: NATIVE_MIN_DB,
+            maxDb: NATIVE_MAX_DB,
+            attackMs: 0,
+            releaseMs: 0,
+            peakHoldMs: 0
+        }, function (gr, x, y, w, h, data) {
+            var levels = data.levels;
+            var n = Math.min(levels.length, nativeLevels.length);
+            for (var i = 0; i < n; i++) nativeLevels[i] = levels[i];
+            nativeHasData = true;
+        });
+    } catch (e) {
+        nativeVis = null;
+        reportFailure('native spectrum source could not be created; using the built-in FFT', e);
+    }
+    syncNativeUpdateInterval();
+}
+
+function pullNativeSnapshot(gr) {
+    if (!nativeVis) return;
+    try {
+        nativeVis.Draw(gr, 0, 0, 1, 1);
+    } catch (e) {
+        reportFailure('native spectrum Draw failed', e);
+    }
+}
+
+function readNativeFrame(raw, count) {
+    if (!nativeHasData) return false;
+    var span = NATIVE_MAX_DB - NATIVE_MIN_DB;
+    var pick = settings.bandPick;
+    for (var i = 0; i < count; i++) {
+        var lo = nativeLo[i], hi = nativeHi[i], k, db;
+        if (pick === 'max') {
+            var best = 0;
+            for (k = lo; k < hi; k++) if (nativeLevels[k] > best) best = nativeLevels[k];
+            db = NATIVE_MIN_DB + best * span;
+        } else {
+            // Average / RMS in linear amplitude, like the built-in path does over FFT bins.
+            var sum = 0;
+            for (k = lo; k < hi; k++) {
+                var amp = Math.pow(10, (NATIVE_MIN_DB + nativeLevels[k] * span) / 20);
+                sum += pick === 'rms' ? amp * amp : amp;
+            }
+            sum /= (hi - lo);
+            db = amplitudeToDb(pick === 'rms' ? Math.sqrt(sum) : sum);
+        }
+        raw[i] = normaliseDb(db + analyser.bandGain[i]);
+    }
+    return true;
+}
+
 function analyseFrame(dtMs) {
+    if (nativeVis) {
+        if (!readNativeFrame(analyser.raw, analyser.bandCount)) return false;
+        applySpectralSmoothing(analyser.raw, analyser.bandCount);
+        return applyBallistics(dtMs);
+    }
+
+
     // Ask for exactly the window downmixChunk() will actually use. This was
     // hardcoded to 44100: on a 48k stream it over-requested by 9%, and on a 96k
     // stream by 118%, which only makes an unsatisfiable request more likely.
@@ -1172,6 +1306,14 @@ function analyseFrame(dtMs) {
         if (analyser.bandHi[i] <= analyser.bandLo[i]) raw[i] = 0;
     }
 
+    return applyBallistics(dtMs);
+}
+
+// Moves the displayed levels and peaks toward analyser.raw.
+function applyBallistics(dtMs) {
+    var count = analyser.bandCount;
+    var raw = analyser.raw;
+    var i;
     var attackK = ballisticCoefficient(settings.attack, true, dtMs);
     var releaseK = ballisticCoefficient(settings.release, false, dtMs);
     var holdMs = Math.max(0, settings.peakHoldMs);
@@ -1457,6 +1599,7 @@ function clearLevels() {
             analyser.history[i] = new Float64Array(analyser.bandCount);
         }
     }
+    nativeHasData = false;
     analyser.active = false;
 }
 
@@ -1469,6 +1612,7 @@ function clearPeakState() {
 }
 
 function applyEngineSettings(restart) {
+    syncNativeUpdateInterval();
     if (restart) {
         stopTimer();
         startEngineIfRunnable();
@@ -2998,6 +3142,7 @@ function on_paint(gr) {
     panelW = window.Width;
     panelH = window.Height;
     if (panelW <= 0 || panelH <= 0) return;
+    pullNativeSnapshot(gr);
 
     // THE aliasing fix. This panel was the only RVG panel that never set a
     // smoothing mode, so it inherited the default - which is aliased - and
@@ -3331,6 +3476,8 @@ function getMySettings() {
           choiceValueType: 'string', choices: BAND_PICK_CHOICES },
         { id: 'spectralSmooth', label: 'Neighbour smoothing', type: 'choice', value: settings.spectralSmooth,
           choiceValueType: 'number', choices: SMOOTH_CHOICES },
+        { id: 'nativeAnalysis', label: 'JSplitter native analysis', type: 'bool', value: settings.nativeAnalysis,
+          hint: nativeVisAvailable() ? '' : 'Needs a JSplitter version with the Visualization API' },
 
         { id: 'fps', label: 'Frame rate', type: 'choice', value: settings.fps,
           choiceValueType: 'number', choices: FPS_CHOICES, hint: RivagePowerMode.capNote(settings.fps) },
@@ -3358,7 +3505,7 @@ function getMySettings() {
 
         { id: 'resetDefaults', label: 'Reset spectrum settings', type: 'action', value: false, actionLabel: 'Reset' }
     ];
-    var analysisIds = { fftSize: 1, minHz: 1, maxHz: 1, floorDb: 1, ceilingDb: 1, tiltDb: 1, bandCurve: 1, bandPick: 1, spectralSmooth: 1, attack: 1, release: 1 };
+    var analysisIds = { fftSize: 1, minHz: 1, maxHz: 1, floorDb: 1, ceilingDb: 1, tiltDb: 1, bandCurve: 1, bandPick: 1, spectralSmooth: 1, nativeAnalysis: 1, attack: 1, release: 1 };
     for (var i = 0; i < rows.length; i++) {
         rows[i].section = (rows[i].id === 'instanceId' || rows[i].id === 'panelWindow')
             ? 'Diagnostics'
@@ -3515,6 +3662,10 @@ function applyMySetting(settingId, value) {
         break;
     case 'spectralSmooth':
         changed = setStoredSetting('spectralSmooth', numberChoiceValue(value, SMOOTH_CHOICES, DEFAULTS.spectralSmooth));
+        break;
+    case 'nativeAnalysis':
+        changed = setStoredSetting('nativeAnalysis', !!value);
+        needAnalyser = true;
         break;
 
     case 'fps':
@@ -3738,6 +3889,10 @@ function showContextMenu(x, y) {
     builder.addChoiceSubmenu(analysisMenu, 'Band spacing', BAND_CURVE_CHOICES, settings.bandCurve, 'bandCurve');
     builder.addChoiceSubmenu(analysisMenu, 'Bin aggregation', BAND_PICK_CHOICES, settings.bandPick, 'bandPick');
     builder.addChoiceSubmenu(analysisMenu, 'Neighbour smoothing', SMOOTH_CHOICES, settings.spectralSmooth, 'spectralSmooth');
+    analysisMenu.AppendMenuSeparator();
+    builder.addAction(analysisMenu, 'JSplitter native analysis', function () {
+        applyMySetting('nativeAnalysis', !settings.nativeAnalysis);
+    }, settings.nativeAnalysis, nativeVisAvailable());
     analysisMenu.AppendTo(menu, MENU_STRING, 'Analysis');
 
     builder.addChoiceSubmenu(ballisticsMenu, 'Frame rate' + RivagePowerMode.capMenuSuffix(settings.fps),

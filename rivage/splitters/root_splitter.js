@@ -128,10 +128,6 @@ function logDiagnostic(message, once) {
     try { console.log(text); } catch (e) { }
 }
 
-function clamp(value, minimum, maximum) {
-    return Math.max(minimum, Math.min(maximum, value));
-}
-
 function readSavedTopBarHeight() {
     let value = Number(window.GetProperty(TOP_HEIGHT_PROPERTY, DEFAULT_TOP_BAR_HEIGHT));
     if (!isFinite(value)) value = DEFAULT_TOP_BAR_HEIGHT;
@@ -497,8 +493,8 @@ function applyMiniWindowFrame(active) {
 }
 
 function defaultMiniRect(normalRect) {
-    const w = clamp(MINI_DEFAULT_WIDTH, MINI_MIN_SIZE, Math.max(MINI_MIN_SIZE, normalRect.w));
-    const h = clamp(MINI_DEFAULT_HEIGHT, MINI_MIN_SIZE, Math.max(MINI_MIN_SIZE, normalRect.h));
+    const w = RivageUI.clamp(MINI_DEFAULT_WIDTH, MINI_MIN_SIZE, Math.max(MINI_MIN_SIZE, normalRect.w));
+    const h = RivageUI.clamp(MINI_DEFAULT_HEIGHT, MINI_MIN_SIZE, Math.max(MINI_MIN_SIZE, normalRect.h));
     return {
         x: Math.round(normalRect.x + (normalRect.w - w) / 2),
         y: Math.round(normalRect.y + (normalRect.h - h) / 2),
@@ -514,9 +510,9 @@ function layoutQuickSwitcher(width, height) {
     if (!panel) return true;
     if (!quickSwitcherOpen || miniModeActive) return showPanel(panel, false);
 
-    const w = clamp(quickSwitcherSize.w, 1, Math.max(1, width - QUICK_SWITCHER_MARGIN * 2));
+    const w = RivageUI.clamp(quickSwitcherSize.w, 1, Math.max(1, width - QUICK_SWITCHER_MARGIN * 2));
     const y = Math.round(height * QUICK_SWITCHER_TOP_FRACTION);
-    const h = clamp(quickSwitcherSize.h, 1, Math.max(1, height - y - QUICK_SWITCHER_MARGIN));
+    const h = RivageUI.clamp(quickSwitcherSize.h, 1, Math.max(1, height - y - QUICK_SWITCHER_MARGIN));
     const x = Math.round((width - w) / 2);
     if (!preparePanel(panel)) return false;
     try {
@@ -783,7 +779,7 @@ function getTopBarHeight() {
     const availableHeight = getAvailableHeight();
     if (availableHeight <= 0) return 0;
 
-    return clamp(
+    return RivageUI.clamp(
         preferredTopBarHeight,
         getMinimumTopBarHeight(),
         getMaximumTopBarHeight()
@@ -826,7 +822,7 @@ function resetMeasureState(hasPanel) {
 function getTopButtonsWidth(width, hasPanel) {
     if (!hasPanel) return 0;
 
-    return clamp(
+    return RivageUI.clamp(
         Math.round(topButtonsWidth),
         0,
         Math.min(
@@ -1089,7 +1085,7 @@ function on_mouse_move(x, y) {
         return;
     }
 
-    const nextTopBarHeight = clamp(
+    const nextTopBarHeight = RivageUI.clamp(
         Math.round(y),
         getMinimumTopBarHeight(),
         getMaximumTopBarHeight()

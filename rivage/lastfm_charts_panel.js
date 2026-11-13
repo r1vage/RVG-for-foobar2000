@@ -42,6 +42,7 @@ var CACHE_FILE = CACHE_DIR + 'api_responses_v1.json';
 var CACHE_VERSION = 1;
 var CACHE_MAX_ENTRIES = 80;
 var CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+var REQUEST_TIMEOUT_MS = 20000;
 
 function trimText(value) {
     return String(value == null ? '' : value).replace(/^\s+|\s+$/g, '');
@@ -573,6 +574,13 @@ function requestLastfm(context, method, params) {
     try {
         taskId = utils.HTTPRequestAsync(0, url, headers);
         taskContexts[String(taskId)] = context;
+        // The host may never answer a request; give up so the section does not load forever.
+        window.SetTimeout(function () {
+            if (taskContexts[String(taskId)] !== context) return;
+            delete taskContexts[String(taskId)];
+            if (context.token !== fetchToken) return;
+            if (!useCachedFallback(context)) failSection(context.section, 'No response after ' + (REQUEST_TIMEOUT_MS / 1000) + ' s');
+        }, REQUEST_TIMEOUT_MS);
     } catch (e) {
         if (!useCachedFallback(context)) failSection(context.section, 'Could not start request.');
     }

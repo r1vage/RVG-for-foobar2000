@@ -80,16 +80,12 @@ const dividerHighlight = DividerHighlight.create({
 
 window.EraseOnRepaint = false;
 
-function clamp(value, minimum, maximum) {
-    return Math.max(minimum, Math.min(maximum, value));
-}
-
 function ratioToStoredValue(ratio) {
-    return Math.round(clamp(ratio, 0, 1) * RATIO_SCALE);
+    return Math.round(RivageUI.clamp(ratio, 0, 1) * RATIO_SCALE);
 }
 
 function storedValueToRatio(value) {
-    return clamp(value / RATIO_SCALE, 0, 1);
+    return RivageUI.clamp(value / RATIO_SCALE, 0, 1);
 }
 
 function readSavedPresetsState() {
@@ -103,7 +99,7 @@ function readSavedPresetsState() {
 
     // Older builds stored the ratio directly; rewrite it once in fixed-point form.
     if (numericValue >= 0 && numericValue <= 1) {
-        return { ratio: clamp(numericValue, 0, 1), needsWrite: true };
+        return { ratio: RivageUI.clamp(numericValue, 0, 1), needsWrite: true };
     }
 
     return { ratio: storedValueToRatio(Math.round(numericValue)), needsWrite: false };
@@ -258,7 +254,7 @@ function getPresetsWidth() {
         return 0;
     }
 
-    return clamp(
+    return RivageUI.clamp(
         Math.round(availableWidth * preferredPresetsRatio),
         getMinimumPresetsWidth(),
         getMaximumPresetsWidth()
@@ -445,7 +441,7 @@ function updatePreferredRatio(dividerX) {
         return false;
     }
 
-    const presetsWidth = clamp(
+    const presetsWidth = RivageUI.clamp(
         Math.round(presetsOnRight() ? availableWidth - dividerX : dividerX),
         getMinimumPresetsWidth(),
         getMaximumPresetsWidth()
@@ -455,7 +451,7 @@ function updatePreferredRatio(dividerX) {
         return false;
     }
 
-    preferredPresetsRatio = clamp(presetsWidth / availableWidth, 0, 1);
+    preferredPresetsRatio = RivageUI.clamp(presetsWidth / availableWidth, 0, 1);
     layoutDuringDrag();
     repaintDivider();
     return true;

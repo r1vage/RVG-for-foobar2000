@@ -44,12 +44,6 @@ var MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep
 var WEEKDAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 var WEEKDAYS_LONG = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
 
-function clamp(value, minimum, maximum) {
-    value = Number(value);
-    if (!isFinite(value)) value = minimum;
-    return Math.max(minimum, Math.min(maximum, value));
-}
-
 function formatInteger(value) {
     return String(Math.round(Number(value) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
@@ -665,7 +659,7 @@ function rebuildFonts(clearCache) {
     hostInfo = RivageUI.hostInfo();
     var family = hostInfo.fontFamily || 'Segoe UI';
     var hostSize = Number(hostInfo.scaleFontSize) || 12;
-    uiScale = clamp(hostSize / 12, 0.75, 1.75);
+    uiScale = RivageUI.clamp(hostSize / 12, 0.75, 1.75);
     var pt = function (points) { return Math.max(8, Math.round(points * hostSize / 12)); };
     fonts.body = RivageUI.font(family, pt(FONT_SIZE), 0);
     fonts.bodyBold = RivageUI.font(family, pt(FONT_SIZE), 1);
@@ -767,7 +761,7 @@ function layoutPanel() {
     if (!s || !index.eventTimes.length || message) {
         layout.blocks.push({ type: 'message', rect: RivageUI.rect(0, 0, width, scaleUi(130)), message: message });
         layout.contentHeight = scaleUi(130);
-        scrollY = clamp(scrollY, 0, maxScroll());
+        scrollY = RivageUI.clamp(scrollY, 0, maxScroll());
         return;
     }
 
@@ -809,7 +803,7 @@ function layoutPanel() {
         y = layoutColumns([rhythm], width, y);
     }
     layout.contentHeight = y;
-    scrollY = clamp(scrollY, 0, maxScroll());
+    scrollY = RivageUI.clamp(scrollY, 0, maxScroll());
 }
 
 // Albums played in the period after a year or more without a play, cached with
@@ -1557,8 +1551,8 @@ function paintTooltip(gr) {
     var y = mouseY + scaleUi(14);
     if (x + w > ww - scaleUi(4)) x = mouseX - w - scaleUi(10);
     if (y + h > wh - scaleUi(4)) y = mouseY - h - scaleUi(10);
-    x = clamp(x, scaleUi(4), Math.max(scaleUi(4), ww - w - scaleUi(4)));
-    y = clamp(y, scaleUi(4), Math.max(scaleUi(4), wh - h - scaleUi(4)));
+    x = RivageUI.clamp(x, scaleUi(4), Math.max(scaleUi(4), ww - w - scaleUi(4)));
+    y = RivageUI.clamp(y, scaleUi(4), Math.max(scaleUi(4), wh - h - scaleUi(4)));
     painter.tooltipBox(gr, RivageUI.rect(x, y, w, h), lines, fonts.tooltip,
         { lineHeight: 17, paddingX: 9, paddingY: 6, stroke: accentWithAlpha(120) });
 }
@@ -1835,7 +1829,7 @@ function on_mouse_leave() {
 }
 
 function on_mouse_wheel(step) {
-    var next = clamp(scrollY - step * scaleUi(ROW) * 3, 0, maxScroll());
+    var next = RivageUI.clamp(scrollY - step * scaleUi(ROW) * 3, 0, maxScroll());
     if (next === scrollY) return;
     scrollY = next;
     hover = { row: null, cell: null, bar: null, chip: null };

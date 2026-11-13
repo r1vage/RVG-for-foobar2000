@@ -41,10 +41,6 @@ var INITIAL_RETRY_COUNT = 8;
 var INITIAL_RETRY_DELAY = 250;
 var DEFAULT_UWP_ACCENT = 0xff0078d4;
 
-function clamp(value, minimum, maximum) {
-    return Math.max(minimum, Math.min(maximum, value));
-}
-
 function RGB(red, green, blue) {
     return RivageUI.rgb(red, green, blue);
 }

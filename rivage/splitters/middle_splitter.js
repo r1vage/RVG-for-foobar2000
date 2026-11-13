@@ -68,16 +68,12 @@ const dividerHighlight = DividerHighlight.create({
 
 window.EraseOnRepaint = false;
 
-function clamp(value, minimum, maximum) {
-    return Math.max(minimum, Math.min(maximum, value));
-}
-
 function fractionToPercent(fraction) {
-    return Math.round(clamp(fraction, 0, 1) * 10000) / 100;
+    return Math.round(RivageUI.clamp(fraction, 0, 1) * 10000) / 100;
 }
 
 function percentToFraction(percent) {
-    return clamp(percent / 100, 0, 1);
+    return RivageUI.clamp(percent / 100, 0, 1);
 }
 
 function hostIsVisible() {
@@ -121,7 +117,7 @@ function readInitialState() {
         return {
             pixels: pixels,
             fraction: availableWidth > 0
-                ? clamp(pixels / availableWidth, 0.01, 0.99)
+                ? RivageUI.clamp(pixels / availableWidth, 0.01, 0.99)
                 : DEFAULT_LEFT_FRACTION,
             fractionPersisted: false
         };
@@ -130,7 +126,7 @@ function readInitialState() {
     return {
         pixels: DEFAULT_LEFT_WIDTH,
         fraction: availableWidth > 0
-            ? clamp(DEFAULT_LEFT_WIDTH / availableWidth, 0.01, 0.99)
+            ? RivageUI.clamp(DEFAULT_LEFT_WIDTH / availableWidth, 0.01, 0.99)
             : DEFAULT_LEFT_FRACTION,
         fractionPersisted: false
     };
@@ -254,7 +250,7 @@ function getLeftWidth() {
         return 0;
     }
 
-    return clamp(preferredLeftWidth, getMinimumLeftWidth(), getMaximumLeftWidth());
+    return RivageUI.clamp(preferredLeftWidth, getMinimumLeftWidth(), getMaximumLeftWidth());
 }
 
 function getDividerX() {
@@ -440,7 +436,7 @@ function on_mouse_move(x, y) {
         return;
     }
 
-    const nextLeftWidth = clamp(
+    const nextLeftWidth = RivageUI.clamp(
         Math.round(x),
         getMinimumLeftWidth(),
         getMaximumLeftWidth()
@@ -453,7 +449,7 @@ function on_mouse_move(x, y) {
     preferredLeftWidth = nextLeftWidth;
     const availableWidth = getAvailableWidth();
     if (availableWidth > 0) {
-        leftFraction = clamp(nextLeftWidth / availableWidth, 0, 1);
+        leftFraction = RivageUI.clamp(nextLeftWidth / availableWidth, 0, 1);
     }
 
     layoutDuringDrag();
@@ -492,7 +488,7 @@ function on_mouse_lbtn_dblclk(x, y) {
     preferredLeftWidth = DEFAULT_LEFT_WIDTH;
     const availableWidth = getAvailableWidth();
     leftFraction = availableWidth > 0
-        ? clamp(DEFAULT_LEFT_WIDTH / availableWidth, 0, 1)
+        ? RivageUI.clamp(DEFAULT_LEFT_WIDTH / availableWidth, 0, 1)
         : DEFAULT_LEFT_FRACTION;
 
     saveLayout();

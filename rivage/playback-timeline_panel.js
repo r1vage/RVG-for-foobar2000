@@ -43,12 +43,6 @@ var ONE_DAY = 24 * ONE_HOUR;
 var PILL_RADIUS = 8;
 
 
-function clamp(value, minimum, maximum) {
-    value = Number(value);
-    if (!isFinite(value)) value = minimum;
-    return Math.max(minimum, Math.min(maximum, value));
-}
-
 function pad2(value) {
     value = Math.floor(Math.abs(Number(value) || 0));
     return value < 10 ? '0' + value : String(value);
@@ -325,7 +319,7 @@ var settings = {
     ),
     rugStyle: loadRugStyle(),
     showStats: !!window.GetProperty('RVG Playback TimelineShow stats', true),
-    densitySmoothing: Math.round(clamp(window.GetProperty('RVG Playback TimelineDensity smoothing', 3), 0, 6))
+    densitySmoothing: Math.round(RivageUI.clamp(window.GetProperty('RVG Playback TimelineDensity smoothing', 3), 0, 6))
 };
 
 function getMySettings() {
@@ -470,7 +464,7 @@ function applyMySetting(settingId, value) {
         return;
     }
     if (settingId === 'densitySmoothing') {
-        next = Math.round(clamp(value, 0, 6));
+        next = Math.round(RivageUI.clamp(value, 0, 6));
         if (next === settings.densitySmoothing) return;
         saveSetting('Density smoothing', next);
         settings.densitySmoothing = next;
@@ -650,7 +644,7 @@ function rebuildFonts(clearCache) {
     hostInfo = RivageUI.hostInfo();
     family = hostInfo.fontFamily || 'Segoe UI';
     base = Math.max(9, Math.round(Number(hostInfo.scaleFontSize) || 12));
-    uiScale = clamp(base / 12, 0.75, 1.75);
+    uiScale = RivageUI.clamp(base / 12, 0.75, 1.75);
 
     fonts.title = RivageUI.font(family, Math.max(10, Math.round(base * 1.18)), 1);
     fonts.subtitle = RivageUI.font(family, Math.max(9, Math.round(base * 0.92)), 0);
@@ -900,7 +894,7 @@ function timeToX(time) {
 function xToTime(x) {
     var span = Math.max(1, view.end - view.start);
     if (layout.plot.w <= 0) return view.start;
-    return view.start + clamp((x - layout.plot.x) / layout.plot.w, 0, 1) * span;
+    return view.start + RivageUI.clamp((x - layout.plot.x) / layout.plot.w, 0, 1) * span;
 }
 
 function zoomAt(x, wheelStep) {
@@ -910,7 +904,7 @@ function zoomAt(x, wheelStep) {
     var oldSpan = Math.max(1, view.end - view.start);
     var factor = wheelStep > 0 ? 0.78 : 1.28;
     var minimumSpan = Math.min(fullSpan, Math.max(15 * ONE_MINUTE, fullSpan / 500));
-    var newSpan = clamp(oldSpan * factor, minimumSpan, fullSpan);
+    var newSpan = RivageUI.clamp(oldSpan * factor, minimumSpan, fullSpan);
     var anchor = xToTime(x);
     var ratio = (anchor - view.start) / oldSpan;
     var nextStart = anchor - newSpan * ratio;
@@ -1131,7 +1125,7 @@ function rebuildPlotCache() {
     for (i = firstVisible; i < lastVisible; i++) {
         if (settings.showDensity) {
             bin = Math.floor((events[i].time - view.start) / span * binCount);
-            bin = clamp(bin, 0, binCount - 1);
+            bin = RivageUI.clamp(bin, 0, binCount - 1);
             raw[bin]++;
         }
 
@@ -1668,8 +1662,8 @@ function paintHoverTooltip(gr) {
 
     if (x + tooltipW > ww - scaleUi(4)) x = lastMouseX - tooltipW - scaleUi(13);
     if (y + tooltipH > wh - scaleUi(4)) y = lastMouseY - tooltipH - scaleUi(13);
-    x = clamp(x, scaleUi(4), Math.max(scaleUi(4), ww - tooltipW - scaleUi(4)));
-    y = clamp(y, scaleUi(4), Math.max(scaleUi(4), wh - tooltipH - scaleUi(4)));
+    x = RivageUI.clamp(x, scaleUi(4), Math.max(scaleUi(4), ww - tooltipW - scaleUi(4)));
+    y = RivageUI.clamp(y, scaleUi(4), Math.max(scaleUi(4), wh - tooltipH - scaleUi(4)));
 
     painter.tooltipBox(
         gr,
@@ -1788,7 +1782,7 @@ function on_mouse_leave() {
 
 function on_mouse_wheel(step) {
     if (!RivageUI.pointInRect(lastMouseX, lastMouseY, layout.chart)) return false;
-    zoomAt(clamp(lastMouseX, layout.plot.x, layout.plot.x + layout.plot.w), step);
+    zoomAt(RivageUI.clamp(lastMouseX, layout.plot.x, layout.plot.x + layout.plot.w), step);
     return true;
 }
 

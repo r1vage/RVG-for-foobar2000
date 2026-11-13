@@ -459,7 +459,9 @@ var refreshTimer = window.SetInterval(function () {
     }
     refreshSchemas(refreshAfterHidden);
     refreshAfterHidden = false;
-}, 2000);
+// Edits here re-collect at once; this only catches changes made elsewhere. Each poll is
+// answered by every panel to every panel, so it stays slow.
+}, 5000);
 
 function on_script_unload() {
     scriptActive = false;
@@ -1352,7 +1354,8 @@ function doExportSettings() {
 
         showInfoDialog(
             "Exported " + totalSettings + " setting" + (totalSettings === 1 ? "" : "s") +
-                " across " + payload.panels.length + " panel" + (payload.panels.length === 1 ? "" : "s") + ".",
+                " across " + payload.panels.length + " panel" + (payload.panels.length === 1 ? "" : "s") +
+                ".\n\nThe file holds your API keys and contact info in plain text. Remove them before sharing it.",
             "RVG Settings \u2014 Export complete", path);
     });
 }
@@ -1369,7 +1372,7 @@ function parseImportPayload(text) {
 }
 
 function applyImportedSettings(payload) {
-    var applied = 0, i, j, panel, settingIds, id;
+    var applied = { settings: 0, panels: 0 }, i, j, panel, settingIds, id;
 
     for (i = 0; i < payload.panels.length; i++) {
         panel = payload.panels[i];
@@ -1378,7 +1381,11 @@ function applyImportedSettings(payload) {
         for (j = 0; j < settingIds.length; j++) {
             id = settingIds[j];
             SettingsRegistry.broadcastChange(panel.panelId, id, panel.settings[id]);
-            applied++;
+        }
+        // Only a loaded panel can take its settings; the rest go nowhere and are not counted.
+        if (findPanel(panel.panelId)) {
+            applied.settings += settingIds.length;
+            applied.panels++;
         }
     }
 
@@ -1430,9 +1437,10 @@ function doImportSettings() {
 
     applied = applyImportedSettings(payload);
     showInfoDialog(
-        "Imported " + applied + " setting" + (applied === 1 ? "" : "s") +
-            " across " + payload.panels.length + " panel" + (payload.panels.length === 1 ? "" : "s") +
-            ".\n\nPanels that are not currently loaded were skipped.",
+        "Imported " + applied.settings + " setting" + (applied.settings === 1 ? "" : "s") +
+            " across " + applied.panels + " panel" + (applied.panels === 1 ? "" : "s") +
+            ".\n\nPanels that are not currently loaded were skipped" +
+            (applied.panels < payload.panels.length ? ": " + (payload.panels.length - applied.panels) + " of " + payload.panels.length : "") + ".",
         "RVG Settings \u2014 Import complete", path);
 }
 

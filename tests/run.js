@@ -62,7 +62,7 @@ test('case, punctuation and accents do not stop a match; synced wins', () => {
 });
 
 // Runs load_lyrics_for_track with local lyrics and an online answer; returns what it did.
-function lyricsLoad(local, online, force) {
+function lyricsLoad(local, online, force, forceSave) {
     const log = [];
     const load = loadFunctions('lyrics_panel.js', ['load_lyrics_for_track'], 'load_lyrics_for_track', [
         'read_tag_lyrics', 'read_file_lyrics', 'fetch_online', 'apply_data', 'save_lyrics', 'set_state', 'STATE',
@@ -74,7 +74,7 @@ function lyricsLoad(local, online, force) {
         (handle, d) => log.push('save ' + d.id), () => log.push('state'), {}, true, {}, () => { }, () => ({}), () => 'key',
         () => 'handle', () => { }, () => true, () => { }
     ]);
-    load({}, force);
+    load({}, force, forceSave);
     return log.join(', ');
 }
 
@@ -92,6 +92,23 @@ test('fetched lyrics only get saved when there were none or they upgrade to sync
     assert.strictEqual(lyricsLoad(localSynced, null, true), 'show localSynced');
 });
 
+test('a forced save replaces lyrics but never synced with plain', () => {
+    const localSynced = { id: 'localSynced', synced: true, plain: 'x' };
+    const localPlain = { id: 'localPlain', synced: false, plain: 'x' };
+    assert.strictEqual(lyricsLoad(localSynced, { id: 'onlinePlain', synced: false }, true, true), 'show localSynced, show onlinePlain');
+    assert.strictEqual(lyricsLoad(localSynced, { id: 'onlineSynced', synced: true }, true, true), 'show localSynced, show onlineSynced, save onlineSynced');
+    assert.strictEqual(lyricsLoad(localPlain, { id: 'onlinePlain', synced: false }, true, true), 'show localPlain, show onlinePlain, save onlinePlain');
+});
+
+// ---- Last.fm ----
+
+const abbr = loadFunctions('lastfm_panel.js', ['group', 'abbr'], 'abbr');
+
+test('big counts round into the next unit instead of showing 1000 of the smaller one', () => {
+    assert.deepStrictEqual([9999, 950000, 999950, 1e6, 999950000, 1234567].map(abbr),
+        ['9 999', '950.0K', '1M', '1M', '1B', '1.2M']);
+});
+
 // ---- Tagger ----
 
 const sortForPairing = loadFunctions('musicbrainz_tagger.js', ['sortForPairing'], 'sortForPairing');
@@ -106,12 +123,122 @@ test('tagged tracks follow their disc and track numbers, not their paths', () =>
     assert.strictEqual(pairedPaths([['b', 1, 2], ['z', 1, 1], ['a', 2, 1]]), 'z b a');
 });
 
-const tagValues = loadFunctions('musicbrainz_tagger.js', ['cleanSpaces', 'rawValues', 'currentValues'], '{ raw: rawValues, clean: currentValues }');
+const cleanSpaces = loadFunctions('shared/panel_helpers.js', ['cleanSpaces'], 'cleanSpaces');
+const tagValues = loadFunctions('musicbrainz_tagger.js', ['rawValues', 'currentValues'], '{ raw: rawValues, clean: currentValues }', ['cleanSpaces'], [cleanSpaces]);
 
 test('undo keeps a tag value as stored while the diff compares it tidied', () => {
     const info = { MetaFind: () => 0, MetaValueCount: () => 2, MetaValue: (idx, i) => ['A  B', ''][i] };
     assert.deepStrictEqual(tagValues.raw(info, 'TITLE'), ['A  B']);
     assert.deepStrictEqual(tagValues.clean(info, 'TITLE'), ['A B']);
+});
+
+const buildWritePayloads = loadFunctions('musicbrainz_tagger.js', ['buildWritePayloads'], 'buildWritePayloads');
+
+test('each file gets its own tags, and undo clears a tag it did not have', () => {
+    // Paired order is the reverse of selection order: pair 0 is file 2.
+    const pairs = [{ srcIndex: 2 }, { srcIndex: 0 }, { srcIndex: 1 }];
+    const title = { perTrack: [
+        { tagName: 'TITLE', to: ['Third'], raw: ['old 3'], willChange: true },
+        { tagName: 'TITLE', to: ['First'], raw: [], willChange: true },
+        { tagName: 'TITLE', to: ['Second'], raw: ['Second'], willChange: false }
+    ] };
+    const artists = { perTrack: [
+        { tagName: 'ARTIST', to: ['A', 'B'], raw: ['A', 'B', 'C'], willChange: true },
+        { tagName: 'ARTIST', to: ['A'], raw: ['A'], willChange: false },
+        { tagName: 'ARTIST', to: ['A'], raw: ['A'], willChange: false }
+    ] };
+    const built = buildWritePayloads([title, artists], pairs, 3);
+    assert.deepStrictEqual(built.payload, [{ TITLE: 'First' }, {}, { TITLE: 'Third', ARTIST: ['A', 'B'] }]);
+    assert.deepStrictEqual(built.undoPayload, [{ TITLE: '' }, {}, { TITLE: 'old 3', ARTIST: ['A', 'B', 'C'] }]);
+});
+
+const newValuesFor = loadFunctions('musicbrainz_tagger.js',
+    ['joinCredit', 'joinCreditSort', 'creditIds', 'labelValues', 'formatReleaseDate', 'releaseTypes', 'mediaSummary', 'newValuesFor'],
+    'newValuesFor', ['cleanSpaces', 'dateStyle'], [cleanSpaces, 'year']);
+const field = (id) => ({ id: id });
+
+test('a release becomes tag values; a vinyl side letter never becomes the track number', () => {
+    const credit = [{ name: 'A', joinphrase: ' & ', artist: { id: 'a1', 'sort-name': 'A, The' } }, { artist: { id: 'b1', name: 'B' } }];
+    const medium = { position: 2, format: 'Vinyl', 'track-count': 6 };
+    const release = {
+        id: 'rel', title: ' Some  Album ', date: '1997-05-21', 'artist-credit': credit, media: [{}, medium],
+        'release-group': { id: 'rg', 'first-release-date': '1997-05-21', 'primary-type': 'Album', 'secondary-types': ['Live'] },
+        'label-info': [{ label: { name: 'L' }, 'catalog-number': 'C1' }, { label: { name: 'L' }, 'catalog-number': 'C2' }]
+    };
+    const mbTrack = { medium: medium, mediumIndex: 1, track: { id: 't', number: 'B2', position: 5, title: 'Song', recording: { id: 'r', 'artist-credit': credit } } };
+    const value = (id) => newValuesFor(field(id), release, mbTrack);
+
+    assert.deepStrictEqual(value('tracknumber'), ['5']);
+    assert.deepStrictEqual(value('discnumber'), ['2']);
+    assert.deepStrictEqual(value('totaltracks'), ['6']);
+    assert.deepStrictEqual(value('totaldiscs'), ['2']);
+    assert.deepStrictEqual(value('album'), ['Some Album']);
+    assert.deepStrictEqual(value('date'), ['1997'], 'year-only applies to Date');
+    assert.deepStrictEqual(value('originaldate'), ['1997-05-21'], 'and never to the original date');
+    assert.deepStrictEqual(value('artist'), ['A & B']);
+    assert.deepStrictEqual(value('artistsort'), ['A, The & B']);
+    assert.deepStrictEqual(value('musicbrainz_artistid'), ['a1', 'b1']);
+    assert.deepStrictEqual(value('label'), ['L']);
+    assert.deepStrictEqual(value('catalognumber'), ['C1', 'C2']);
+    assert.deepStrictEqual(value('releasetype'), ['album', 'live']);
+    assert.deepStrictEqual(newValuesFor(field('title'), release, null), [], 'no paired track, no per-track value');
+});
+
+// ---- Web request ----
+
+// Starts one XmlHttpGet.get against a fake XMLHTTP; returns the handles a test needs to drive it.
+function xmlHttpHarness(openThrows) {
+    const timers = new Map();
+    let nextId = 1;
+    const calls = [];
+    const http = {
+        aborted: 0, readyState: 0, status: 0, responseText: '',
+        open: () => { if (openThrows) throw new Error('no network'); },
+        setRequestHeader: () => { }, send: () => { }, abort: () => { http.aborted++; },
+        getResponseHeader: () => '7'
+    };
+    const window = {
+        SetTimeout: (fn) => { timers.set(nextId, fn); return nextId++; },
+        ClearTimeout: (id) => timers.delete(id)
+    };
+    const failure = { reporter: () => () => { } };
+    const api = new Function('fb', 'window', 'include', 'RivageFailure', 'ActiveXObject',
+        read('shared/xmlhttp_get.js') + '\nreturn XmlHttpGet;')({ ProfilePath: '' }, window, () => { }, failure, function () { return http; });
+    const cancel = api.get('url', { 'User-Agent': 'x' }, 15000, (status, body, retryAfter) => calls.push([status, body, retryAfter]));
+    const answer = (status, body) => { http.readyState = 4; http.status = status; http.responseText = body; http.onreadystatechange(); };
+    const timeOut = () => { for (const [id, fn] of [...timers]) { timers.delete(id); fn(); } };
+    return { http, calls, timers, cancel, answer, timeOut };
+}
+
+test('a web request answers exactly once, with the status, body and Retry-After', () => {
+    const h = xmlHttpHarness();
+    h.answer(200, 'body');
+    h.answer(200, 'again');
+    h.timeOut();
+    assert.deepStrictEqual(h.calls, [[200, 'body', '7']]);
+    assert.strictEqual(h.timers.size, 0, 'the timeout is cleared');
+});
+
+test('a web request that never answers fails once and is aborted', () => {
+    const h = xmlHttpHarness();
+    h.timeOut();
+    h.answer(200, 'late');
+    assert.deepStrictEqual(h.calls, [[0, null, '']]);
+    assert.strictEqual(h.http.aborted, 1);
+});
+
+test('a cancelled web request never answers', () => {
+    const h = xmlHttpHarness();
+    h.cancel();
+    h.answer(200, 'late');
+    h.timeOut();
+    assert.deepStrictEqual(h.calls, []);
+    assert.strictEqual(h.http.aborted, 1);
+});
+
+test('a web request that cannot start fails once', () => {
+    const h = xmlHttpHarness(true);
+    assert.deepStrictEqual(h.calls, [[0, null, '']]);
 });
 
 // ---- Live shows ----

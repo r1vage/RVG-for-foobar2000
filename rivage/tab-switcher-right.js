@@ -149,20 +149,16 @@ AlbumAccentEngine.FIXED_ACCENT = DEFAULT_UWP_ACCENT;
 
 var tabs = [];
 
-function clamp(value, minimum, maximum) {
-    return Math.max(minimum, Math.min(maximum, value));
-}
-
 function normaliseMicaBlurRadius(value) {
     value = Number(value);
     if (!isFinite(value)) value = 70;
-    return Math.round(clamp(value, 8, 96));
+    return Math.round(RivageUI.clamp(value, 8, 96));
 }
 
 function normaliseMicaTintStrength(value) {
     value = Number(value);
     if (!isFinite(value)) value = 62;
-    return Math.round(clamp(value, 35, 95));
+    return Math.round(RivageUI.clamp(value, 35, 95));
 }
 
 function normaliseMicaNoise(value) {
@@ -355,7 +351,7 @@ function maximumScrollX() {
 }
 
 function clampScroll() {
-    scrollX = clamp(Math.round(scrollX), 0, maximumScrollX());
+    scrollX = RivageUI.clamp(Math.round(scrollX), 0, maximumScrollX());
 }
 
 function ensureTabVisible(index) {
@@ -1317,7 +1313,7 @@ function scanChildPanels() {
 
         var restored = findIndexByKey(previousKey);
         if (restored < 0) restored = findIndexByKey(savedActiveKey);
-        if (restored < 0) restored = clamp(activeIndex, 0, Math.max(0, tabs.length - 1));
+        if (restored < 0) restored = RivageUI.clamp(activeIndex, 0, Math.max(0, tabs.length - 1));
         activeIndex = restored;
 
         if (!tabs.length) {
@@ -1856,7 +1852,7 @@ function promptTabBarHeight() {
         return; // dialog was cancelled
     }
 
-    var value = clamp(parseInt(input, 10), TabBarStyle.MIN_HEIGHT, TabBarStyle.MAX_HEIGHT);
+    var value = RivageUI.clamp(parseInt(input, 10), TabBarStyle.MIN_HEIGHT, TabBarStyle.MAX_HEIGHT);
     if (isNaN(value)) {
         return;
     }

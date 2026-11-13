@@ -13,8 +13,9 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\mica_backdrop.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\cache_protocol.js");
 include(fb.ProfilePath + "jsplitter\\rivage\\shared\\musicbrainz_gate.js");
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\serial_request_queue.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\panel_helpers.js');
 
-const PANEL_VERSION = '1.4.0';
+const PANEL_VERSION = '1.4.1';
 
 window.DefineScript(RivageUI.copy.popupTitle('MusicBrainz tagger'), {
     author: 'RivaGe',
@@ -138,15 +139,6 @@ let FIELD_H = 42;
 let NOTE_H = 38;
 let FOOTER_H = 48;
 
-function clamp(value, min, max) {
-    return Math.max(min, Math.min(max, value));
-}
-
-function normalizeAccentMode(value) {
-    const mode = String(value || '').toLowerCase();
-    return mode === 'fixed' || mode === 'host' ? mode : 'shared';
-}
-
 function normalizeTagStyle(value) {
     const style = String(value || '').toLowerCase();
     return style === 'foobar' || style === 'picard' ? style : 'auto';
@@ -157,7 +149,7 @@ function normalizeDateStyle(value) {
 }
 
 let contactInfo = String(window.GetProperty(PROP + 'Contact info', ''));
-let searchLimit = clamp(Math.round(Number(window.GetProperty(PROP + 'Search limit', 12)) || 12), 5, 40);
+let searchLimit = RivageUI.clamp(Math.round(Number(window.GetProperty(PROP + 'Search limit', 12)) || 12), 5, 40);
 let autoSearch = !!window.GetProperty(PROP + 'Auto search', false);
 let searchTerms = null;
 let tagStyle = normalizeTagStyle(window.GetProperty(PROP + 'Tag name style', 'auto'));
@@ -216,7 +208,6 @@ const requests = SerialRequestQueue.create({
     },
     onFailure: handleRequestFailure
 });
-let networkDebug = { state: 'idle', kind: '', at: 0, httpStatus: 0, detail: '' };
 
 let cache = null;
 let cacheDirty = false;
@@ -232,55 +223,6 @@ const tfTitle = fb.TitleFormat('%title%');
 
 function scaleUi(value) {
     return Math.max(1, Math.round(Number(value || 0) * uiScale));
-}
-
-function cleanSpaces(value) {
-    return String(value || '').replace(/\s+/g, ' ').trim();
-}
-
-function plural(n, singular, pluralForm) {
-    return n + ' ' + (n === 1 ? singular : (pluralForm || singular + 's'));
-}
-
-function safeJson(text) {
-    try {
-        return JSON.parse(text);
-    } catch (e) {
-        return null;
-    }
-}
-
-function clearTimer(timerId) {
-    if (timerId) window.ClearTimeout(timerId);
-}
-
-function debugSnippet(value, maxLength) {
-    const max = Math.max(40, Number(maxLength || 220));
-    const text = String(value || '').replace(/\s+/g, ' ').trim();
-    return text.length > max ? text.substring(0, max - 3) + '...' : text;
-}
-
-function debugDateTime(value) {
-    const time = Number(value || 0);
-    if (!(time > 0)) return 'never';
-    const d = new Date(time);
-    function two(n) { return String(n).padStart(2, '0'); }
-    return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate()) +
-        ' ' + two(d.getHours()) + ':' + two(d.getMinutes());
-}
-
-function setNetworkDebug(state, kind, detail, httpStatus) {
-    networkDebug = {
-        state: String(state || 'idle'),
-        kind: String(kind || ''),
-        at: Date.now(),
-        httpStatus: Number(httpStatus || 0),
-        detail: debugSnippet(detail, 240)
-    };
-}
-
-function isUuid(value) {
-    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || '').trim());
 }
 
 function firstUuid(value) {
@@ -908,7 +850,8 @@ function newValuesFor(def, release, mbTrack) {
         case 'title': return [cleanSpaces(track.title || recording.title)];
         case 'artist': return [joinCredit(credit)];
         case 'artistsort': return [joinCreditSort(credit)];
-        case 'tracknumber': return [String(track.number || track.position || '')];
+        // position is always 1, 2, 3...; number is what the sleeve prints ("A1" on vinyl).
+        case 'tracknumber': return [String(track.position || track.number || '')];
         case 'totaltracks': return [String(medium['track-count'] || '')];
         case 'discnumber': return [String(medium.position || mbTrack.mediumIndex + 1)];
         case 'media': return [String(medium.format || '')];
@@ -1061,26 +1004,12 @@ function pendingTrackCount() {
     return touched.size;
 }
 
-function performWrite() {
-    const list = writableFields();
-    if (!list.length || !selection) return;
-
-    const valueCount = pendingValueCount();
-    const trackCount = pendingTrackCount();
-    const message = 'Write ' + plural(valueCount, 'tag value') + ' to ' + plural(trackCount, 'file') + '?\n\n' +
-        'This edits the files on disk. Undo is available from the right-click menu until this panel reloads.';
-    let answer = MB_YES;
-    try {
-        answer = utils.MessageBox(message, 'RVG MusicBrainz tagger', MB_BUTTONS_YESNO, MB_ICON_WARNING);
-    } catch (e) {
-        reportFailure('the confirmation dialog could not be shown', e);
-        return;
-    }
-    if (Number(answer) !== MB_YES) return;
-
+// One object per file in selection order (perTrack[p] belongs to file pairs[p].srcIndex),
+// plus the undo objects that put back what each file held before.
+function buildWritePayloads(list, pairs, fileCount) {
     const payload = [];
     const undoPayload = [];
-    for (let i = 0; i < selection.count; i++) {
+    for (let i = 0; i < fileCount; i++) {
         payload.push({});
         undoPayload.push({});
     }
@@ -1099,6 +1028,29 @@ function performWrite() {
                 : (entry.raw.length === 1 ? entry.raw[0] : entry.raw);
         }
     }
+    return { payload: payload, undoPayload: undoPayload };
+}
+
+function performWrite() {
+    const list = writableFields();
+    if (!list.length || !selection) return;
+
+    const valueCount = pendingValueCount();
+    const trackCount = pendingTrackCount();
+    const message = 'Write ' + plural(valueCount, 'tag value') + ' to ' + plural(trackCount, 'file') + '?\n\n' +
+        'This edits the files on disk. Undo is available from the right-click menu until this panel reloads.';
+    let answer = MB_YES;
+    try {
+        answer = utils.MessageBox(message, 'RVG MusicBrainz tagger', MB_BUTTONS_YESNO, MB_ICON_WARNING);
+    } catch (e) {
+        reportFailure('the confirmation dialog could not be shown', e);
+        return;
+    }
+    if (Number(answer) !== MB_YES) return;
+
+    const built = buildWritePayloads(list, pairs, selection.count);
+    const payload = built.payload;
+    const undoPayload = built.undoPayload;
 
     try {
         selection.handles.UpdateFileInfoFromJSON(JSON.stringify(payload));
@@ -1145,7 +1097,7 @@ function performUndo() {
 }
 
 function updateLayoutMetrics(baseSize) {
-    uiScale = clamp(Number(baseSize || 12) / 12, 0.82, 1.8);
+    uiScale = RivageUI.clamp(Number(baseSize || 12) / 12, 0.82, 1.8);
     PAD = scaleUi(14);
     HEADER_H = scaleUi(88);
     SECTION_H = scaleUi(28);
@@ -1313,7 +1265,7 @@ function reflowRows() {
         top += displayRows[i].height;
     }
     contentHeight = top;
-    scrollY = clamp(scrollY, 0, maxScroll());
+    scrollY = RivageUI.clamp(scrollY, 0, maxScroll());
 }
 
 function rowIndexAtLocalY(localY) {
@@ -1646,7 +1598,7 @@ function syncHoverFromPointer(repaint) {
 function on_size() {
     ww = window.Width;
     wh = window.Height;
-    scrollY = clamp(scrollY, 0, maxScroll());
+    scrollY = RivageUI.clamp(scrollY, 0, maxScroll());
     syncHoverFromPointer(false);
 }
 
@@ -1666,7 +1618,7 @@ function on_mouse_leave() {
 
 function on_mouse_wheel(step) {
     if (!maxScroll()) return;
-    scrollY = clamp(scrollY - step * FIELD_H * 2, 0, maxScroll());
+    scrollY = RivageUI.clamp(scrollY - step * FIELD_H * 2, 0, maxScroll());
     syncHoverFromPointer(false);
     window.Repaint();
 }
@@ -1930,13 +1882,6 @@ function describeTagNameDebug() {
     }).join(SEPARATOR);
 }
 
-function describeNetworkDebug() {
-    return networkDebug.state + (networkDebug.kind ? ' (' + networkDebug.kind + ')' : '') +
-        '; ' + debugDateTime(networkDebug.at) +
-        (networkDebug.httpStatus ? '; HTTP ' + networkDebug.httpStatus : '') +
-        (networkDebug.detail ? '; ' + networkDebug.detail : '');
-}
-
 function describeCacheDebug() {
     const store = loadCacheFile();
     return plural(Object.keys(store.releases).length, 'cached release');
@@ -1994,7 +1939,7 @@ function getTaggerSettings() {
         { id: 'debugSelection', label: 'Current selection', type: 'info', value: describeSelectionDebug(), section: 'Diagnostics' },
         { id: 'debugTagNames', label: 'Dual-spelling tag names', type: 'info', value: describeTagNameDebug(), section: 'Diagnostics' },
         { id: 'debugStatus', label: 'Current panel status', type: 'info', value: statusText + (statusIsError ? ' [error]' : ''), section: 'Diagnostics' },
-        { id: 'debugNetwork', label: 'Network', type: 'info', value: describeNetworkDebug(), section: 'Diagnostics' },
+        { id: 'debugNetwork', label: 'Network', type: 'info', value: describeLastRequest(), section: 'Diagnostics' },
         { id: 'debugCache', label: 'Release cache', type: 'info', value: describeCacheDebug(), section: 'Diagnostics' },
         { id: 'debugLastWrite', label: 'Last write', type: 'info', value: lastWriteSummary, section: 'Diagnostics' },
         { id: 'debugCachePath', label: 'Cache location', type: 'info', value: CACHE_DIR, section: 'Diagnostics' }
@@ -2012,7 +1957,7 @@ function applyTaggerSetting(settingId, value) {
             contactInfo = next;
             return;
         case 'searchLimit':
-            next = clamp(Math.round(Number(value) || 12), 5, 40);
+            next = RivageUI.clamp(Math.round(Number(value) || 12), 5, 40);
             if (next === searchLimit) return;
             window.SetProperty(PROP + 'Search limit', next);
             searchLimit = next;

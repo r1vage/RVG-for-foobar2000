@@ -131,12 +131,6 @@ function clone(value) {
     }
 }
 
-function clamp(value, min, max) {
-    value = Number(value);
-    if (!isFinite(value)) value = min;
-    return Math.max(min, Math.min(max, value));
-}
-
 // Native child enumeration and caption-derived metadata are shared across the root hosts.
 function trimText(value) {
     return PanelHostKit.trimText(value);
@@ -203,11 +197,11 @@ function micaLineHeight() {
 }
 
 var frameStyle = normaliseFrameStyle(window.GetProperty(PROPERTY_FRAME_STYLE, FRAME_STYLE_WINDOW));
-var outerPaddingPt = Math.round(clamp(window.GetProperty(PROPERTY_OUTER_PADDING, 6), 0, 32));
-var panelGapPt = Math.round(clamp(window.GetProperty(PROPERTY_PANEL_GAP, 8), 0, 40));
-var titleHeightPt = Math.round(clamp(window.GetProperty(PROPERTY_TITLE_HEIGHT, 24), 16, 48));
+var outerPaddingPt = Math.round(RivageUI.clamp(window.GetProperty(PROPERTY_OUTER_PADDING, 6), 0, 32));
+var panelGapPt = Math.round(RivageUI.clamp(window.GetProperty(PROPERTY_PANEL_GAP, 8), 0, 40));
+var titleHeightPt = Math.round(RivageUI.clamp(window.GetProperty(PROPERTY_TITLE_HEIGHT, 24), 16, 48));
 var showWindowTitles = !!window.GetProperty(PROPERTY_SHOW_WINDOW_TITLES, true);
-var cornerRadiusPt = Math.round(clamp(window.GetProperty(PROPERTY_CORNER_RADIUS, 4), 0, 16));
+var cornerRadiusPt = Math.round(RivageUI.clamp(window.GetProperty(PROPERTY_CORNER_RADIUS, 4), 0, 16));
 var accentLineEnabled = !!window.GetProperty(PROPERTY_ACCENT_LINE, true);
 var frameRects = [];
 var frameFont = null;
@@ -705,7 +699,7 @@ function rebalanceOneWidth(index, requested) {
     }
 
     maxWidth = maxWidthForActiveCount(activeCount);
-    target = roundWidth(clamp(requested, MIN_SLOT_WIDTH, maxWidth));
+    target = roundWidth(RivageUI.clamp(requested, MIN_SLOT_WIDTH, maxWidth));
     remaining = 100 - target;
     extraTotal = remaining - MIN_SLOT_WIDTH * (activeCount - 1);
 
@@ -1360,7 +1354,7 @@ function updateDrag(x) {
 
     if (!drag) return false;
 
-    leftWidth = roundWidth(clamp(
+    leftWidth = roundWidth(RivageUI.clamp(
         (x - drag.grabOffset - drag.leftEdge) * 100 / drag.contentW,
         MIN_SLOT_WIDTH,
         drag.totalWidth - MIN_SLOT_WIDTH
@@ -1890,22 +1884,22 @@ function applyMySetting(settingId, value) {
         requestWork(false, true);
         break;
     case 'outerPadding':
-        outerPaddingPt = Math.round(clamp(value, 0, 32));
+        outerPaddingPt = Math.round(RivageUI.clamp(value, 0, 32));
         window.SetProperty(PROPERTY_OUTER_PADDING, outerPaddingPt);
         requestWork(false, true);
         break;
     case 'panelGap':
-        panelGapPt = Math.round(clamp(value, 0, 40));
+        panelGapPt = Math.round(RivageUI.clamp(value, 0, 40));
         window.SetProperty(PROPERTY_PANEL_GAP, panelGapPt);
         requestWork(false, true);
         break;
     case 'titleHeight':
-        titleHeightPt = Math.round(clamp(value, 16, 48));
+        titleHeightPt = Math.round(RivageUI.clamp(value, 16, 48));
         window.SetProperty(PROPERTY_TITLE_HEIGHT, titleHeightPt);
         requestWork(false, true);
         break;
     case 'cornerRadius':
-        cornerRadiusPt = Math.round(clamp(value, 0, 16));
+        cornerRadiusPt = Math.round(RivageUI.clamp(value, 0, 16));
         window.SetProperty(PROPERTY_CORNER_RADIUS, cornerRadiusPt);
         requestWork(false, true);
         break;

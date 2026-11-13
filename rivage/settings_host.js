@@ -598,10 +598,6 @@ function requestRailMeasureUntilAnswered() {
     }
 }
 
-function clamp(value, minimum, maximum) {
-    return Math.max(minimum, Math.min(maximum, value));
-}
-
 // Only a real divider when both slots are actually populated - a single full-
 // area panel (one slot empty/disabled) has nothing to drag between.
 function currentSplitOptions() {
@@ -1298,7 +1294,7 @@ function on_mouse_move(x, y) {
 
     var dividerHeight = getDividerHeight();
     var availableHeight = Math.max(1, panelHeight - dividerHeight);
-    var nextRatio = clamp(y / availableHeight, MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
+    var nextRatio = RivageUI.clamp(y / availableHeight, MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
 
     if (nextRatio === splitRatio) return;
 

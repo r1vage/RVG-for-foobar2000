@@ -16,6 +16,7 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\cache_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\musicbrainz_gate.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\serial_request_queue.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\panel_helpers.js');
 
 const PANEL_VERSION = '3.5.0';
 
@@ -308,9 +309,6 @@ let calendarPipelineDebug = {
     raw: 0, invalid: 0, duplicate: 0, typeRejected: 0, dateRejected: 0,
     artistRejected: 0, variousArtistsRejected: 0
 };
-let lastNetworkDebug = {
-    state: 'idle', kind: '', at: 0, httpStatus: 0, detail: ''
-};
 
 // -----------------------------------------------------------------------------
 // General helpers
@@ -345,15 +343,6 @@ function resetArtistPipelineDebug(filtersApplied) {
     };
 }
 
-function debugDateTime(value) {
-    const time = Number(value || 0);
-    if (!(time > 0)) return 'never';
-    const d = new Date(time);
-    function two(n) { return String(n).padStart(2, '0'); }
-    return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate()) +
-        ' ' + two(d.getHours()) + ':' + two(d.getMinutes()) + ':' + two(d.getSeconds());
-}
-
 function debugDuration(ms) {
     const value = Math.max(0, Number(ms || 0));
     const minutes = Math.floor(value / 60000);
@@ -363,22 +352,6 @@ function debugDuration(ms) {
     if (hours < 48) return hours + ' h ' + (minutes % 60) + ' min';
     const days = Math.floor(hours / 24);
     return days + ' d ' + (hours % 24) + ' h';
-}
-
-function debugSnippet(value, maxLength) {
-    const max = Math.max(40, Number(maxLength || 220));
-    const text = String(value || '').replace(/\s+/g, ' ').trim();
-    return text.length > max ? text.substring(0, max - 3) + '...' : text;
-}
-
-function setNetworkDebug(state, kind, detail, httpStatus) {
-    lastNetworkDebug = {
-        state: String(state || 'idle'),
-        kind: String(kind || ''),
-        at: Date.now(),
-        httpStatus: Number(httpStatus || 0),
-        detail: debugSnippet(detail, 240)
-    };
 }
 
 function defaultReleaseTypeFilters() {
@@ -444,11 +417,6 @@ function selectedPrimaryTypeValues() {
     return values;
 }
 
-function normalizeAccentMode(value) {
-    const text = String(value || '').toLowerCase();
-    return text === 'fixed' || text === 'host' ? text : 'shared';
-}
-
 // View mode is one of 'artist' (Catch Up tab, unchanged), 'discography'
 // (RELEASES tab: complete compact list grouped by type) or 'calendar'.
 // The internal value 'discography' is retained for backward compatibility
@@ -479,10 +447,6 @@ function normalizeHorizon(value) {
     return 365;
 }
 
-function isUuid(value) {
-    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || '').trim());
-}
-
 function extractUuid(value) {
     const match = String(value || '').match(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i);
     return match ? match[0].toLowerCase() : '';
@@ -501,10 +465,6 @@ function extractUuids(value) {
         }
     }
     return result;
-}
-
-function cleanSpaces(value) {
-    return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
 function normalizeBasic(value) {
@@ -577,22 +537,6 @@ function blend(c1, c2, ratio) {
     return RivageUI.mix(c1, c2, ratio);
 }
 
-function clamp(value, min, max) {
-    return Math.max(min, Math.min(max, value));
-}
-
-function plural(n, singular, pluralForm) {
-    return n + ' ' + (n === 1 ? singular : (pluralForm || singular + 's'));
-}
-
-function safeJson(text) {
-    try {
-        return JSON.parse(text);
-    } catch (e) {
-        return null;
-    }
-}
-
 function getSourceHandle() {
     return TrackContext.getHandle();
 }
@@ -604,10 +548,6 @@ function evalWithHandle(tfo, handle) {
     } catch (e) {
         return '';
     }
-}
-
-function clearTimer(timerId) {
-    if (timerId) window.ClearTimeout(timerId);
 }
 
 function dateToIsoLocal(date) {
@@ -663,7 +603,7 @@ function requestedAccent() {
 }
 
 function updateLayoutMetrics(baseSize) {
-    uiScale = clamp(Number(baseSize || 12) / 12, 0.82, 1.8);
+    uiScale = RivageUI.clamp(Number(baseSize || 12) / 12, 0.82, 1.8);
     PAD = scaleUi(14);
     HEADER_H = scaleUi(76);
     HEADER_GAP = scaleUi(8);
@@ -1096,7 +1036,7 @@ function resetDisplayRows(rows) {
         y += displayRows[i].height;
     }
     contentHeight = y;
-    scrollY = clamp(scrollY, 0, maxScroll());
+    scrollY = RivageUI.clamp(scrollY, 0, maxScroll());
 
     // Preserve the hover under a stationary pointer after metadata refreshes,
     // library rebuilds and row reflows. Resetting it unconditionally caused
@@ -1434,7 +1374,7 @@ function calendarDateInfo(value, windowBounds) {
 
 function applyCalendarAnchor() {
     if (viewMode !== 'calendar' || !calendarAnchorPending || !calendarAnchorRow) return;
-    scrollY = clamp(calendarAnchorRow.top, 0, maxScroll());
+    scrollY = RivageUI.clamp(calendarAnchorRow.top, 0, maxScroll());
     syncHoverFromPointer(false);
 }
 
@@ -2117,11 +2057,11 @@ function describeNetworkDebug() {
     text += 'Pacing: ' + REQUEST_INTERVAL_MS + ' ms; transient failures: ' + consecutiveTransientErrors +
         (lastTransientStatus ? ' (last HTTP ' + lastTransientStatus + ')' : '') +
         '; last success: ' + (lastSuccessfulRequestAt ? debugDateTime(lastSuccessfulRequestAt) : 'none') + '. ';
-    if (lastNetworkDebug.at) {
-        text += 'Last: ' + lastNetworkDebug.state + (lastNetworkDebug.kind ? ' (' + lastNetworkDebug.kind + ')' : '') +
-            (lastNetworkDebug.httpStatus ? ', HTTP ' + lastNetworkDebug.httpStatus : '') +
-            ' at ' + debugDateTime(lastNetworkDebug.at) +
-            (lastNetworkDebug.detail ? '; ' + lastNetworkDebug.detail : '') + '.';
+    if (networkDebug.at) {
+        text += 'Last: ' + networkDebug.state + (networkDebug.kind ? ' (' + networkDebug.kind + ')' : '') +
+            (networkDebug.httpStatus ? ', HTTP ' + networkDebug.httpStatus : '') +
+            ' at ' + debugDateTime(networkDebug.at) +
+            (networkDebug.detail ? '; ' + networkDebug.detail : '') + '.';
     } else {
         text += 'No network operation recorded yet.';
     }
@@ -2770,7 +2710,7 @@ function summaryLine() {
 function on_size() {
     ww = window.Width;
     wh = window.Height;
-    scrollY = clamp(scrollY, 0, maxScroll());
+    scrollY = RivageUI.clamp(scrollY, 0, maxScroll());
     applyCalendarAnchor();
     syncHoverFromPointer(false);
 }
@@ -3076,7 +3016,7 @@ function on_mouse_wheel(step) {
     if (!maxScroll()) return;
     calendarAnchorPending = false;
     const wheelDistance = viewMode === 'discography' ? RELEASE_ITEM_H * 4 : ITEM_H * 2;
-    scrollY = clamp(scrollY - step * wheelDistance, 0, maxScroll());
+    scrollY = RivageUI.clamp(scrollY - step * wheelDistance, 0, maxScroll());
     syncHoverFromPointer(false);
     window.Repaint();
 }
@@ -3318,7 +3258,7 @@ function applyDiscographySetting(settingId, value) {
             setCalendarLookback(Number(value));
             return;
         case 'cacheDays':
-            next = clamp(Math.round(Number(value) || 1), 1, 30);
+            next = RivageUI.clamp(Math.round(Number(value) || 1), 1, 30);
             if (next === cacheDays) return;
             window.SetProperty(PROP + 'Cache days', next);
             cacheDays = next;

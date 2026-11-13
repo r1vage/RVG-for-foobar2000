@@ -68,10 +68,6 @@ const dividerHighlight = DividerHighlight.create({
 
 window.EraseOnRepaint = false;
 
-function clamp(value, minimum, maximum) {
-    return Math.max(minimum, Math.min(maximum, value));
-}
-
 function readSavedBottomHeight() {
     let value = Number(window.GetProperty(BOTTOM_HEIGHT_PROPERTY, DEFAULT_BOTTOM_HEIGHT));
     if (!isFinite(value)) value = DEFAULT_BOTTOM_HEIGHT;
@@ -201,7 +197,7 @@ function getBottomHeight() {
     const availableHeight = getAvailableHeight();
     if (availableHeight <= 0) return 0;
 
-    return clamp(
+    return RivageUI.clamp(
         preferredBottomHeight,
         getMinimumBottomHeight(),
         getMaximumBottomHeight()
@@ -368,7 +364,7 @@ function layoutDuringDrag() {
 }
 
 function updatePreferredBottomHeight(dividerY) {
-    const nextBottomHeight = clamp(
+    const nextBottomHeight = RivageUI.clamp(
         Math.round(window.Height - getDividerHeight() - dividerY),
         getMinimumBottomHeight(),
         getMaximumBottomHeight()

@@ -63,10 +63,6 @@ var MIN_TAB_WIDTH = 84;
 var MAX_TAB_WIDTH = 220;
 var TAB_LIST_BUTTON_WIDTH = 36;
 
-function clamp(value, minimum, maximum) {
-    return Math.max(minimum, Math.min(maximum, value));
-}
-
 function RGB(red, green, blue) {
     return RivageUI.rgb(red, green, blue);
 }
@@ -368,7 +364,7 @@ function scanChildPanels(force) {
 
         var restored = findIndexByKey(previousKey);
         if (restored < 0) restored = findIndexByKey(savedActiveKey);
-        if (restored < 0) restored = clamp(activeIndex, 0, Math.max(0, tabs.length - 1));
+        if (restored < 0) restored = RivageUI.clamp(activeIndex, 0, Math.max(0, tabs.length - 1));
         activeIndex = restored;
 
         if (!tabs.length) {
@@ -454,7 +450,7 @@ function maximumScrollX() {
 }
 
 function clampScroll() {
-    scrollX = clamp(Math.round(scrollX), 0, maximumScrollX());
+    scrollX = RivageUI.clamp(Math.round(scrollX), 0, maximumScrollX());
 }
 
 function ensureTabVisible(index) {
@@ -999,7 +995,7 @@ function promptTabBarHeight() {
     var value = parseInt(input, 10);
     if (!isFinite(value)) return;
 
-    TabBarStyle.setAndSync('tabBarHeight', clamp(value, TabBarStyle.MIN_HEIGHT, TabBarStyle.MAX_HEIGHT));
+    TabBarStyle.setAndSync('tabBarHeight', RivageUI.clamp(value, TabBarStyle.MIN_HEIGHT, TabBarStyle.MAX_HEIGHT));
 }
 
 // Settings actions that open a modal remain owned by tab-switcher-right.js;

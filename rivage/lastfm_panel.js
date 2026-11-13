@@ -12,6 +12,7 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\library_actions_v2.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\lastfm_credentials_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\xmlhttp_get.js');
 
 window.DefineScript('RVG Last.fm', { author: 'RivaGe', version: '2.9.0', features: { drag_n_drop: false } });
 
@@ -438,7 +439,6 @@ function invalidate_track_requests() {
 	request_token++;
 	cancel_requests('track');
 }
-function http_noop() { }
 function api(method, params, token, done) {
 	var url = BASE_URL + API_KEY + '&method=' + method;
 	for (var k in params) {
@@ -449,71 +449,25 @@ function api(method, params, token, done) {
 
 	var request_id = ++request_serial;
 	var scope = token === null || token === undefined ? 'list' : 'track';
-	var http = null;
-	var watchdog = null;
-	var finished = false;
-
-	function clear_watchdog() {
-		var id = watchdog;
-		watchdog = null;
-		if (id === null) return;
-		try { window.ClearTimeout(id); } catch (e) { }
-	}
-	// Clear the COM callback before releasing/aborting to break the XMLHTTP <-> JS cycle.
-	function release_http() {
-		if (!http) return null;
-		var dead = http;
-		http = null;
-		// The COM property rejects null (type mismatch); an empty top-level function holds no request state.
-		try { dead.onreadystatechange = http_noop; } catch (e) { report_failure('the XMLHTTP callback could not be released', e); }
-		return dead;
-	}
-	function unregister() {
+	// Registered before the request starts, so one that fails at once still unregisters.
+	var cancel_request = null;
+	active_requests[request_id] = {
+		scope: scope,
+		cancel: function () {
+			delete active_requests[request_id];
+			if (cancel_request) cancel_request();
+		}
+	};
+	cancel_request = XmlHttpGet.get(url, { 'User-Agent': 'foo_jsplitter_lastfm_panel' }, API_TIMEOUT_MS, function (status, body) {
 		delete active_requests[request_id];
-	}
-	function cancel() {
-		if (finished) return;
-		finished = true;
-		clear_watchdog();
-		unregister();
-		var dead = release_http();
-		if (dead) { try { dead.abort(); } catch (e) { } }
-	}
-	function finish(json) {
-		if (finished) return;
-		finished = true;
-		clear_watchdog();
-		unregister();
-		release_http();
 		if (!script_active) return;
 		if (scope == 'track' && token != request_token) return;
+		var json = null;
+		if (status == 200) {
+			try { json = JSON.parse(body); } catch (e) { report_failure('the Last.fm response was malformed', e); }
+		}
 		done(json);
-	}
-
-	active_requests[request_id] = { scope: scope, cancel: cancel };
-	try {
-		http = new ActiveXObject('Microsoft.XMLHTTP');
-		http.open('GET', url, true);
-		try { http.setRequestHeader('User-Agent', 'foo_jsplitter_lastfm_panel'); } catch (e) { }
-		http.onreadystatechange = function () {
-			if (!http || http.readyState != 4) return;
-			var json = null;
-			if (http.status == 200) {
-				try { json = JSON.parse(http.responseText); } catch (e) { report_failure('the Last.fm response was malformed', e); }
-			}
-			finish(json);
-		};
-		watchdog = window.SetTimeout(function () {
-			watchdog = null;
-			if (finished) return;
-			if (http) { try { http.abort(); } catch (e) { } }
-			finish(null);
-		}, API_TIMEOUT_MS);
-		http.send();
-	} catch (e) {
-		finish(null);
-	}
-	return request_id;
+	});
 }
 function num(v) {
 	if (v === undefined || v === null || v === '') return '0';
@@ -527,10 +481,10 @@ function group(s) {
 function abbr(v) {
 	var n = Number(('' + v).replace(/\s/g, ''));
 	if (!isFinite(n)) return '' + v;
-	if (n >= 1e9) return (Math.round(n / 1e8) / 10) + 'B';
-	if (n >= 1e6) return (Math.round(n / 1e5) / 10) + 'M';
+	// Move up a unit when rounding would show 1000 of the smaller one (999 950 -> 1M, not 1000.0K).
+	if (Math.round(n / 1e5) >= 1e4) return (Math.round(n / 1e8) / 10) + 'B';
+	if (Math.round(n / 1e2) >= 1e4) return (Math.round(n / 1e5) / 10) + 'M';
 	if (n >= 1e4) return (Math.round(n / 1e2) / 10).toFixed(1) + 'K'; // >=10k -> K
-	if (n >= 1e3) return group('' + n);
 	return group('' + n);
 }
 var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

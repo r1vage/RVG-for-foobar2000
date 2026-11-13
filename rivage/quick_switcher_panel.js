@@ -64,8 +64,6 @@ const GLYPH = {
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\report_failure.js');
 var reportFailure = RivageFailure.reporter('[RVG Quick switcher] ');
 
-function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
-
 // ---------------------------------------------------------------------------
 // Theme and metrics
 
@@ -101,7 +99,7 @@ function updateTheme(force) {
 
     if (force || key !== fontKey) {
         fontKey = key;
-        uiScale = clamp(size / 12, 0.82, 2);
+        uiScale = RivageUI.clamp(size / 12, 0.82, 2);
         RivageUI.clearFontCache();
         fonts.query = RivageUI.font(name, Math.round(size * 1.3), 0);
         fonts.title = RivageUI.font(name, Math.round(size * 1.08), 0);
@@ -1193,7 +1191,7 @@ function moveSelection(dir, page) {
 function editQuery(next, nextCaret) {
     selectAllPending = false;
     query = next;
-    caret = clamp(nextCaret, 0, query.length);
+    caret = RivageUI.clamp(nextCaret, 0, query.length);
     caretOn = true;
     refresh();
 }
@@ -1406,7 +1404,7 @@ function on_mouse_rbtn_up(x, y) {
 function on_mouse_wheel(step) {
     if (!open || actionsFor) return;
     const max = Math.max(0, contentHeight() - listHeight());
-    scrollY = clamp(scrollY - step * M.rowH * 2, 0, max);
+    scrollY = RivageUI.clamp(scrollY - step * M.rowH * 2, 0, max);
     hoverCover = null;
     lastMouse = { x: -1, y: -1 };
     window.RepaintRect(0, listTop(), ww, listHeight());

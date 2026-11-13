@@ -14,6 +14,7 @@ include(fb.ProfilePath + "jsplitter\\rivage\\shared\\visible_paint_work.js");
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\cache_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\serial_request_queue.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\panel_helpers.js');
 
 const PANEL_VERSION = '2.4.1';
 
@@ -112,16 +113,12 @@ function normalizeHorizon(value) {
 let ticketmasterApiKey = String(window.GetProperty(PROP + 'Ticketmaster API key', ''));
 let locationFilter = String(window.GetProperty(PROP + 'Location filter', ''));
 let horizonDays = normalizeHorizon(window.GetProperty(PROP + 'Horizon days', 365));
-let cacheDays = clamp(Math.round(Number(window.GetProperty(PROP + 'Cache days', 7)) || 7), 1, 60);
-let minimumTracks = clamp(Math.round(Number(window.GetProperty(PROP + 'Minimum tracks', 3)) || 1), 1, 50);
+let cacheDays = RivageUI.clamp(Math.round(Number(window.GetProperty(PROP + 'Cache days', 7)) || 7), 1, 60);
+let minimumTracks = RivageUI.clamp(Math.round(Number(window.GetProperty(PROP + 'Minimum tracks', 3)) || 1), 1, 50);
 let compactRows = !!window.GetProperty(PROP + 'Compact rows', false);
 let accentMode = String(window.GetProperty(PROP + 'Accent mode', 'shared'));
 let requireMbidMatch = !!window.GetProperty(PROP + 'Require MBID match', false);
 
-function normalizeAccentMode(value) {
-    const mode = String(value || '').toLowerCase();
-    return mode === 'fixed' || mode === 'host' ? mode : 'shared';
-}
 accentMode = normalizeAccentMode(accentMode);
 
 const tfLibraryArtist = fb.TitleFormat('$if2(%album artist%,%artist%)');
@@ -178,36 +175,11 @@ const requests = SerialRequestQueue.create({
     onFailure: handleRequestFailure
 });
 let consecutiveTransientErrors = 0;
-let networkDebug = { state: 'idle', kind: '', at: 0, httpStatus: 0, detail: '' };
 
 let menuState = null;
 
-function clamp(value, min, max) {
-    return Math.max(min, Math.min(max, value));
-}
-
 function scaleUi(value) {
     return Math.max(1, Math.round(Number(value || 0) * uiScale));
-}
-
-function cleanSpaces(value) {
-    return String(value || '').replace(/\s+/g, ' ').trim();
-}
-
-function plural(n, singular, pluralForm) {
-    return n + ' ' + (n === 1 ? singular : (pluralForm || singular + 's'));
-}
-
-function safeJson(text) {
-    try {
-        return JSON.parse(text);
-    } catch (e) {
-        return null;
-    }
-}
-
-function clearTimer(timerId) {
-    if (timerId) window.ClearTimeout(timerId);
 }
 
 function normalizeBasic(value) {
@@ -268,31 +240,6 @@ function extractUuids(value) {
     return result;
 }
 
-function debugSnippet(value, maxLength) {
-    const max = Math.max(40, Number(maxLength || 220));
-    const text = String(value || '').replace(/\s+/g, ' ').trim();
-    return text.length > max ? text.substring(0, max - 3) + '...' : text;
-}
-
-function debugDateTime(value) {
-    const time = Number(value || 0);
-    if (!(time > 0)) return 'never';
-    const d = new Date(time);
-    function two(n) { return String(n).padStart(2, '0'); }
-    return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate()) +
-        ' ' + two(d.getHours()) + ':' + two(d.getMinutes());
-}
-
-function setNetworkDebug(state, kind, detail, httpStatus) {
-    networkDebug = {
-        state: String(state || 'idle'),
-        kind: String(kind || ''),
-        at: Date.now(),
-        httpStatus: Number(httpStatus || 0),
-        detail: debugSnippet(detail, 240)
-    };
-}
-
 function pad2(value) {
     return value < 10 ? '0' + value : String(value);
 }
@@ -313,14 +260,14 @@ function horizonIso() {
 function formatDayLabel(isoText) {
     const parts = String(isoText || '').split('-');
     if (parts.length < 3) return isoText || '';
-    const monthIndex = clamp(Number(parts[1]) - 1, 0, 11);
+    const monthIndex = RivageUI.clamp(Number(parts[1]) - 1, 0, 11);
     return MONTH_SHORT[monthIndex] + ' ' + String(Number(parts[2]));
 }
 
 function formatMonthLabel(isoText) {
     const parts = String(isoText || '').split('-');
     if (parts.length < 2) return isoText || '';
-    const monthIndex = clamp(Number(parts[1]) - 1, 0, 11);
+    const monthIndex = RivageUI.clamp(Number(parts[1]) - 1, 0, 11);
     return MONTH_NAMES[monthIndex] + ' ' + parts[0];
 }
 
@@ -394,7 +341,7 @@ function requestedAccent() {
 }
 
 function updateLayoutMetrics(baseSize) {
-    uiScale = clamp(Number(baseSize || 12) / 12, 0.82, 1.8);
+    uiScale = RivageUI.clamp(Number(baseSize || 12) / 12, 0.82, 1.8);
     PAD = scaleUi(14);
     HEADER_H = scaleUi(76);
     HEADER_GAP = scaleUi(8);
@@ -1082,7 +1029,7 @@ function reflowRows() {
         top += row.height;
     }
     contentHeight = top;
-    scrollY = clamp(scrollY, 0, maxScroll());
+    scrollY = RivageUI.clamp(scrollY, 0, maxScroll());
 }
 
 function summaryLine() {
@@ -1096,7 +1043,7 @@ function summaryLine() {
 function on_size() {
     ww = window.Width;
     wh = window.Height;
-    scrollY = clamp(scrollY, 0, maxScroll());
+    scrollY = RivageUI.clamp(scrollY, 0, maxScroll());
     syncHoverFromPointer(false);
 }
 
@@ -1310,7 +1257,7 @@ function on_mouse_leave() {
 
 function on_mouse_wheel(step) {
     if (!maxScroll()) return;
-    scrollY = clamp(scrollY - step * ITEM_H * 2, 0, maxScroll());
+    scrollY = RivageUI.clamp(scrollY - step * ITEM_H * 2, 0, maxScroll());
     syncHoverFromPointer(false);
     window.Repaint();
 }
@@ -1442,13 +1389,6 @@ function describeSweepDebug() {
         '; ' + sweepRun.fetched + ' fetched; ' + sweepRun.reused + ' from cache; ' + sweepRun.failed + ' failed';
 }
 
-function describeNetworkDebug() {
-    return networkDebug.state + (networkDebug.kind ? ' (' + networkDebug.kind + ')' : '') +
-        '; ' + debugDateTime(networkDebug.at) +
-        (networkDebug.httpStatus ? '; HTTP ' + networkDebug.httpStatus : '') +
-        (networkDebug.detail ? '; ' + networkDebug.detail : '');
-}
-
 function getLiveShowsSettings() {
     return [
         {
@@ -1503,7 +1443,7 @@ function getLiveShowsSettings() {
         { id: 'debugLibrary', label: 'Library index', type: 'info', value: describeLibraryDebug(), section: 'Diagnostics' },
         { id: 'debugSweep', label: 'Refresh progress', type: 'info', value: describeSweepDebug(), section: 'Diagnostics' },
         { id: 'debugCache', label: 'Show cache', type: 'info', value: describeCacheDebug(), section: 'Diagnostics' },
-        { id: 'debugNetwork', label: 'Network', type: 'info', value: describeNetworkDebug(), section: 'Diagnostics' },
+        { id: 'debugNetwork', label: 'Network', type: 'info', value: describeLastRequest(), section: 'Diagnostics' },
         { id: 'debugCachePath', label: 'Cache location', type: 'info', value: CACHE_DIR, section: 'Diagnostics' }
     ];
 }
@@ -1535,7 +1475,7 @@ function applyLiveShowsSetting(settingId, value) {
             rebuildRows();
             return;
         case 'minimumTracks':
-            next = clamp(Math.round(Number(value) || 1), 1, 50);
+            next = RivageUI.clamp(Math.round(Number(value) || 1), 1, 50);
             if (next === minimumTracks) return;
             window.SetProperty(PROP + 'Minimum tracks', next);
             minimumTracks = next;
@@ -1549,7 +1489,7 @@ function applyLiveShowsSetting(settingId, value) {
             startSweep(true);
             return;
         case 'cacheDays':
-            next = clamp(Math.round(Number(value) || 1), 1, 60);
+            next = RivageUI.clamp(Math.round(Number(value) || 1), 1, 60);
             if (next === cacheDays) return;
             window.SetProperty(PROP + 'Cache days', next);
             cacheDays = next;

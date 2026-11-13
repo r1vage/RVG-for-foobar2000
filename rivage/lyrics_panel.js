@@ -11,8 +11,10 @@ include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\album_accent_protocol.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\track_context.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\visible_paint_work.js');
 include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\mica_backdrop.js');
+include(fb.ProfilePath + 'jsplitter\\rivage\\shared\\xmlhttp_get.js');
 
-window.DefineScript(RivageUI.copy.popupTitle('Lyrics'), { author: 'RivaGe', version: '2.9.2', features: { drag_n_drop: false } });
+var PANEL_VERSION = '2.10.0';
+window.DefineScript(RivageUI.copy.popupTitle('Lyrics'), { author: 'RivaGe', version: PANEL_VERSION, features: { drag_n_drop: false } });
 
 // Narrow failure reporting. Most empty catches in this file guard host reads
 // that are *expected* to fail (an aborted request has no .status, a handle may
@@ -573,60 +575,20 @@ function build_query(params) {
 	}
 	return parts.join('&');
 }
-function http_noop() {}
 function http_get(url, headers, token, done) {
-	var http = null, watchdog = null, finished = false;
-
-	// XMLHTTP holds the JS ready-state handler through COM while the closure holds
-	// XMLHTTP. Break that cycle on every settle/cancel path or long sessions leak.
-	function release_http() {
-		if (!http) return;
-		var dead = http;
-		http = null;
-		// The COM property rejects null (type mismatch); an empty top-level function holds no request state.
-		try { dead.onreadystatechange = http_noop; } catch (e) {}
-	}
-	function cancel() {
-		if (finished) return;
-		finished = true;
-		if (watchdog) { try { window.ClearTimeout(watchdog); } catch (e) {} watchdog = null; }
-		if (http) { try { http.abort(); } catch (e2) {} }
-		release_http();
-		remove_array_value(active_http_cancels, cancel);
-	}
-	function finish(status, body, retryAfter) {
-		if (finished) return;
-		finished = true;
-		if (watchdog) { window.ClearTimeout(watchdog); watchdog = null; }
-		release_http();
+	// Registered before the request starts, so one that fails at once still unregisters.
+	var cancel_request = null;
+	function cancel() { if (cancel_request) cancel_request(); }
+	active_http_cancels.push(cancel);
+	cancel_request = XmlHttpGet.get(url, headers, HTTP_TIMEOUT_MS, function (status, body, retryAfter) {
 		remove_array_value(active_http_cancels, cancel);
 		if (!request_is_current(token)) return;
 		done(status, body, retryAfter);
-	}
-	active_http_cancels.push(cancel);
-	try { http = new ActiveXObject('Microsoft.XMLHTTP'); } catch (e) { finish(0, null, ''); return; }
-	try {
-		http.open('GET', url, true);
-		for (var k in headers) { try { http.setRequestHeader(k, headers[k]); } catch (e2) {} }
-		http.onreadystatechange = function () {
-			if (!http || http.readyState != 4) return;
-			var status = 0, body = null, retryAfter = '';
-			try { status = http.status; } catch (e3) {}
-			try { body = http.responseText; } catch (e4) {}
-			try { retryAfter = http.getResponseHeader('Retry-After') || ''; } catch (e5) {}
-			finish(status, body, retryAfter);
-		};
-		watchdog = window.SetTimeout(function () {
-			watchdog = null;
-			if (http) { try { http.abort(); } catch (e6) {} }
-			finish(0, null, '');
-		}, HTTP_TIMEOUT_MS);
-		http.send();
-	} catch (e7) { finish(0, null, ''); }
+	});
 }
 
 var LRCLIB_BASE = 'https://lrclib.net/api';
-var LRCLIB_UA = 'RVGLyricsPanel/2.7.0 (https://github.com/dima-lur/jsplitter)';
+var LRCLIB_UA = 'RVGLyricsPanel/' + PANEL_VERSION + ' (https://github.com/r1vage/rvg-for-foobar2000)';
 var LRCLIB_MAX_RETRY_MS = 300000;
 
 function lrclib_duration(value) {
@@ -1071,7 +1033,7 @@ function clear_current_source() {
 	reset_visual_animation();
 	set_state(STATE.NO_TRACK);
 }
-function load_lyrics_for_track(handle, forceOnline) {
+function load_lyrics_for_track(handle, forceOnline, forceSave) {
 	if (!handle) { clear_current_source(); return; }
 	invalidate_online_requests();
 	search_overlay = null;
@@ -1108,7 +1070,9 @@ function load_lyrics_for_track(handle, forceOnline) {
 		// Never replace saved lyrics unasked unless this is an upgrade to synced; "Save lyrics now" still can.
 		var better = !localData || (data.synced && !localData.synced);
 		if (better || forceOnline) apply_data(data);
-		if (better) save_lyrics(handle, data);
+		// A forced save still never swaps saved synced lyrics for plain text.
+		var downgrade = localData && localData.synced && !data.synced;
+		if (better || (forceSave && !downgrade)) save_lyrics(handle, data);
 	});
 }
 function refresh_active_source(force) {
@@ -1639,6 +1603,7 @@ function show_menu(x, y) {
 
 	menu.AppendMenuItem(MF_STRING, 1, 'Refresh local lyrics');
 	menu.AppendMenuItem(MF_STRING, 2, 'Fetch again from online sources');
+	menu.AppendMenuItem(MF_STRING, 5, 'Force redownload lyrics and save');
 	menu.AppendMenuItem(MF_STRING, 3, 'Search for lyrics…');
 	menu.AppendMenuItem(MF_SEPARATOR, 0, '');
 	menu.AppendMenuItem(GetMenuFlags(!!current_data, false), 4, 'Save lyrics now');
@@ -1651,6 +1616,7 @@ function show_menu(x, y) {
 	switch (idx) {
 		case 1: load_lyrics_for_track(get_active_handle(), false); break;
 		case 2: load_lyrics_for_track(get_active_handle(), true); break;
+		case 5: load_lyrics_for_track(get_active_handle(), true, true); break;
 		case 3: open_manual_search(); break;
 		case 4: if (current_data && current_handle_ref) save_lyrics(current_handle_ref, current_data); break;
 		case 18: applyMySetting('showTitle', !opt_show_title); break;
